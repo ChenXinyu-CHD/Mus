@@ -1,0 +1,6 @@
+// this should fail because main redefined
+
+fn main() {}
+fn main() {}
+fn foo() {}
+fn bar() {}
