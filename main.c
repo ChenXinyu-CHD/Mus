@@ -411,7 +411,8 @@ bool compile_function(stb_lexer *l, char *filename, SymbolTable *syms)
   if (!prefetch_expect_token(l, filename, CLEX_id)) return false;
 
   if (symbol_defined(syms, l->string, 0)) {
-    pcompile_info(l, filename, "error: symbol %s redefined", l->string);
+    pcompile_info(l, filename, "error: symbol %s redefined\n", l->string);
+    return false;
   }
   char *name = temp_strdup(l->string);
   
