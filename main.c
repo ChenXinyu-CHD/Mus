@@ -414,7 +414,7 @@ bool compile_function(stb_lexer *l, char *filename, SymbolTable *syms)
     pcompile_info(l, filename, "error: symbol %s redefined\n", l->string);
     return false;
   }
-  char *name = temp_strdup(l->string);
+  char *name = strdup(l->string);
   
   if (!prefetch_expect_token(l, filename, '(')) return false;
   if (!prefetch_expect_token(l, filename, ')')) return false;
@@ -453,7 +453,7 @@ bool compile_file(stb_lexer *l, char *filename, SymbolTable *syms)
         if (symbol_defined(syms, l->string, 0)) {
           pcompile_info(l, filename, "error: symbol %s redefined", l->string);
         }
-        sym.name = temp_strdup(l->string);
+        sym.name = strdup(l->string);
         
         if (!prefetch_expect_token(l, filename, '(')) return false;
         if (!prefetch_expect_token(l, filename, ')')) return false;
@@ -470,11 +470,53 @@ bool compile_file(stb_lexer *l, char *filename, SymbolTable *syms)
   return true;
 }
 
+void destroy_arg(Arg *arg)
+{
+  switch(arg->kind) {
+  case ARG_NAME: free(arg->name);
+  case ARG_LIT_INT: break;
+  default: UNREACHABLE("destroy arg");
+  }
+}
+
+void destroy_op(Op *op)
+{
+  switch (op->kind) {
+  case OP_INVOKE:
+    destroy_arg(&op->fn);
+    da_foreach(Arg, arg, &op->args) {
+      destroy_arg(arg);
+    }
+    break;
+  case OP_RETURN: destroy_arg(&op->ret_val); break;
+  default: UNREACHABLE("destroy op");
+  }
+}
+
+void destroy_symbol(Symbol *sym)
+{
+  free(sym->name);
+  if (!sym->external) {
+    da_foreach (Op, op, &sym->fn_body) {
+      destroy_op(op);
+    }
+  }
+}
+
+void destroy_symtable(SymbolTable *syms)
+{
+  da_foreach (Symbol, sym, syms) {
+    destroy_symbol(sym);
+  }
+  da_free(*syms);
+}
+
 int main(int argc, char **argv)
 {
   int result = 0;
   String_Builder sb = {0};
   SymbolTable syms = {0};
+  String_Builder code;
   
   if (argc < 2) {
     fprintf(stderr, "fatal error: no input files\n");
@@ -496,15 +538,17 @@ int main(int argc, char **argv)
     return_defer(1);
   }
 
-  String_Builder code = gen_code_ir(&syms);
+  code = gen_code_ir(&syms);
 
   write_entire_file("/dev/stdout", code.items, code.count);
 
   return_defer(0);
 
  defer:
-  if (sb.capacity > 0) da_free(sb);
-  if (syms.capacity > 0) da_free(syms);
+  if (sb.capacity > 0)   da_free(sb);
+  if (syms.capacity > 0) destroy_symtable(&syms);
+  if (code.capacity > 0) da_free(code);
   if (result) fprintf(stderr, "compilation terminated\n");
+  
   return result;
 }
