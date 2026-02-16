@@ -1,14 +1,8 @@
-#include <stdio.h>
-#include <string.h>
-#include <stdarg.h>
+#include "parser.h"
 
-#define NOB_IMPLEMENTATION
 #include "nob.h"
 #define STB_C_LEXER_IMPLEMENTATION
 #include "stb_c_lexer.h"
-
-#define LEXER_BUFFER_SIZE 1<<20
-static char lexer_buffer[LEXER_BUFFER_SIZE];
 
 char *token_name(long token)
 {
@@ -190,60 +184,6 @@ bool expect_ids_(stb_lexer *l, const char *filename, ...)
 #define expect_ids(l, filename, ...)            \
   expect_ids_(l, filename, __VA_ARGS__, NULL)
 
-typedef enum {
-  ARG_NAME,     // 暂时只能以名称的引用的参数，作为编译时的占位符
-  ARG_LIT_INT,
-} ArgKind;
-
-typedef struct {
-  ArgKind kind;
-  union {
-    char *name;
-    int   num_int;
-  };
-} Arg;
-
-typedef struct {
-  Arg *items;
-  size_t count;
-  size_t capacity;
-} ArgList;
-
-typedef enum {
-  OP_INVOKE,
-  OP_RETURN,
-} OpKind;
-
-typedef struct {
-  OpKind kind;
-  union {
-    struct {
-      Arg fn;
-      ArgList args;
-    };
-    struct {
-      Arg ret_val;
-    };
-  };
-} Op;
-
-typedef struct {
-  Op *items;
-  size_t count;
-  size_t capacity;
-} OpList;
-
-typedef struct {
-  bool external;
-  char *name;
-  OpList fn_body;
-} Symbol;
-
-typedef struct {
-  Symbol *items;
-  size_t count;
-  size_t capacity;
-} SymbolTable;
 
 bool symbol_defined(SymbolTable *syms, char *name, size_t begin)
 {
@@ -256,62 +196,7 @@ bool symbol_defined(SymbolTable *syms, char *name, size_t begin)
   return false;
 }
 
-void gen_arg_ir(String_Builder *sb, Arg arg)
-{
-  switch(arg.kind) {
-  case ARG_NAME:
-    sb_appendf(sb, arg.name);
-    break;
-  case ARG_LIT_INT:
-    sb_appendf(sb, "%d", arg.num_int);
-    break;
-  default: UNREACHABLE("arg");
-  }
-}
-
-String_Builder gen_code_ir(const SymbolTable *syms)
-{
-  String_Builder sb = {0};
-
-  sb_appendf(&sb, "extern:");
-  da_foreach (Symbol, sym, syms) {
-    if (sym->external) {
-      sb_appendf(&sb, " %s", sym->name);
-    }
-  }
-
-  sb_appendf(&sb, "\n\n");
-  
-  da_foreach (Symbol, sym, syms) {
-    if (!sym->external) {
-      sb_appendf(&sb, "%s:\n", sym->name);
-      da_foreach (Op, op, &sym->fn_body) {
-        switch(op->kind) {
-        case OP_INVOKE:
-          sb_appendf(&sb, "    call ");
-          gen_arg_ir(&sb, op->fn);
-          da_foreach (Arg, arg, &op->args) {
-            sb_appendf(&sb, ", ");
-            gen_arg_ir(&sb, *arg);
-          }
-          sb_append(&sb, '\n');
-          break;
-        case OP_RETURN:
-          sb_appendf(&sb, "    ret ");
-          gen_arg_ir(&sb, op->ret_val);
-          sb_append(&sb, '\n');
-          break;
-        default:
-          UNREACHABLE("op");
-        }
-      }
-    }
-  }
-
-  return sb;
-}
-
-bool compile_arg(stb_lexer *l, char *filename, SymbolTable *syms, Arg *arg)
+bool compile_arg(stb_lexer *l, const char *filename, SymbolTable *syms, Arg *arg)
 {
   UNUSED(syms);
   assert(l->token != CLEX_eof);
@@ -345,7 +230,7 @@ bool compile_arg(stb_lexer *l, char *filename, SymbolTable *syms, Arg *arg)
   return true;
 }
 
-bool compile_expr(stb_lexer *l, char *filename, SymbolTable *syms, OpList *fn_body)
+bool compile_expr(stb_lexer *l, const char *filename, SymbolTable *syms, OpList *fn_body)
 {
   Arg arg;
   if (!compile_arg(l, filename, syms, &arg)) return false;
@@ -382,7 +267,7 @@ bool compile_expr(stb_lexer *l, char *filename, SymbolTable *syms, OpList *fn_bo
   return true;
 }
 
-bool compile_fn_body(stb_lexer *l, char *filename, SymbolTable *syms, OpList *fn_body) {
+bool compile_fn_body(stb_lexer *l, const char *filename, SymbolTable *syms, OpList *fn_body) {
   UNUSED(syms);
   UNUSED(fn_body);
   
@@ -404,7 +289,7 @@ bool compile_fn_body(stb_lexer *l, char *filename, SymbolTable *syms, OpList *fn
   return true;
 }
 
-bool compile_function(stb_lexer *l, char *filename, SymbolTable *syms)
+bool compile_function(stb_lexer *l, const char *filename, SymbolTable *syms)
 {
   assert(expect_token(l, filename, CLEX_id) && strcmp(l->string, "fn") == 0);
 
@@ -435,7 +320,7 @@ bool compile_function(stb_lexer *l, char *filename, SymbolTable *syms)
   return true;
 }
 
-bool compile_file(stb_lexer *l, char *filename, SymbolTable *syms)
+bool compile_file(stb_lexer *l, const char *filename, SymbolTable *syms)
 {
   while (next_token(l, filename)) {
     if (!expect_ids(l, filename, "fn", "extern")) return false;
@@ -509,46 +394,4 @@ void destroy_symtable(SymbolTable *syms)
     destroy_symbol(sym);
   }
   da_free(*syms);
-}
-
-int main(int argc, char **argv)
-{
-  int result = 0;
-  String_Builder sb = {0};
-  SymbolTable syms = {0};
-  String_Builder code;
-  
-  if (argc < 2) {
-    fprintf(stderr, "fatal error: no input files\n");
-    return_defer(1);
-  }
-
-  char *filename = argv[1];
-
-  if (!read_entire_file(filename, &sb)) {
-    fprintf(stderr, "fatal error: can not read file %s\n", filename);
-    return_defer(1);
-  }
-
-  stb_lexer lex;
-  stb_c_lexer_init(&lex, sb.items, sb.items + sb.count, lexer_buffer, LEXER_BUFFER_SIZE);
-
-  if (!compile_file(&lex, argv[1], &syms)) {
-    fprintf(stderr, "fatal error: failed to compile file %s\n", argv[1]);
-    return_defer(1);
-  }
-
-  code = gen_code_ir(&syms);
-
-  write_entire_file("/dev/stdout", code.items, code.count);
-
-  return_defer(0);
-
- defer:
-  if (sb.capacity > 0)   da_free(sb);
-  if (syms.capacity > 0) destroy_symtable(&syms);
-  if (code.capacity > 0) da_free(code);
-  if (result) fprintf(stderr, "compilation terminated\n");
-  
-  return result;
 }
