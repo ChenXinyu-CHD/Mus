@@ -6,6 +6,7 @@
 #include "stb_c_lexer.h"
 
 typedef enum {
+  ARG_NONE,
   ARG_NAME,     // 暂时只能以名称的引用的参数，作为编译时的占位符
   ARG_LIT_INT,
 } ArgKind;

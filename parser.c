@@ -268,9 +268,6 @@ bool compile_expr(stb_lexer *l, const char *filename, SymbolTable *syms, OpList 
 }
 
 bool compile_fn_body(stb_lexer *l, const char *filename, SymbolTable *syms, OpList *fn_body) {
-  UNUSED(syms);
-  UNUSED(fn_body);
-  
   assert(l->token == '{');
   
   if (!prefetch_not_none(l, filename)) return false;
@@ -284,6 +281,11 @@ bool compile_fn_body(stb_lexer *l, const char *filename, SymbolTable *syms, OpLi
       if (!compile_expr(l, filename, syms, fn_body)) return false;
     }
     if (!prefetch_not_none(l, filename)) return false;
+  }
+
+  if (fn_body->count == 0) {
+      Op ret = { .kind = OP_RETURN };
+      da_append(fn_body, ret);
   }
 
   return true;
@@ -358,7 +360,8 @@ bool compile_file(stb_lexer *l, const char *filename, SymbolTable *syms)
 void destroy_arg(Arg *arg)
 {
   switch(arg->kind) {
-  case ARG_NAME: free(arg->name);
+  case ARG_NONE: break;
+  case ARG_NAME: free(arg->name); break;
   case ARG_LIT_INT: break;
   default: UNREACHABLE("destroy arg");
   }

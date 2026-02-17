@@ -54,7 +54,9 @@ String_Builder gen_code_ir(const SymbolTable *syms)
           break;
         case OP_RETURN:
           sb_appendf(&sb, "    ret ");
-          gen_arg_ir(&sb, op->ret_val);
+          if (op->ret_val.kind != ARG_NONE) {
+            gen_arg_ir(&sb, op->ret_val);
+          }
           sb_append(&sb, '\n');
           break;
         default:
@@ -67,10 +69,69 @@ String_Builder gen_code_ir(const SymbolTable *syms)
   return sb;
 }
 
+bool build_ir(const char *filename, const SymbolTable *syms)
+{
+  String_Builder code = gen_code_ir(syms);
+  bool success = write_entire_file(filename, code.items, code.count);
+  da_free(code);
+
+  return success;
+}
+
+void load_arg_x64_linux(String_Builder *sb, Arg arg)
+{
+  switch(arg.kind) {
+  case ARG_NAME:
+    TODO("load_arg_x64_linux ARG_NAME");
+    break;
+  case ARG_LIT_INT:
+    sb_appendf(sb, "movl $%d, %%eax\n", arg.num_int);
+    break;
+  default: UNREACHABLE("arg");
+  }
+}
+
 String_Builder gen_code_x64_linux(const SymbolTable *syms)
 {
-  UNUSED(syms);
-  TODO("gen_code_x64_linux");
+  String_Builder sb = {0};
+  sb_appendf(&sb, "    .text\n");
+  da_foreach (Symbol, sym, syms) {
+    if (!sym->external) {
+      sb_appendf(&sb, "    .globl  %s\n", sym->name);
+      sb_appendf(&sb, "    .type  %s, @function\n", sym->name);
+      sb_appendf(&sb, "%s:\n", sym->name);
+      sb_appendf(&sb, "    pushq %%rbp\n");
+      sb_appendf(&sb, "    movq  %%rsp, %%rbp\n");
+      
+      da_foreach (Op, op, &sym->fn_body) {
+        switch(op->kind) {
+        case OP_INVOKE:
+          TODO("OP_INVOKE");
+          break;
+        case OP_RETURN:
+          if (op->ret_val.kind != ARG_NONE) {
+            load_arg_x64_linux(&sb, op->ret_val);
+          }
+          sb_appendf(&sb, "    popq  %%rbp\n");
+          sb_appendf(&sb, "    ret\n");
+          break;
+        default:
+          UNREACHABLE("op");
+        }
+      }
+    }
+  }
+  return sb;
+}
+
+bool build_x64_linux(const char *filename, const SymbolTable *syms)
+{
+  String_Builder code = gen_code_x64_linux(syms);
+  char *asm_file = temp_sprintf("%s.s", filename);
+  bool success = write_entire_file(asm_file, code.items, code.count);
+  da_free(code);
+
+  return success;
 }
 
 typedef enum {
@@ -103,7 +164,7 @@ bool parse_args(int argc, char **argv)
 {
   mcc_args.program = argv[0];
   mcc_args.target  = TARGET_IR;
-  mcc_args.outfile = "a.out";
+  mcc_args.outfile = NULL;
 
   bool result = true;
 
@@ -143,7 +204,16 @@ bool parse_args(int argc, char **argv)
 
   if (mcc_args.files.count == 0) {
     fprintf(stderr, "%s:error: no input files\n", mcc_args.program);
-    result = false;
+    return false;
+  }
+
+  if (mcc_args.outfile == NULL) {
+    char *outfile = temp_file_name(mcc_args.files.items[0]);
+    char *ext = strrchr(outfile, '.');
+    if (ext != NULL) {
+      *ext = '\0';
+    }
+    mcc_args.outfile = outfile;
   }
 
   return result;
@@ -158,7 +228,6 @@ int main(int argc, char **argv)
   int result        = 0;
   String_Builder sb = {0};
   SymbolTable syms  = {0};
-  String_Builder code;
 
   if (mcc_args.files.count > 1) {
     TODO("support multiple files");
@@ -179,22 +248,19 @@ int main(int argc, char **argv)
 
   switch(mcc_args.target) {
   case TARGET_IR:
-    code = gen_code_ir(&syms);
+    if(!build_ir(mcc_args.outfile, &syms)) return_defer(1);
     break;
   case TARGET_X64_LINUX:
-    code = gen_code_x64_linux(&syms);
+    if (!build_x64_linux(mcc_args.outfile, &syms)) return_defer(1);
     break;
   default: UNREACHABLE("target");
   }
   
-  write_entire_file(mcc_args.outfile, code.items, code.count);
-
   return_defer(0);
 
  defer:
   if (sb.capacity > 0)   da_free(sb);
   if (syms.capacity > 0) destroy_symtable(&syms);
-  if (code.capacity > 0) da_free(code);
   if (result) fprintf(stderr, "compilation terminated\n");
   
   return result;
