@@ -126,12 +126,31 @@ String_Builder gen_code_x64_linux(const SymbolTable *syms)
 
 bool build_x64_linux(const char *filename, const SymbolTable *syms)
 {
+  bool result;
+  
   String_Builder code = gen_code_x64_linux(syms);
   char *asm_file = temp_sprintf("%s.s", filename);
-  bool success = write_entire_file(asm_file, code.items, code.count);
-  da_free(code);
+  if (!write_entire_file(asm_file, code.items, code.count)) return_defer(false);
+  
+  char *obj_file = temp_sprintf("%s.o", filename);
+  Cmd cmd = {0};
+  cmd_append(&cmd, "as", "-o", obj_file, asm_file);
+  if(!cmd_run(&cmd)) return_defer(false);
+  
+  cmd.count = 0;
+  nob_cmd_append(&cmd, "ld", "-o", filename, obj_file,
+                 "/lib/crt1.o", "-lc",
+                 "--dynamic-linker", "/lib64/ld-linux-x86-64.so.2");
+  if(!cmd_run(&cmd)) return_defer(false);
+  
+  if (!write_entire_file(asm_file, code.items, code.count)) return_defer(false);
 
-  return success;
+  return_defer(true);
+
+ defer:
+  da_free(code);
+  if (cmd.capacity > 0) cmd_free(cmd);
+  return result;
 }
 
 typedef enum {
