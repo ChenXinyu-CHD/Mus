@@ -1,0 +1,12 @@
+extern fn printf();
+
+fn hello()
+{
+  printf("hello, %s\n", "world");
+}
+
+fn main()
+{
+  hello()
+  return 0
+}

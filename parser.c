@@ -288,7 +288,8 @@ bool compile_expr(stb_lexer *l, const char *filename, Program *prog, OpList *fn_
 
 bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, OpList *fn_body) {
   assert(l->token == '{');
-  
+
+  bool returned = false;
   if (!prefetch_not_none(l, filename)) return false;
   while (l->token != '}') {
     if (l->token == ';') {
@@ -298,13 +299,16 @@ bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, OpList *
       if (!prefetch_not_none(l, filename)) return false;
       if (!compile_arg(l, filename, prog, &ret.ret_val)) return false;
       da_append(fn_body, ret);
+      returned = true;
+    } else if (l->token == CLEX_id && strcmp(l->string, "var") == 0) {
+      TODO("var");
     } else {
       if (!compile_expr(l, filename, prog, fn_body)) return false;
     }
     if (!prefetch_not_none(l, filename)) return false;
   }
 
-  if (fn_body->count == 0) {
+  if (!returned) {
     Op ret = { .kind = OP_RETURN };
     da_append(fn_body, ret);
   }
