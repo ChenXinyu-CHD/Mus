@@ -18,7 +18,7 @@ typedef struct {
   union {
     char   *name;
     int    num_int;
-    size_t offset;
+    size_t label;
   };
 } Arg;
 
@@ -76,7 +76,11 @@ typedef struct {
 typedef struct {
   FnList fn_list;
   ExternList externs;
-  String_Builder str_lits;
+  struct {
+    char **items;
+    size_t count;
+    size_t capacity;
+  } str_lits;
 } Program;
 
 bool compile_file(stb_lexer *l, const char *filename, Program *grog);

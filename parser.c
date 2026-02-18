@@ -202,6 +202,19 @@ bool symbol_defined(Program *prog, char *name)
   return false;
 }
 
+size_t compile_strlit(Program *prog, char *str)
+{
+  size_t str_count = prog->str_lits.count;
+  for (size_t i = 0; i < str_count; ++i) {
+    if (strcmp(prog->str_lits.items[i], str) == 0) {
+      return i;
+    }
+  }
+  
+  da_append(&prog->str_lits, strdup(str));
+  return str_count;
+}
+
 bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Arg *arg)
 {
   UNUSED(prog);
@@ -212,7 +225,8 @@ bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Arg *arg)
     arg->name = strdup(l->string);
     break;
   case CLEX_dqstring:
-    TODO("CLEX_dqstring");
+    arg->kind = ARG_LIT_STR;
+    arg->label = compile_strlit(prog, l->string);
     break;
   case CLEX_charlit:
     TODO("CLEX_charlit");
@@ -278,7 +292,7 @@ bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, OpList *
   if (!prefetch_not_none(l, filename)) return false;
   while (l->token != '}') {
     if (l->token == ';') {
-      if (!prefetch_not_none(l, filename)) return false;
+      // nothing to do;
     } else if (l->token == CLEX_id && strcmp(l->string, "return") == 0) {
       Op ret = { .kind = OP_RETURN };
       if (!prefetch_not_none(l, filename)) return false;
@@ -373,6 +387,7 @@ void destroy_arg(Arg *arg)
   case ARG_NONE: break;
   case ARG_NAME: free(arg->name); break;
   case ARG_LIT_INT: break;
+  case ARG_LIT_STR: break;
   default: UNREACHABLE("destroy arg");
   }
 }
@@ -411,4 +426,10 @@ void destroy_program(Program *prog)
   da_free(prog->externs);
 
   destroy_fn_list(&prog->fn_list);
+  if (prog->str_lits.capacity > 0) {
+    da_foreach (char *, str, &prog->str_lits) {
+      free(*str);
+    }
+    da_free(prog->str_lits);
+  }
 }

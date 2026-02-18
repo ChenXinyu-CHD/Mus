@@ -74,9 +74,39 @@ bool build_ir(const char *filename, const Program *prog)
   return success;
 }
 
+void append_str_lit(String_Builder *sb, char *str)
+{
+  da_append(sb, '"');
+  for (char *it = str; *it != '\0'; ++it) {
+    switch(*it) {
+    case '\n': sb_appendf(sb, "\\n");  break;
+    case '\b': sb_appendf(sb, "\\b");  break;
+    case '\t': sb_appendf(sb, "\\t");  break;
+    case '\r': sb_appendf(sb, "\\r");  break;
+    case '\v': sb_appendf(sb, "\\v");  break;
+    case '\'': sb_appendf(sb, "'");    break;
+    case '\"': sb_appendf(sb, "\\\""); break;
+    case '\a': sb_appendf(sb, "\\a");  break;
+    default: da_append(sb, *it);
+    }
+  }
+  
+  da_append(sb, '"');
+}
+
 String_Builder gen_code_x64_linux(const Program *prog)
 {
   String_Builder sb = {0};
+
+  sb_appendf(&sb, "    .text\n");
+  sb_appendf(&sb, "    .section .rodata\n");
+  for (size_t i = 0; i < prog->str_lits.count; ++i) {
+    sb_appendf(&sb, ".S_%ld:\n", i);
+    sb_appendf(&sb, "    .string ");
+    append_str_lit(&sb, prog->str_lits.items[i]);
+    da_append(&sb, '\n');
+  }
+  
   sb_appendf(&sb, "    .text\n");
   da_foreach (Fn, fn, &prog->fn_list) {
     sb_appendf(&sb, "    .globl  %s\n", fn->name);
@@ -88,34 +118,47 @@ String_Builder gen_code_x64_linux(const Program *prog)
     da_foreach (Op, op, &fn->fn_body) {
       switch(op->kind) {
       case OP_INVOKE:
-        if (op->args.count > 1) {
-          TODO("support more args in function call");
-        }
-          
-        switch(op->args.items[0].kind) {
-        case ARG_LIT_INT:
-          sb_appendf(&sb, "movl $%d, %%edi\n", op->args.items[0].num_int);
-          break;
-        default: UNREACHABLE("arg");
+        for (int i = op->args.count - 1; i >= 0; --i) {
+          static char *reg[] = {
+            "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"
+          };
+          switch(op->args.items[0].kind) {
+          case ARG_LIT_INT:
+            if ((size_t)i > ARRAY_LEN(reg)) {
+              sb_appendf(&sb, "    pushq $%d\n", op->args.items[i].num_int);
+            } else {
+              sb_appendf(&sb, "    movl $%d, %s\n", op->args.items[i].num_int, reg[i]);
+            }
+            break;
+          case ARG_LIT_STR:
+            if ((size_t)i > ARRAY_LEN(reg)) {
+              sb_appendf(&sb, "    leaq .S_%ld(%%rip), %%rax\n", op->args.items[i].label);
+              sb_appendf(&sb, "    pushq %%eax\n");
+            } else {
+              sb_appendf(&sb, "    leaq .S_%ld(%%rip), %s\n", op->args.items[i].label, reg[i]);
+            }
+            break;
+          default: UNREACHABLE("arg");
+          }
         }
           
         switch(op->fn.kind) {
         case ARG_NAME:
-          sb_appendf(&sb, "call %s\n", op->fn.name);
+          sb_appendf(&sb, "    call %s\n", op->fn.name);
           break;
         default: UNREACHABLE("arg");
         }
 
         break;
       case OP_RETURN:
-        sb_appendf(&sb, "    popq  %%rbp\n");
         switch(op->ret_val.kind) {
         case ARG_NONE: break;
         case ARG_LIT_INT:
-          sb_appendf(&sb, "movl $%d, %%eax\n", op->ret_val.num_int);
+          sb_appendf(&sb, "    movl $%d, %%eax\n", op->ret_val.num_int);
           break;
         default: UNREACHABLE("arg");
         }
+        sb_appendf(&sb, "    leave\n");
         sb_appendf(&sb, "    ret\n");
         break;
       default:
