@@ -25,43 +25,39 @@ void gen_arg_ir(String_Builder *sb, Arg arg)
   }
 }
 
-String_Builder gen_code_ir(const SymbolTable *syms)
+String_Builder gen_code_ir(const Program *prog)
 {
   String_Builder sb = {0};
 
   sb_appendf(&sb, "extern:");
-  da_foreach (Symbol, sym, syms) {
-    if (sym->external) {
-      sb_appendf(&sb, " %s", sym->name);
-    }
+  da_foreach (Extern, ext, &prog->externs) {
+    sb_appendf(&sb, " %s", ext->name);
   }
 
   sb_appendf(&sb, "\n\n");
   
-  da_foreach (Symbol, sym, syms) {
-    if (!sym->external) {
-      sb_appendf(&sb, "%s:\n", sym->name);
-      da_foreach (Op, op, &sym->fn_body) {
-        switch(op->kind) {
-        case OP_INVOKE:
-          sb_appendf(&sb, "    call ");
-          gen_arg_ir(&sb, op->fn);
-          da_foreach (Arg, arg, &op->args) {
-            sb_appendf(&sb, ", ");
-            gen_arg_ir(&sb, *arg);
-          }
-          sb_append(&sb, '\n');
-          break;
-        case OP_RETURN:
-          sb_appendf(&sb, "    ret ");
-          if (op->ret_val.kind != ARG_NONE) {
-            gen_arg_ir(&sb, op->ret_val);
-          }
-          sb_append(&sb, '\n');
-          break;
-        default:
-          UNREACHABLE("op");
+  da_foreach (Fn, fn, &prog->fn_list) {
+    sb_appendf(&sb, "%s:\n", fn->name);
+    da_foreach (Op, op, &fn->fn_body) {
+      switch(op->kind) {
+      case OP_INVOKE:
+        sb_appendf(&sb, "    call ");
+        gen_arg_ir(&sb, op->fn);
+        da_foreach (Arg, arg, &op->args) {
+          sb_appendf(&sb, ", ");
+          gen_arg_ir(&sb, *arg);
         }
+        sb_append(&sb, '\n');
+        break;
+      case OP_RETURN:
+        sb_appendf(&sb, "    ret ");
+        if (op->ret_val.kind != ARG_NONE) {
+          gen_arg_ir(&sb, op->ret_val);
+        }
+        sb_append(&sb, '\n');
+        break;
+      default:
+        UNREACHABLE("op");
       }
     }
   }
@@ -69,66 +65,72 @@ String_Builder gen_code_ir(const SymbolTable *syms)
   return sb;
 }
 
-bool build_ir(const char *filename, const SymbolTable *syms)
+bool build_ir(const char *filename, const Program *prog)
 {
-  String_Builder code = gen_code_ir(syms);
+  String_Builder code = gen_code_ir(prog);
   bool success = write_entire_file(filename, code.items, code.count);
   da_free(code);
 
   return success;
 }
 
-void load_arg_x64_linux(String_Builder *sb, Arg arg)
-{
-  switch(arg.kind) {
-  case ARG_NAME:
-    TODO("load_arg_x64_linux ARG_NAME");
-    break;
-  case ARG_LIT_INT:
-    sb_appendf(sb, "movl $%d, %%eax\n", arg.num_int);
-    break;
-  default: UNREACHABLE("arg");
-  }
-}
-
-String_Builder gen_code_x64_linux(const SymbolTable *syms)
+String_Builder gen_code_x64_linux(const Program *prog)
 {
   String_Builder sb = {0};
   sb_appendf(&sb, "    .text\n");
-  da_foreach (Symbol, sym, syms) {
-    if (!sym->external) {
-      sb_appendf(&sb, "    .globl  %s\n", sym->name);
-      sb_appendf(&sb, "    .type  %s, @function\n", sym->name);
-      sb_appendf(&sb, "%s:\n", sym->name);
-      sb_appendf(&sb, "    pushq %%rbp\n");
-      sb_appendf(&sb, "    movq  %%rsp, %%rbp\n");
+  da_foreach (Fn, fn, &prog->fn_list) {
+    sb_appendf(&sb, "    .globl  %s\n", fn->name);
+    sb_appendf(&sb, "    .type  %s, @function\n", fn->name);
+    sb_appendf(&sb, "%s:\n", fn->name);
+    sb_appendf(&sb, "    pushq %%rbp\n");
+    sb_appendf(&sb, "    movq  %%rsp, %%rbp\n");
       
-      da_foreach (Op, op, &sym->fn_body) {
-        switch(op->kind) {
-        case OP_INVOKE:
-          TODO("OP_INVOKE");
-          break;
-        case OP_RETURN:
-          if (op->ret_val.kind != ARG_NONE) {
-            load_arg_x64_linux(&sb, op->ret_val);
-          }
-          sb_appendf(&sb, "    popq  %%rbp\n");
-          sb_appendf(&sb, "    ret\n");
-          break;
-        default:
-          UNREACHABLE("op");
+    da_foreach (Op, op, &fn->fn_body) {
+      switch(op->kind) {
+      case OP_INVOKE:
+        if (op->args.count > 1) {
+          TODO("support more args in function call");
         }
+          
+        switch(op->args.items[0].kind) {
+        case ARG_LIT_INT:
+          sb_appendf(&sb, "movl $%d, %%edi\n", op->args.items[0].num_int);
+          break;
+        default: UNREACHABLE("arg");
+        }
+          
+        switch(op->fn.kind) {
+        case ARG_NAME:
+          sb_appendf(&sb, "call %s\n", op->fn.name);
+          break;
+        default: UNREACHABLE("arg");
+        }
+
+        break;
+      case OP_RETURN:
+        sb_appendf(&sb, "    popq  %%rbp\n");
+        switch(op->ret_val.kind) {
+        case ARG_NONE: break;
+        case ARG_LIT_INT:
+          sb_appendf(&sb, "movl $%d, %%eax\n", op->ret_val.num_int);
+          break;
+        default: UNREACHABLE("arg");
+        }
+        sb_appendf(&sb, "    ret\n");
+        break;
+      default:
+        UNREACHABLE("op");
       }
     }
   }
   return sb;
 }
 
-bool build_x64_linux(const char *filename, const SymbolTable *syms)
+bool build_x64_linux(const char *filename, const Program *prog)
 {
   bool result;
   
-  String_Builder code = gen_code_x64_linux(syms);
+  String_Builder code = gen_code_x64_linux(prog);
   char *asm_file = temp_sprintf("%s.s", filename);
   if (!write_entire_file(asm_file, code.items, code.count)) return_defer(false);
   
@@ -246,7 +248,7 @@ int main(int argc, char **argv)
   
   int result        = 0;
   String_Builder sb = {0};
-  SymbolTable syms  = {0};
+  Program prog      = {0};
 
   if (mcc_args.files.count > 1) {
     TODO("support multiple files");
@@ -260,17 +262,17 @@ int main(int argc, char **argv)
   stb_lexer lex;
   stb_c_lexer_init(&lex, sb.items, sb.items + sb.count, lexer_buffer, LEXER_BUFFER_SIZE);
 
-  if (!compile_file(&lex, argv[1], &syms)) {
+  if (!compile_file(&lex, mcc_args.files.items[0], &prog)) {
     fprintf(stderr, "fatal error: failed to compile file %s\n", argv[1]);
     return_defer(1);
   }
 
   switch(mcc_args.target) {
   case TARGET_IR:
-    if(!build_ir(mcc_args.outfile, &syms)) return_defer(1);
+    if(!build_ir(mcc_args.outfile, &prog)) return_defer(1);
     break;
   case TARGET_X64_LINUX:
-    if (!build_x64_linux(mcc_args.outfile, &syms)) return_defer(1);
+    if (!build_x64_linux(mcc_args.outfile, &prog)) return_defer(1);
     break;
   default: UNREACHABLE("target");
   }
@@ -278,8 +280,8 @@ int main(int argc, char **argv)
   return_defer(0);
 
  defer:
-  if (sb.capacity > 0)   da_free(sb);
-  if (syms.capacity > 0) destroy_symtable(&syms);
+  if (sb.capacity > 0) da_free(sb);
+  destroy_program(&prog);
   if (result) fprintf(stderr, "compilation terminated\n");
   
   return result;

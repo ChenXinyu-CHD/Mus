@@ -185,10 +185,16 @@ bool expect_ids_(stb_lexer *l, const char *filename, ...)
   expect_ids_(l, filename, __VA_ARGS__, NULL)
 
 
-bool symbol_defined(SymbolTable *syms, char *name, size_t begin)
+bool symbol_defined(Program *prog, char *name)
 {
-  for (size_t i = begin; i < syms->count; ++i) {
-    if (strcmp(syms->items[0].name, name) == 0) {
+  for (size_t i = 0; i < prog->externs.count; ++i) {
+    if (strcmp(prog->externs.items[i].name, name) == 0) {
+      return true;
+    }
+  }
+  
+  for (size_t i = 0; i < prog->fn_list.count; ++i) {
+    if (strcmp(prog->fn_list.items[i].name, name) == 0) {
       return true;
     }
   }
@@ -196,18 +202,17 @@ bool symbol_defined(SymbolTable *syms, char *name, size_t begin)
   return false;
 }
 
-bool compile_arg(stb_lexer *l, const char *filename, SymbolTable *syms, Arg *arg)
+bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Arg *arg)
 {
-  UNUSED(syms);
+  UNUSED(prog);
   assert(l->token != CLEX_eof);
   switch (l->token) {
-  case CLEX_id: {
+  case CLEX_id:
     arg->kind = ARG_NAME;
     arg->name = strdup(l->string);
     break;
-  }
-  case CLEX_sqstring:
-    TODO("CLEX_sqstring");
+  case CLEX_dqstring:
+    TODO("CLEX_dqstring");
     break;
   case CLEX_charlit:
     TODO("CLEX_charlit");
@@ -230,10 +235,10 @@ bool compile_arg(stb_lexer *l, const char *filename, SymbolTable *syms, Arg *arg
   return true;
 }
 
-bool compile_expr(stb_lexer *l, const char *filename, SymbolTable *syms, OpList *fn_body)
+bool compile_expr(stb_lexer *l, const char *filename, Program *prog, OpList *fn_body)
 {
   Arg arg;
-  if (!compile_arg(l, filename, syms, &arg)) return false;
+  if (!compile_arg(l, filename, prog, &arg)) return false;
   if (!prefetch_not_none(l, filename)) return false;
 
   if (l->token == '(') {
@@ -241,7 +246,7 @@ bool compile_expr(stb_lexer *l, const char *filename, SymbolTable *syms, OpList 
     
     if (!prefetch_not_none(l, filename)) return false;
     while (l->token != ')') {
-      if (!compile_arg(l, filename, syms, &arg)) return false;
+      if (!compile_arg(l, filename, prog, &arg)) return false;
       if (!prefetch_not_none(l, filename)) return false;
       da_append(&invoke.args, arg);
           
@@ -267,37 +272,39 @@ bool compile_expr(stb_lexer *l, const char *filename, SymbolTable *syms, OpList 
   return true;
 }
 
-bool compile_fn_body(stb_lexer *l, const char *filename, SymbolTable *syms, OpList *fn_body) {
+bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, OpList *fn_body) {
   assert(l->token == '{');
   
   if (!prefetch_not_none(l, filename)) return false;
   while (l->token != '}') {
-    if (l->token == CLEX_id && strcmp(l->string, "return") == 0) {
+    if (l->token == ';') {
+      if (!prefetch_not_none(l, filename)) return false;
+    } else if (l->token == CLEX_id && strcmp(l->string, "return") == 0) {
       Op ret = { .kind = OP_RETURN };
       if (!prefetch_not_none(l, filename)) return false;
-      if (!compile_arg(l, filename, syms, &ret.ret_val)) return false;
+      if (!compile_arg(l, filename, prog, &ret.ret_val)) return false;
       da_append(fn_body, ret);
     } else {
-      if (!compile_expr(l, filename, syms, fn_body)) return false;
+      if (!compile_expr(l, filename, prog, fn_body)) return false;
     }
     if (!prefetch_not_none(l, filename)) return false;
   }
 
   if (fn_body->count == 0) {
-      Op ret = { .kind = OP_RETURN };
-      da_append(fn_body, ret);
+    Op ret = { .kind = OP_RETURN };
+    da_append(fn_body, ret);
   }
 
   return true;
 }
 
-bool compile_function(stb_lexer *l, const char *filename, SymbolTable *syms)
+bool compile_function(stb_lexer *l, const char *filename, Program *prog)
 {
   assert(expect_token(l, filename, CLEX_id) && strcmp(l->string, "fn") == 0);
 
   if (!prefetch_expect_token(l, filename, CLEX_id)) return false;
 
-  if (symbol_defined(syms, l->string, 0)) {
+  if (symbol_defined(prog, l->string)) {
     pcompile_info(l, filename, "error: symbol %s redefined\n", l->string);
     return false;
   }
@@ -309,43 +316,46 @@ bool compile_function(stb_lexer *l, const char *filename, SymbolTable *syms)
   if (!prefetch_expect_token(l, filename, '{')) return false;
 
   OpList fn_body = {0};
-  if (!compile_fn_body(l, filename, syms, &fn_body)) return false;
+  if (!compile_fn_body(l, filename, prog, &fn_body)) return false;
   
   if (!expect_token(l, filename, '}')) return false;
 
-  Symbol fn = {
+  Fn fn = {
     .name = name,
     .fn_body = fn_body,
   };
-  da_append(syms, fn);
+  da_append(&prog->fn_list, fn);
 
   return true;
 }
 
-bool compile_file(stb_lexer *l, const char *filename, SymbolTable *syms)
+bool compile_file(stb_lexer *l, const char *filename, Program *prog)
 {
   while (next_token(l, filename)) {
+    if (l->token == ';') {
+      continue;
+    }
+    
     if (!expect_ids(l, filename, "fn", "extern")) return false;
     
     if (strcmp(l->string, "fn") == 0) {
-      if (!compile_function(l, filename, syms)) return false;
+      if (!compile_function(l, filename, prog)) return false;
     } else if (strcmp(l->string, "extern") == 0) {
       next_token(l, filename);
-      Symbol sym = { .external = true };
       if (!expect_ids(l, filename, "fn")) return false;
 
       if (strcmp(l->string, "fn") == 0) {
         if (!prefetch_expect_token(l, filename, CLEX_id)) return false;
 
-        if (symbol_defined(syms, l->string, 0)) {
+        if (symbol_defined(prog, l->string)) {
           pcompile_info(l, filename, "error: symbol %s redefined", l->string);
         }
-        sym.name = strdup(l->string);
+        Extern ext = { .name = strdup(l->string) };
         
         if (!prefetch_expect_token(l, filename, '(')) return false;
         if (!prefetch_expect_token(l, filename, ')')) return false;
 
-        da_append(syms, sym);
+        da_append(&prog->externs, ext);
       } else {
         UNREACHABLE("compile_file");
       }
@@ -381,20 +391,24 @@ void destroy_op(Op *op)
   }
 }
 
-void destroy_symbol(Symbol *sym)
+void destroy_fn_list(FnList *fn_list)
 {
-  free(sym->name);
-  if (!sym->external) {
-    da_foreach (Op, op, &sym->fn_body) {
+  da_foreach (Fn, fn, fn_list) {
+    free(fn->name);
+    da_foreach (Op, op, &fn->fn_body) {
       destroy_op(op);
     }
+    da_free(fn->fn_body);
   }
+  da_free(*fn_list);
 }
 
-void destroy_symtable(SymbolTable *syms)
+void destroy_program(Program *prog)
 {
-  da_foreach (Symbol, sym, syms) {
-    destroy_symbol(sym);
+  da_foreach (Extern, ext, &prog->externs) {
+    free(ext->name);
   }
-  da_free(*syms);
+  da_free(prog->externs);
+
+  destroy_fn_list(&prog->fn_list);
 }

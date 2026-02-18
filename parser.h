@@ -3,19 +3,22 @@
 
 #include <stddef.h>
 
+#include "nob.h"
 #include "stb_c_lexer.h"
 
 typedef enum {
   ARG_NONE,
   ARG_NAME,     // 暂时只能以名称的引用的参数，作为编译时的占位符
   ARG_LIT_INT,
+  ARG_LIT_STR,
 } ArgKind;
 
 typedef struct {
   ArgKind kind;
   union {
-    char *name;
-    int   num_int;
+    char   *name;
+    int    num_int;
+    size_t offset;
   };
 } Arg;
 
@@ -50,18 +53,33 @@ typedef struct {
 } OpList;
 
 typedef struct {
-  bool external;
   char *name;
-  OpList fn_body;
-} Symbol;
+} Extern;
 
 typedef struct {
-  Symbol *items;
+  Extern *items;
   size_t count;
   size_t capacity;
-} SymbolTable;
+} ExternList;
 
-bool compile_file(stb_lexer *l, const char *filename, SymbolTable *syms);
-void destroy_symtable(SymbolTable *syms);
+typedef struct {
+  char *name;
+  OpList fn_body;
+} Fn;
+
+typedef struct {
+  Fn *items;
+  size_t count;
+  size_t capacity;
+} FnList;
+
+typedef struct {
+  FnList fn_list;
+  ExternList externs;
+  String_Builder str_lits;
+} Program;
+
+bool compile_file(stb_lexer *l, const char *filename, Program *grog);
+void destroy_program(Program *prog);
 
 #endif // MCC_PASER_H
