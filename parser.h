@@ -9,6 +9,7 @@
 typedef enum {
   ARG_NONE,
   ARG_NAME,     // 暂时只能以名称的引用的参数，作为编译时的占位符
+  ARG_VAR_LOC,
   ARG_LIT_INT,
   ARG_LIT_STR,
 } ArgKind;
@@ -31,6 +32,7 @@ typedef struct {
 typedef enum {
   OP_INVOKE,
   OP_RETURN,
+  OP_SET_VAR,
 } OpKind;
 
 typedef struct {
@@ -42,6 +44,10 @@ typedef struct {
     };
     struct {
       Arg ret_val;
+    };
+    struct {
+      Arg var;
+      Arg val;
     };
   };
 } Op;
@@ -64,7 +70,18 @@ typedef struct {
 
 typedef struct {
   char *name;
+} Var;
+
+typedef struct {
+  Var *items;
+  size_t count;
+  size_t capacity;
+} VarList;
+
+typedef struct {
+  char *name;
   OpList fn_body;
+  VarList local;
 } Fn;
 
 typedef struct {

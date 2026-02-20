@@ -114,6 +114,9 @@ String_Builder gen_code_x64_linux(const Program *prog)
     sb_appendf(&sb, "%s:\n", fn->name);
     sb_appendf(&sb, "    pushq %%rbp\n");
     sb_appendf(&sb, "    movq  %%rsp, %%rbp\n");
+    if (fn->local.count != 0) {
+      sb_appendf(&sb, "    subq $%ld, %%rsp\n", (fn->local.count + 1) * 8);
+    }
       
     da_foreach (Op, op, &fn->fn_body) {
       switch(op->kind) {
@@ -122,7 +125,7 @@ String_Builder gen_code_x64_linux(const Program *prog)
           static char *reg[] = {
             "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"
           };
-          switch(op->args.items[0].kind) {
+          switch(op->args.items[i].kind) {
           case ARG_LIT_INT:
             if ((size_t)i > ARRAY_LEN(reg)) {
               sb_appendf(&sb, "    pushq $%d\n", op->args.items[i].num_int);
@@ -136,6 +139,14 @@ String_Builder gen_code_x64_linux(const Program *prog)
               sb_appendf(&sb, "    pushq %%eax\n");
             } else {
               sb_appendf(&sb, "    leaq .S_%ld(%%rip), %s\n", op->args.items[i].label, reg[i]);
+            }
+            break;
+          case ARG_VAR_LOC:
+            if ((size_t)i > ARRAY_LEN(reg)) {
+              sb_appendf(&sb, "    movq -%ld(%%rbp), %%rax\n", op->args.items[i].label * 8);
+              sb_appendf(&sb, "    pushq %%rax\n");
+            } else {
+              sb_appendf(&sb, "    movq -%ld(%%rbp), %s\n", op->args.items[i].label * 8, reg[i]);
             }
             break;
           default: UNREACHABLE("arg");
@@ -156,12 +167,27 @@ String_Builder gen_code_x64_linux(const Program *prog)
         case ARG_LIT_INT:
           sb_appendf(&sb, "    movl $%d, %%eax\n", op->ret_val.num_int);
           break;
+        case ARG_VAR_LOC:
+          sb_appendf(&sb, "    movl -%ld(%%rbp), %%eax\n", op->ret_val.label * 8);
+          break;
         default: UNREACHABLE("arg");
         }
+        
         sb_appendf(&sb, "    leave\n");
         sb_appendf(&sb, "    ret\n");
         break;
-      default:
+      case OP_SET_VAR: {
+        assert(op->var.kind == ARG_VAR_LOC);
+
+        size_t label = op->var.label;
+        switch(op->val.kind) {
+        case ARG_LIT_INT:
+          sb_appendf(&sb, "    movl $%d, -%ld(%%rbp)\n", op->val.num_int, label * 8);
+          break;
+        default: UNREACHABLE("arg");
+        }
+        break;
+      } default:
         UNREACHABLE("op");
       }
     }

@@ -215,14 +215,28 @@ size_t compile_strlit(Program *prog, char *str)
   return str_count;
 }
 
-bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Arg *arg)
+bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Fn *fn, Arg *arg)
 {
   UNUSED(prog);
   assert(l->token != CLEX_eof);
+  
   switch (l->token) {
   case CLEX_id:
-    arg->kind = ARG_NAME;
-    arg->name = strdup(l->string);
+    size_t label = 0;
+    while (label < fn->local.count) {
+      if (strcmp(l->string, fn->local.items[label].name) == 0) {
+        break;
+      }
+      label += 1;
+    }
+
+    if (label < fn->local.count) {
+      arg->kind = ARG_VAR_LOC;
+      arg->label = label + 1;
+    } else {
+      arg->kind = ARG_NAME;
+      arg->name = strdup(l->string);
+    }
     break;
   case CLEX_dqstring:
     arg->kind = ARG_LIT_STR;
@@ -249,10 +263,10 @@ bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Arg *arg)
   return true;
 }
 
-bool compile_expr(stb_lexer *l, const char *filename, Program *prog, OpList *fn_body)
+bool compile_statement(stb_lexer *l, const char *filename, Program *prog, Fn *fn)
 {
   Arg arg;
-  if (!compile_arg(l, filename, prog, &arg)) return false;
+  if (!compile_arg(l, filename, prog, fn, &arg)) return false;
   if (!prefetch_not_none(l, filename)) return false;
 
   if (l->token == '(') {
@@ -260,7 +274,7 @@ bool compile_expr(stb_lexer *l, const char *filename, Program *prog, OpList *fn_
     
     if (!prefetch_not_none(l, filename)) return false;
     while (l->token != ')') {
-      if (!compile_arg(l, filename, prog, &arg)) return false;
+      if (!compile_arg(l, filename, prog, fn, &arg)) return false;
       if (!prefetch_not_none(l, filename)) return false;
       da_append(&invoke.args, arg);
           
@@ -278,7 +292,23 @@ bool compile_expr(stb_lexer *l, const char *filename, Program *prog, OpList *fn_
       }
     }
     
-    da_append(fn_body, invoke);
+    da_append(&fn->fn_body, invoke);
+  } else if (l->token == '=') {
+    if (arg.kind != ARG_VAR_LOC) {
+      pcompile_info(l, filename, "error: try to assign to an rvalue\n");
+      return false;
+    };
+    
+    Arg val;
+    if (!prefetch_not_none(l, filename)) return false;
+    if (!compile_arg(l, filename, prog, fn, &val)) return false;
+    
+    Op set_var = {
+      .kind = OP_SET_VAR,
+      .var = arg,
+      .val = val,
+    };
+    da_append(&fn->fn_body, set_var);
   } else {
     UNREACHABLE(token_name(l->token));
   }
@@ -286,7 +316,7 @@ bool compile_expr(stb_lexer *l, const char *filename, Program *prog, OpList *fn_
   return true;
 }
 
-bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, OpList *fn_body) {
+bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, Fn *fn) {
   assert(l->token == '{');
 
   bool returned = false;
@@ -297,20 +327,22 @@ bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, OpList *
     } else if (l->token == CLEX_id && strcmp(l->string, "return") == 0) {
       Op ret = { .kind = OP_RETURN };
       if (!prefetch_not_none(l, filename)) return false;
-      if (!compile_arg(l, filename, prog, &ret.ret_val)) return false;
-      da_append(fn_body, ret);
+      if (!compile_arg(l, filename, prog, fn, &ret.ret_val)) return false;
+      da_append(&fn->fn_body, ret);
       returned = true;
     } else if (l->token == CLEX_id && strcmp(l->string, "var") == 0) {
-      TODO("var");
+      if (!prefetch_expect_token(l, filename, CLEX_id)) return false;
+      Var var = { .name = strdup(l->string) };
+      da_append(&fn->local, var);
     } else {
-      if (!compile_expr(l, filename, prog, fn_body)) return false;
+      if (!compile_statement(l, filename, prog, fn)) return false;
     }
     if (!prefetch_not_none(l, filename)) return false;
   }
 
   if (!returned) {
     Op ret = { .kind = OP_RETURN };
-    da_append(fn_body, ret);
+    da_append(&fn->fn_body, ret);
   }
 
   return true;
@@ -326,22 +358,20 @@ bool compile_function(stb_lexer *l, const char *filename, Program *prog)
     pcompile_info(l, filename, "error: symbol %s redefined\n", l->string);
     return false;
   }
-  char *name = strdup(l->string);
+
+  Fn fn = {
+    .name = strdup(l->string),
+  };
   
   if (!prefetch_expect_token(l, filename, '(')) return false;
   if (!prefetch_expect_token(l, filename, ')')) return false;
   
   if (!prefetch_expect_token(l, filename, '{')) return false;
 
-  OpList fn_body = {0};
-  if (!compile_fn_body(l, filename, prog, &fn_body)) return false;
+  if (!compile_fn_body(l, filename, prog, &fn)) return false;
   
   if (!expect_token(l, filename, '}')) return false;
 
-  Fn fn = {
-    .name = name,
-    .fn_body = fn_body,
-  };
   da_append(&prog->fn_list, fn);
 
   return true;
@@ -390,6 +420,7 @@ void destroy_arg(Arg *arg)
   switch(arg->kind) {
   case ARG_NONE: break;
   case ARG_NAME: free(arg->name); break;
+  case ARG_VAR_LOC: break;
   case ARG_LIT_INT: break;
   case ARG_LIT_STR: break;
   default: UNREACHABLE("destroy arg");
@@ -406,6 +437,10 @@ void destroy_op(Op *op)
     }
     break;
   case OP_RETURN: destroy_arg(&op->ret_val); break;
+  case OP_SET_VAR:
+    destroy_arg(&op->var);
+    destroy_arg(&op->val);
+    break;
   default: UNREACHABLE("destroy op");
   }
 }
@@ -418,6 +453,11 @@ void destroy_fn_list(FnList *fn_list)
       destroy_op(op);
     }
     da_free(fn->fn_body);
+    
+    da_foreach (Var, var, &fn->local) {
+      free(var->name);
+    }
+    da_free(fn->local);
   }
   da_free(*fn_list);
 }
