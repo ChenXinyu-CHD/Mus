@@ -250,7 +250,7 @@ void usage(FILE *stream)
   fprintf(stream, "OPTIONS:\n");
 }
 
-bool parse_args(int argc, char **argv)
+bool parse_mcc_args(int argc, char **argv)
 {
   mcc_args.program = argv[0];
   mcc_args.target  = TARGET_IR;
@@ -311,7 +311,7 @@ bool parse_args(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-  if (!parse_args(argc, argv)) {
+  if (!parse_mcc_args(argc, argv)) {
     exit(1);
   }  
   
