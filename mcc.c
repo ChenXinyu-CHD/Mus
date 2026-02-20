@@ -12,14 +12,40 @@
 #define LEXER_BUFFER_SIZE 1<<20
 static char lexer_buffer[LEXER_BUFFER_SIZE];
 
+void append_str_lit(String_Builder *sb, char *str)
+{
+  da_append(sb, '"');
+  for (char *it = str; *it != '\0'; ++it) {
+    switch(*it) {
+    case '\n': sb_appendf(sb, "\\n");  break;
+    case '\b': sb_appendf(sb, "\\b");  break;
+    case '\t': sb_appendf(sb, "\\t");  break;
+    case '\r': sb_appendf(sb, "\\r");  break;
+    case '\v': sb_appendf(sb, "\\v");  break;
+    case '\'': sb_appendf(sb, "'");    break;
+    case '\"': sb_appendf(sb, "\\\""); break;
+    case '\a': sb_appendf(sb, "\\a");  break;
+    default: da_append(sb, *it);
+    }
+  }
+  
+  da_append(sb, '"');
+}
+
 void gen_arg_ir(String_Builder *sb, Arg arg)
 {
   switch(arg.kind) {
   case ARG_NAME:
     sb_appendf(sb, arg.name);
     break;
+  case ARG_VAR_LOC:
+    sb_appendf(sb, "%%local[%ld]", arg.label);
+    break;
   case ARG_LIT_INT:
     sb_appendf(sb, "%d", arg.num_int);
+    break;
+  case ARG_LIT_STR:
+    sb_appendf(sb, ".str_lits[%ld]", arg.label);
     break;
   default: UNREACHABLE("arg");
   }
@@ -33,8 +59,16 @@ String_Builder gen_code_ir(const Program *prog)
   da_foreach (Extern, ext, &prog->externs) {
     sb_appendf(&sb, " %s", ext->name);
   }
-
   sb_appendf(&sb, "\n\n");
+  
+  sb_appendf(&sb, ".str_lits:\n");
+  for (size_t i = 0; i < prog->str_lits.count; ++i) {
+    sb_appendf(&sb, "    .%ld: ", i);
+    append_str_lit(&sb, prog->str_lits.items[i]);
+    sb_append(&sb, '\n');
+  }
+
+  sb_appendf(&sb, "\n");
   
   da_foreach (Fn, fn, &prog->fn_list) {
     sb_appendf(&sb, "%s:\n", fn->name);
@@ -56,6 +90,13 @@ String_Builder gen_code_ir(const Program *prog)
         }
         sb_append(&sb, '\n');
         break;
+      case OP_SET_VAR:
+        sb_appendf(&sb, "    set ");
+        gen_arg_ir(&sb, op->var);
+        sb_appendf(&sb, " = ");
+        gen_arg_ir(&sb, op->val);
+        sb_append(&sb, '\n');
+        break;
       default:
         UNREACHABLE("op");
       }
@@ -72,26 +113,6 @@ bool build_ir(const char *filename, const Program *prog)
   da_free(code);
 
   return success;
-}
-
-void append_str_lit(String_Builder *sb, char *str)
-{
-  da_append(sb, '"');
-  for (char *it = str; *it != '\0'; ++it) {
-    switch(*it) {
-    case '\n': sb_appendf(sb, "\\n");  break;
-    case '\b': sb_appendf(sb, "\\b");  break;
-    case '\t': sb_appendf(sb, "\\t");  break;
-    case '\r': sb_appendf(sb, "\\r");  break;
-    case '\v': sb_appendf(sb, "\\v");  break;
-    case '\'': sb_appendf(sb, "'");    break;
-    case '\"': sb_appendf(sb, "\\\""); break;
-    case '\a': sb_appendf(sb, "\\a");  break;
-    default: da_append(sb, *it);
-    }
-  }
-  
-  da_append(sb, '"');
 }
 
 String_Builder gen_code_x64_linux(const Program *prog)
