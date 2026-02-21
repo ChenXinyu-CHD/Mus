@@ -215,6 +215,20 @@ size_t compile_strlit(Program *prog, char *str)
   return str_count;
 }
 
+bool get_local_var(const VarList *var_list, Arg* arg, const char *name)
+{
+  size_t label = 0;
+  while (label < var_list->count) {
+    if (strcmp(name, var_list->items[label].name) == 0) {
+      arg->kind = ARG_VAR_LOC;
+      arg->label = label + 1;
+      return true;
+    }
+    label += 1;
+  }
+  return false;
+}
+
 bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Fn *fn, Arg *arg)
 {
   UNUSED(prog);
@@ -222,18 +236,7 @@ bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Fn *fn, Arg 
   
   switch (l->token) {
   case CLEX_id:
-    size_t label = 0;
-    while (label < fn->local.count) {
-      if (strcmp(l->string, fn->local.items[label].name) == 0) {
-        break;
-      }
-      label += 1;
-    }
-
-    if (label < fn->local.count) {
-      arg->kind = ARG_VAR_LOC;
-      arg->label = label + 1;
-    } else {
+    if (!get_local_var(&fn->local, arg, l->string)) {
       arg->kind = ARG_NAME;
       arg->name = strdup(l->string);
     }
@@ -323,21 +326,37 @@ bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, Fn *fn) 
   if (!prefetch_not_none(l, filename)) return false;
   while (l->token != '}') {
     if (l->token == ';') {
-      // nothing to do;
+      if (!prefetch_not_none(l, filename)) return false;
     } else if (l->token == CLEX_id && strcmp(l->string, "return") == 0) {
       Op ret = { .kind = OP_RETURN };
       if (!prefetch_not_none(l, filename)) return false;
       if (!compile_arg(l, filename, prog, fn, &ret.ret_val)) return false;
       da_append(&fn->fn_body, ret);
       returned = true;
+      if (!prefetch_not_none(l, filename)) return false;
     } else if (l->token == CLEX_id && strcmp(l->string, "var") == 0) {
       if (!prefetch_expect_token(l, filename, CLEX_id)) return false;
       Var var = { .name = strdup(l->string) };
       da_append(&fn->local, var);
+      if (!prefetch_not_none(l, filename)) return false;
+
+      if (l->token == '=') {
+        Arg val;
+        if (!prefetch_not_none(l, filename)) return false;
+        if (!compile_arg(l, filename, prog, fn, &val)) return false;
+    
+        Op set_var = {
+          .kind = OP_SET_VAR,
+          .val = val,
+        };
+        get_local_var(&fn->local, &set_var.var, var.name);
+        da_append(&fn->fn_body, set_var);
+        if (!prefetch_not_none(l, filename)) return false;
+      }
     } else {
       if (!compile_statement(l, filename, prog, fn)) return false;
+      if (!prefetch_not_none(l, filename)) return false;
     }
-    if (!prefetch_not_none(l, filename)) return false;
   }
 
   if (!returned) {

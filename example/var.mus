@@ -1,0 +1,16 @@
+extern fn printf()
+extern fn putchar()
+
+fn main()
+{
+  var v1 = 0
+  var v2
+
+  printf("%ld, %ld\n", v1, v2);
+
+  v2 = v1
+  v1 = 1
+  printf("%ld, %ld\n", v1, v2);
+  
+  return 0
+}

@@ -119,6 +119,13 @@ bool build_ir(const char *filename, const Program *prog)
   return success;
 }
 
+size_t ceil16(size_t x) {
+  if (x % 16 > 0) {
+    x += 16 - (x % 16);
+  }
+  return x;
+}
+
 String_Builder gen_code_x64_linux(const Program *prog)
 {
   String_Builder sb = {0};
@@ -140,7 +147,7 @@ String_Builder gen_code_x64_linux(const Program *prog)
     sb_appendf(&sb, "    pushq %%rbp\n");
     sb_appendf(&sb, "    movq  %%rsp, %%rbp\n");
     if (fn->local.count != 0) {
-      sb_appendf(&sb, "    subq $%ld, %%rsp\n", (fn->local.count + 1) * 8);
+      sb_appendf(&sb, "    subq $%ld, %%rsp\n", ceil16(fn->local.count * 8));
     }
       
     da_foreach (Op, op, &fn->fn_body) {
@@ -155,13 +162,13 @@ String_Builder gen_code_x64_linux(const Program *prog)
             if ((size_t)i > ARRAY_LEN(reg)) {
               sb_appendf(&sb, "    pushq $%d\n", op->args.items[i].num_int);
             } else {
-              sb_appendf(&sb, "    movl $%d, %s\n", op->args.items[i].num_int, reg[i]);
+              sb_appendf(&sb, "    movq $%d, %s\n", op->args.items[i].num_int, reg[i]);
             }
             break;
           case ARG_LIT_STR:
             if ((size_t)i > ARRAY_LEN(reg)) {
               sb_appendf(&sb, "    leaq .S_%ld(%%rip), %%rax\n", op->args.items[i].label);
-              sb_appendf(&sb, "    pushq %%eax\n");
+              sb_appendf(&sb, "    pushq %%rax\n");
             } else {
               sb_appendf(&sb, "    leaq .S_%ld(%%rip), %s\n", op->args.items[i].label, reg[i]);
             }
@@ -190,10 +197,10 @@ String_Builder gen_code_x64_linux(const Program *prog)
         switch(op->ret_val.kind) {
         case ARG_NONE: break;
         case ARG_LIT_INT:
-          sb_appendf(&sb, "    movl $%d, %%eax\n", op->ret_val.num_int);
+          sb_appendf(&sb, "    movq $%d, %%rax\n", op->ret_val.num_int);
           break;
         case ARG_VAR_LOC:
-          sb_appendf(&sb, "    movl -%ld(%%rbp), %%eax\n", op->ret_val.label * 8);
+          sb_appendf(&sb, "    movq -%ld(%%rbp), %%rax\n", op->ret_val.label * 8);
           break;
         default: UNREACHABLE("arg");
         }
@@ -207,7 +214,11 @@ String_Builder gen_code_x64_linux(const Program *prog)
         size_t label = op->var.label;
         switch(op->val.kind) {
         case ARG_LIT_INT:
-          sb_appendf(&sb, "    movl $%d, -%ld(%%rbp)\n", op->val.num_int, label * 8);
+          sb_appendf(&sb, "    movq $%d, -%ld(%%rbp)\n", op->val.num_int, label * 8);
+          break;
+        case ARG_VAR_LOC:
+          sb_appendf(&sb, "    movq -%ld(%%rbp), %%rax\n", op->val.label * 8);
+          sb_appendf(&sb, "    movq %%rax, -%ld(%%rbp)\n", label * 8);
           break;
         default: UNREACHABLE("arg");
         }
