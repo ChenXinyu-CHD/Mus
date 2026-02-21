@@ -6,6 +6,13 @@
 
 #include "stb_c_lexer.h"
 
+// nob.h uses this macro
+// but debian hurd do not have it
+// TODO: find out the real limit on PATH_MAX, and feed back to upstream
+#ifndef PATH_MAX
+#define PATH_MAX 2048
+#endif
+
 #define NOB_IMPLEMENTATION
 #include "nob.h"
 
@@ -262,9 +269,41 @@ bool build_x64_linux(const char *filename, const Program *prog)
   return result;
 }
 
+bool build_x64_hurd(const char *filename, const Program *prog)
+{
+  bool result;
+  size_t mark = temp_save();
+  
+  String_Builder code = gen_code_x64_linux(prog);
+  char *asm_file = temp_sprintf("%s.s", filename);
+  if (!write_entire_file(asm_file, code.items, code.count)) return_defer(false);
+  
+  char *obj_file = temp_sprintf("%s.o", filename);
+  Cmd cmd = {0};
+  cmd_append(&cmd, "as", "-o", obj_file, asm_file);
+  if(!cmd_run(&cmd)) return_defer(false);
+  
+  cmd.count = 0;
+  nob_cmd_append(&cmd, "ld", "-o", filename, obj_file,
+                 "/usr/lib/x86_64-gnu/crt1.o", "-lc",
+                 "--dynamic-linker", "/lib/ld-x86-64.so.1");
+  if(!cmd_run(&cmd)) return_defer(false);
+  
+  if (!write_entire_file(asm_file, code.items, code.count)) return_defer(false);
+
+  return_defer(true);
+
+ defer:
+  temp_rewind(mark);
+  da_free(code);
+  if (cmd.capacity > 0) cmd_free(cmd);
+  return result;
+}
+
 typedef enum {
   TARGET_IR,
   TARGET_X64_LINUX,
+  TARGET_X64_HURD,
 } Target;
 
 static const struct {
@@ -273,6 +312,7 @@ static const struct {
 } TARGETS[] = {
   { "ir",        TARGET_IR        },
   { "x64_linux", TARGET_X64_LINUX },
+  { "x64_hurd",  TARGET_X64_HURD  },
 };
 
 static struct {
@@ -380,6 +420,9 @@ int main(int argc, char **argv)
     break;
   case TARGET_X64_LINUX:
     if (!build_x64_linux(mcc_args.outfile, &prog)) return_defer(1);
+    break;
+  case TARGET_X64_HURD:
+    if (!build_x64_hurd(mcc_args.outfile, &prog)) return_defer(1);
     break;
   default: UNREACHABLE("target");
   }
