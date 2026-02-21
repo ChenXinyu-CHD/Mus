@@ -108,10 +108,14 @@ String_Builder gen_code_ir(const Program *prog)
 
 bool build_ir(const char *filename, const Program *prog)
 {
+  size_t mark = temp_save();
+  
   String_Builder code = gen_code_ir(prog);
+  filename = temp_sprintf("%s.ir", filename);
   bool success = write_entire_file(filename, code.items, code.count);
   da_free(code);
 
+  temp_rewind(mark);
   return success;
 }
 
@@ -219,6 +223,7 @@ String_Builder gen_code_x64_linux(const Program *prog)
 bool build_x64_linux(const char *filename, const Program *prog)
 {
   bool result;
+  size_t mark = temp_save();
   
   String_Builder code = gen_code_x64_linux(prog);
   char *asm_file = temp_sprintf("%s.s", filename);
@@ -240,6 +245,7 @@ bool build_x64_linux(const char *filename, const Program *prog)
   return_defer(true);
 
  defer:
+  temp_rewind(mark);
   da_free(code);
   if (cmd.capacity > 0) cmd_free(cmd);
   return result;
