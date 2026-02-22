@@ -1,11 +1,11 @@
 extern fn printf();
 
-fn hello()
+fn hello(): void
 {
   printf("hello, %s\n", "world");
 }
 
-fn main()
+fn main(): i64
 {
   hello()
   return 0

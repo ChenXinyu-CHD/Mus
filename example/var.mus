@@ -1,7 +1,6 @@
 extern fn printf()
-extern fn putchar()
 
-fn main()
+fn main(): i64
 {
   var v1 = 0
   var v2

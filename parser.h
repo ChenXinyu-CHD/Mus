@@ -7,6 +7,17 @@
 #include "stb_c_lexer.h"
 
 typedef enum {
+  TYPE_VOID,
+  TYPE_INT,
+  TYPE_UINT,
+} TypeKind;
+
+typedef struct {
+  TypeKind kind;
+  size_t size;
+} TypeExpr;
+
+typedef enum {
   ARG_NONE,
   ARG_NAME,     // 暂时只能以名称的引用的参数，作为编译时的占位符
   ARG_VAR_LOC,
@@ -80,6 +91,7 @@ typedef struct {
 
 typedef struct {
   char *name;
+  TypeExpr ret_type;
   OpList fn_body;
   VarList local;
 } Fn;

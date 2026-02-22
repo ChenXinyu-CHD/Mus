@@ -367,6 +367,41 @@ bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, Fn *fn) 
   return true;
 }
 
+bool compile_type_expr(stb_lexer *l, const char *filename, TypeExpr *type) {
+  // TODO: support more internal type and user defined types;
+  if (!expect_ids(l, filename, "void", 
+                  "i8", "i16", "i32", "i64",
+                  "u8", "u16", "u32", "u64")) { return false; }
+
+  if (strcmp(l->string, "void") == 0) {
+    type->kind = TYPE_VOID;
+    return true;
+  }
+    
+  switch(l->string[0]) {
+  case 'i': type->kind = TYPE_INT; break;
+  case 'u': type->kind = TYPE_UINT; break;
+  default: UNREACHABLE("l->string");
+  }
+  
+  size_t bitwide = 0;
+  char *it = l->string + 1;
+  while (*it != '\0') {
+    if (!isdigit(*it)) return false;
+    bitwide = bitwide * 10 + *it++ - '0';
+  }
+
+  switch(bitwide) {
+  case 8:  type->size = 1; break;
+  case 16: type->size = 2; break;
+  case 32: type->size = 4; break;
+  case 64: type->size = 8; break;
+  default: UNREACHABLE("Unsipported size");
+  }
+
+  return true;
+}
+
 bool compile_function(stb_lexer *l, const char *filename, Program *prog)
 {
   assert(expect_token(l, filename, CLEX_id) && strcmp(l->string, "fn") == 0);
@@ -384,6 +419,10 @@ bool compile_function(stb_lexer *l, const char *filename, Program *prog)
   
   if (!prefetch_expect_token(l, filename, '(')) return false;
   if (!prefetch_expect_token(l, filename, ')')) return false;
+  
+  if (!prefetch_expect_token(l, filename, ':')) return false;
+  if (!prefetch_not_none(l, filename)) return false;
+  if (!compile_type_expr(l, filename, &fn.ret_type)) return false;
   
   if (!prefetch_expect_token(l, filename, '{')) return false;
 
