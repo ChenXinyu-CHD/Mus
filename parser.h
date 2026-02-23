@@ -81,6 +81,7 @@ typedef struct {
 
 typedef struct {
   char *name;
+  TypeExpr type;
 } Var;
 
 typedef struct {

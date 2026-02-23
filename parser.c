@@ -319,54 +319,6 @@ bool compile_statement(stb_lexer *l, const char *filename, Program *prog, Fn *fn
   return true;
 }
 
-bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, Fn *fn) {
-  assert(l->token == '{');
-
-  bool returned = false;
-  if (!prefetch_not_none(l, filename)) return false;
-  while (l->token != '}') {
-    if (l->token == ';') {
-      if (!prefetch_not_none(l, filename)) return false;
-    } else if (l->token == CLEX_id && strcmp(l->string, "return") == 0) {
-      Op ret = { .kind = OP_RETURN };
-      if (!prefetch_not_none(l, filename)) return false;
-      if (!compile_arg(l, filename, prog, fn, &ret.ret_val)) return false;
-      da_append(&fn->fn_body, ret);
-      returned = true;
-      if (!prefetch_not_none(l, filename)) return false;
-    } else if (l->token == CLEX_id && strcmp(l->string, "var") == 0) {
-      if (!prefetch_expect_token(l, filename, CLEX_id)) return false;
-      Var var = { .name = strdup(l->string) };
-      da_append(&fn->local, var);
-      if (!prefetch_not_none(l, filename)) return false;
-
-      if (l->token == '=') {
-        Arg val;
-        if (!prefetch_not_none(l, filename)) return false;
-        if (!compile_arg(l, filename, prog, fn, &val)) return false;
-    
-        Op set_var = {
-          .kind = OP_SET_VAR,
-          .val = val,
-        };
-        get_local_var(&fn->local, &set_var.var, var.name);
-        da_append(&fn->fn_body, set_var);
-        if (!prefetch_not_none(l, filename)) return false;
-      }
-    } else {
-      if (!compile_statement(l, filename, prog, fn)) return false;
-      if (!prefetch_not_none(l, filename)) return false;
-    }
-  }
-
-  if (!returned) {
-    Op ret = { .kind = OP_RETURN };
-    da_append(&fn->fn_body, ret);
-  }
-
-  return true;
-}
-
 bool compile_type_expr(stb_lexer *l, const char *filename, TypeExpr *type) {
   // TODO: support more internal type and user defined types;
   if (!expect_ids(l, filename, "void", 
@@ -397,6 +349,87 @@ bool compile_type_expr(stb_lexer *l, const char *filename, TypeExpr *type) {
   case 32: type->size = 4; break;
   case 64: type->size = 8; break;
   default: UNREACHABLE("Unsipported size");
+  }
+
+  return true;
+}
+
+bool compile_local_var(stb_lexer *l, const char *filename, Program *prog, Fn *fn)
+{
+  bool result;
+
+  Var var = { 0 };
+  if (!prefetch_expect_token(l, filename, CLEX_id)) return_defer(false);
+  var.name = strdup(l->string);
+  if (!prefetch_not_none(l, filename)) return_defer(false);
+  da_append(&fn->local, var);
+
+  if (l->token == ':') {
+    if (!prefetch_not_none(l, filename)) return_defer(false);
+    if (!compile_type_expr(l, filename, &var.type)) return_defer(false);
+    if (var.type.kind == TYPE_VOID) {
+      pcompile_info(l, filename, "error: the type of a local variable cannot be \"void\"");
+      return_defer(false);
+    }
+    if (!prefetch_not_none(l, filename)) return_defer(false);
+  }
+  
+  if (l->token == '=') {
+    Arg val;
+    if (!prefetch_not_none(l, filename)) return_defer(false);
+    if (!compile_arg(l, filename, prog, fn, &val)) return_defer(false);
+    
+    Op set_var = {
+      .kind = OP_SET_VAR,
+      .val = val,
+    };
+    get_local_var(&fn->local, &set_var.var, var.name);
+    da_append(&fn->fn_body, set_var);
+    if (!prefetch_not_none(l, filename)) return_defer(false);
+
+    switch (val.kind) {
+    case ARG_LIT_INT: var.type = (TypeExpr) {
+        .kind = TYPE_INT,
+        .size = 4,
+      };
+      break;
+    default: TODO("auto detect more type during variable declaration");
+    }
+  }
+  
+  return_defer(true);
+  
+ defer:
+  if (!result && var.name != NULL) free(var.name);
+  return result;
+}
+
+bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, Fn *fn) {
+  assert(l->token == '{');
+
+  bool returned = false;
+  if (!prefetch_not_none(l, filename)) return false;
+  while (l->token != '}') {
+    if (l->token == ';') {
+      if (!prefetch_not_none(l, filename)) return false;
+    } else if (l->token == CLEX_id && strcmp(l->string, "return") == 0) {
+      Op ret = { .kind = OP_RETURN };
+      if (!prefetch_not_none(l, filename)) return false;
+      if (!compile_arg(l, filename, prog, fn, &ret.ret_val)) return false;
+      da_append(&fn->fn_body, ret);
+      returned = true;
+      if (!prefetch_not_none(l, filename)) return false;
+    } else if (l->token == CLEX_id && strcmp(l->string, "var") == 0) {
+      if (!compile_local_var(l, filename, prog, fn)) return false;
+    } else {
+      if (!compile_statement(l, filename, prog, fn)) return false;
+      if (!prefetch_not_none(l, filename)) return false;
+    }
+  }
+
+  if (!returned) {
+    Op ret = { .kind = OP_RETURN };
+    da_append(&fn->fn_body, ret);
   }
 
   return true;
