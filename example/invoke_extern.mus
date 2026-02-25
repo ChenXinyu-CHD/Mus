@@ -1,4 +1,4 @@
-extern fn putchar(): i64
+extern putchar: fn(i64): i64
 
 fn main(): i64
 {
