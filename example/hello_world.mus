@@ -1,4 +1,4 @@
-extern fn printf();
+extern fn printf(&i8, ...): i32;
 
 fn hello(): void
 {

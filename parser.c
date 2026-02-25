@@ -319,7 +319,7 @@ bool compile_statement(stb_lexer *l, const char *filename, Program *prog, Fn *fn
   return true;
 }
 
-bool compile_type_expr(stb_lexer *l, const char *filename, TypeExpr *type) {
+bool compile_internal_type(stb_lexer *l, const char *filename, TypeExpr *type) {
   // TODO: support more internal type and user defined types;
   if (!expect_ids(l, filename, "void", 
                   "i8", "i16", "i32", "i64",
@@ -329,7 +329,7 @@ bool compile_type_expr(stb_lexer *l, const char *filename, TypeExpr *type) {
     type->kind = TYPE_VOID;
     return true;
   }
-    
+  
   switch(l->string[0]) {
   case 'i': type->kind = TYPE_INT; break;
   case 'u': type->kind = TYPE_UINT; break;
@@ -352,6 +352,34 @@ bool compile_type_expr(stb_lexer *l, const char *filename, TypeExpr *type) {
   }
 
   return true;
+}
+
+bool compile_type_expr(stb_lexer *l, const char *filename, TypeExpr *type)
+{
+  if (l->token == CLEX_id) {
+    return compile_internal_type(l, filename, type);
+  }
+
+  switch (l->token) {
+  case CLEX_id: {
+    return compile_internal_type(l, filename, type);
+  }
+  case '&': {
+    if (!prefetch_not_none(l, filename)) return false;
+    TypeExpr ref_type;
+    if (!compile_type_expr(l, filename, &ref_type)) return false;
+
+    type->kind = TYPE_PTR;
+    type->ref_type = malloc(sizeof(TypeExpr));
+    *type->ref_type = ref_type;
+    return true;
+  }
+  default:
+    size_t mark = temp_save(); {
+      pcompile_info(l, filename, "error: expected a type but got %s\n", token_name(l->token));
+    } temp_rewind(mark);
+    return false;
+  }
 }
 
 bool compile_local_var(stb_lexer *l, const char *filename, Program *prog, Fn *fn)
@@ -468,6 +496,94 @@ bool compile_function(stb_lexer *l, const char *filename, Program *prog)
   return true;
 }
 
+void destroy_type_expr(TypeExpr* type)
+{
+  if (type == NULL) return;
+  
+  switch(type->kind) {
+  case TYPE_INT: break;
+  case TYPE_UINT: break;
+  case TYPE_VOID: break;
+  case TYPE_PTR:
+    destroy_type_expr(type->ref_type);
+    if (type->ref_type != NULL) free(type->ref_type);
+    break;
+  case TYPE_FN: {
+    destroy_type_expr(type->ret_type);
+    if (type->ret_type != NULL) free(type->ret_type);
+    
+    da_foreach (TypeExpr, arg, &type->arg_types) {
+      destroy_type_expr(arg);
+    }
+    if (type->arg_types.count > 0) da_free(type->arg_types);
+  } break;
+  default: UNREACHABLE("type");
+  }
+}
+
+void destroy_ext(Extern *ext)
+{
+  if (ext->name != NULL) free(ext->name);
+  destroy_type_expr(&ext->type);
+}
+
+bool compile_extern_fn(stb_lexer *l, const char *filename, Program *prog)
+{
+  bool result;
+  
+  Extern ext = {
+    .type = (TypeExpr){
+      .kind = TYPE_FN,
+    },
+  };
+
+  if (!prefetch_expect_token(l, filename, CLEX_id)) return_defer(false);
+
+  if (symbol_defined(prog, l->string)) {
+    pcompile_info(l, filename, "error: symbol %s redefined", l->string);
+    return_defer(false);
+  }
+
+  ext.name = strdup(l->string);
+        
+  if (!prefetch_expect_token(l, filename, '(')) return_defer(false);
+
+  if (!prefetch_not_none(l, filename)) return_defer(false);
+  while (l->token != ')') {
+    if (l->token == '.') { // parse "..." for va_args
+      if (!prefetch_expect_token(l, filename, '.')) return false;
+      if (!prefetch_expect_token(l, filename, '.')) return false;
+      // va_args must be the last argument
+      if (!prefetch_expect_token(l, filename, ')')) return false;
+      ext.type.va_args = true;
+    } else {
+      // failures in this loop would not cause memory leak;
+      TypeExpr arg_type = {0};
+      // memory would clean up in the compile_type_expr;
+      if (!compile_type_expr(l, filename, &arg_type)) return_defer(false);
+      da_append(&ext.type.arg_types, arg_type);
+      // from here, the ownership has moved to ext.type.arg_types;
+      // thus, they will be clean up together with ext.type.arg_types;
+      if (!prefetch_expect_tokens(l, filename, ',', ')')) return_defer(false);
+      if (l->token == ',') {
+        if (!prefetch_not_none(l, filename)) return_defer(false);
+      }
+    }
+  }
+
+  if (!prefetch_expect_token(l, filename, ':')) return_defer(false);
+  if (!prefetch_not_none(l, filename)) return_defer(false);
+  ext.type.ret_type = calloc(1, sizeof(TypeExpr));
+  if (!compile_type_expr(l, filename, ext.type.ret_type)) return_defer(false);
+
+  da_append(&prog->externs, ext);
+  return_defer(true);
+
+ defer:
+  if (!result) destroy_ext(&ext);
+  return result;
+}
+
 bool compile_file(stb_lexer *l, const char *filename, Program *prog)
 {
   while (next_token(l, filename)) {
@@ -484,17 +600,7 @@ bool compile_file(stb_lexer *l, const char *filename, Program *prog)
       if (!expect_ids(l, filename, "fn")) return false;
 
       if (strcmp(l->string, "fn") == 0) {
-        if (!prefetch_expect_token(l, filename, CLEX_id)) return false;
-
-        if (symbol_defined(prog, l->string)) {
-          pcompile_info(l, filename, "error: symbol %s redefined", l->string);
-        }
-        Extern ext = { .name = strdup(l->string) };
-        
-        if (!prefetch_expect_token(l, filename, '(')) return false;
-        if (!prefetch_expect_token(l, filename, ')')) return false;
-
-        da_append(&prog->externs, ext);
+        if (!compile_extern_fn(l, filename, prog)) return false;
       } else {
         UNREACHABLE("compile_file");
       }
@@ -540,6 +646,8 @@ void destroy_fn_list(FnList *fn_list)
 {
   da_foreach (Fn, fn, fn_list) {
     free(fn->name);
+    destroy_type_expr(&fn->ret_type);
+    
     da_foreach (Op, op, &fn->fn_body) {
       destroy_op(op);
     }
@@ -547,6 +655,7 @@ void destroy_fn_list(FnList *fn_list)
     
     da_foreach (Var, var, &fn->local) {
       free(var->name);
+      destroy_type_expr(&var->type);
     }
     da_free(fn->local);
   }
@@ -557,6 +666,7 @@ void destroy_program(Program *prog)
 {
   da_foreach (Extern, ext, &prog->externs) {
     free(ext->name);
+    destroy_type_expr(&ext->type);
   }
   da_free(prog->externs);
 

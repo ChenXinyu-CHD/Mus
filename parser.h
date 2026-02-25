@@ -10,11 +10,30 @@ typedef enum {
   TYPE_VOID,
   TYPE_INT,
   TYPE_UINT,
+  TYPE_FN,
+  TYPE_PTR,
 } TypeKind;
 
+struct TypeExpr;
+
 typedef struct {
+  struct TypeExpr *items;
+  size_t count;
+  size_t capacity;
+} TypeList;
+
+typedef struct TypeExpr {
   TypeKind kind;
   size_t size;
+
+  union {
+    struct TypeExpr *ref_type;
+    struct {
+      struct TypeExpr *ret_type;
+      TypeList arg_types;
+      bool va_args;
+    };
+  };
 } TypeExpr;
 
 typedef enum {
@@ -71,6 +90,7 @@ typedef struct {
 
 typedef struct {
   char *name;
+  TypeExpr type;
 } Extern;
 
 typedef struct {
