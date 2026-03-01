@@ -181,11 +181,40 @@ bool expect_ids_(stb_lexer *l, const char *filename, ...)
   return false;
 }
 
+#define BASIC_TYPE_NAMES \
+  "i8",                  \
+  "i16",                 \
+  "i32",                 \
+  "i64",                 \
+  "i32",                 \
+  "u8",                  \
+  "u16",                 \
+  "u32",                 \
+  "u64",                 \
+  "u32",                 \
+  "void"
+
+static char *keywords[] = {
+  "extern",
+  "fn",
+  "return",
+  "var",
+  BASIC_TYPE_NAMES
+};
+
+bool is_keywords(const char *str)
+{
+  for (size_t i = 0; i < ARRAY_LEN(keywords); ++i) {
+    if (strcmp(str, keywords[i]) == 0) return true;
+  }
+
+  return false;
+}
+
 #define expect_ids(l, filename, ...)            \
   expect_ids_(l, filename, __VA_ARGS__, NULL)
 
-
-bool symbol_defined(Program *prog, char *name)
+bool global_symbol_defined(Program *prog, char *name)
 {
   for (size_t i = 0; i < prog->externs.count; ++i) {
     if (strcmp(prog->externs.items[i].name, name) == 0) {
@@ -346,9 +375,7 @@ void destroy_type_expr(TypeExpr* type)
 
 bool compile_internal_type(stb_lexer *l, const char *filename, TypeExpr *type) {
   // TODO: support more internal type and user defined types;
-  if (!expect_ids(l, filename, "void", 
-                  "i8", "i16", "i32", "i64",
-                  "u8", "u16", "u32", "u64")) { return false; }
+  if (!expect_ids(l, filename, BASIC_TYPE_NAMES)) { return false; }
 
   if (strcmp(l->string, "void") == 0) {
     type->kind = TYPE_VOID;
@@ -458,6 +485,10 @@ bool compile_local_var(stb_lexer *l, const char *filename, Program *prog, Fn *fn
 
   Var var = { 0 };
   if (!prefetch_expect_token(l, filename, CLEX_id)) return_defer(false);
+  if (is_keywords(l->string)) {
+    pcompile_info(l, filename, "error: expected an id, but got a keyword \"%s\"\n", l->string);
+    return_defer(false);
+  }
   var.name = strdup(l->string);
   if (!prefetch_not_none(l, filename)) return_defer(false);
   da_append(&fn->local, var);
@@ -539,8 +570,13 @@ bool compile_function(stb_lexer *l, const char *filename, Program *prog)
 
   if (!prefetch_expect_token(l, filename, CLEX_id)) return false;
 
-  if (symbol_defined(prog, l->string)) {
+  if (global_symbol_defined(prog, l->string)) {
     pcompile_info(l, filename, "error: symbol %s redefined\n", l->string);
+    return false;
+  }
+
+  if (is_keywords(l->string)) {
+    pcompile_info(l, filename, "error: expected an id, but got a keyword \"%s\"\n", l->string);
     return false;
   }
 
@@ -586,6 +622,14 @@ bool compile_file(stb_lexer *l, const char *filename, Program *prog)
     } else if (strcmp(l->string, "extern") == 0) {
       Extern ext = {0};
       if (!prefetch_expect_token(l, filename, CLEX_id)) return false;
+      if (global_symbol_defined(prog, l->string)) {
+        pcompile_info(l, filename, "error: symbol %s redefined\n", l->string);
+        return false;
+      }
+      if (is_keywords(l->string)) {
+        pcompile_info(l, filename, "error: expected an id, but got a keyword \"%s\"\n", l->string);
+        return false;
+      }
       ext.name = strdup(l->string);
       if (!prefetch_expect_token(l, filename, ':')) return false;
       if (!prefetch_not_none(l, filename)) return false;
