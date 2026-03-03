@@ -43,7 +43,7 @@ void gen_arg_ir(String_Builder *sb, Arg arg)
 {
   switch(arg.kind) {
   case ARG_NAME:
-    sb_appendf(sb, arg.name);
+    sb_appendf(sb, "%s", arg.name);
     break;
   case ARG_VAR_LOC:
     sb_appendf(sb, "%%local[%ld]", arg.label);
@@ -247,15 +247,8 @@ bool build_x64_linux(const char *filename, const Program *prog)
   char *asm_file = temp_sprintf("%s.s", filename);
   if (!write_entire_file(asm_file, code.items, code.count)) return_defer(false);
   
-  char *obj_file = temp_sprintf("%s.o", filename);
   Cmd cmd = {0};
-  cmd_append(&cmd, "as", "-o", obj_file, asm_file);
-  if(!cmd_run(&cmd)) return_defer(false);
-  
-  cmd.count = 0;
-  nob_cmd_append(&cmd, "ld", "-o", filename, obj_file,
-                 "/lib/crt1.o", "-lc",
-                 "--dynamic-linker", "/lib64/ld-linux-x86-64.so.2");
+  nob_cmd_append(&cmd, "cc", "-o", filename, asm_file);
   if(!cmd_run(&cmd)) return_defer(false);
   
   if (!write_entire_file(asm_file, code.items, code.count)) return_defer(false);
