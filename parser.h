@@ -7,6 +7,7 @@
 #include "stb_c_lexer.h"
 
 typedef enum {
+  TYPE_UNKNOWN,
   TYPE_VOID,
   TYPE_INT,
   TYPE_UINT,
@@ -39,6 +40,7 @@ typedef struct TypeExpr {
 typedef enum {
   ARG_NONE,
   ARG_NAME,     // 暂时只能以名称的引用的参数，作为编译时的占位符
+  ARG_GLOBAL,
   ARG_VAR_LOC,
   ARG_LIT_INT,
   ARG_LIT_STR,
@@ -46,8 +48,12 @@ typedef enum {
 
 typedef struct {
   ArgKind kind;
+  TypeExpr type;
   union {
-    char   *name;
+    struct {
+      char *name;
+      stb_lex_location loc;
+    };
     int    num_int;
     size_t label;
   };
@@ -89,32 +95,21 @@ typedef struct {
 } OpList;
 
 typedef struct {
+  bool external;
   char *name;
   TypeExpr type;
-} Extern;
+} Symbol;
 
 typedef struct {
-  Extern *items;
+  Symbol *items;
   size_t count;
   size_t capacity;
-} ExternList;
+} SymbolList;
 
 typedef struct {
   char *name;
-  TypeExpr type;
-} Var;
-
-typedef struct {
-  Var *items;
-  size_t count;
-  size_t capacity;
-} VarList;
-
-typedef struct {
-  char *name;
-  TypeExpr ret_type;
   OpList fn_body;
-  VarList local;
+  SymbolList local;
 } Fn;
 
 typedef struct {
@@ -124,8 +119,9 @@ typedef struct {
 } FnList;
 
 typedef struct {
+  const char *filename;
   FnList fn_list;
-  ExternList externs;
+  SymbolList global;
   struct {
     char **items;
     size_t count;

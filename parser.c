@@ -4,7 +4,7 @@
 #define STB_C_LEXER_IMPLEMENTATION
 #include "stb_c_lexer.h"
 
-char *token_name(long token)
+static char *token_name(long token)
 {
   switch (token) {
   case CLEX_id          : return temp_strdup("id");
@@ -48,7 +48,14 @@ char *token_name(long token)
   }
 }
 
-void vpcompile_info(stb_lexer* l, const char *filename, const char* fmt, va_list args)
+static stb_lex_location lex_location(stb_lexer *l)
+{
+  stb_lex_location loc = {0};
+  stb_c_lexer_get_location(l, l->where_lastchar, &loc);
+  return loc;
+}
+
+static void vpcompile_info(const char *filename, stb_lex_location loc, const char* fmt, va_list args)
 {
   size_t mark = temp_save(); {
     va_list ap;
@@ -56,64 +63,60 @@ void vpcompile_info(stb_lexer* l, const char *filename, const char* fmt, va_list
     char *msg = temp_vsprintf(fmt, ap);
     va_end(ap);
   
-    stb_lex_location loc = {0};
-    stb_c_lexer_get_location(l, l->where_lastchar, &loc);
     fprintf(stderr, "%s:%d:%d: %s",
             filename, loc.line_number, loc.line_offset, msg);
   } temp_rewind(mark);
 }
 
-void pcompile_info(stb_lexer* l, const char *filename, const char* fmt, ...)
+static void pcompile_info(const char *filename, stb_lex_location loc, const char* fmt, ...)
 {
   va_list args;
   va_start(args, fmt);
-  vpcompile_info(l, filename, fmt, args);
+  vpcompile_info(filename, loc, fmt, args);
   va_end(args);
 }
 
-bool next_token(stb_lexer *l, const char *filename)
+static bool next_token(stb_lexer *l, const char *filename)
 {
   bool result = stb_c_lexer_get_token(l);
   if (l->token == CLEX_parse_error) {
-    pcompile_info(l, filename, "error: parse error when read \"%.*s\"\n",
-                  (int)(l->where_lastchar - l->where_lastchar), l->where_lastchar);
+    pcompile_info(filename, lex_location(l), "error: parse error when read \"%.*s\"\n",
+                  (int)(l->where_lastchar - l->where_firstchar), l->where_firstchar);
   }
 
   return result;
 }
 
-bool prefetch_not_none(stb_lexer *l, const char *filename)
+static bool prefetch_not_none(stb_lexer *l, const char *filename)
 {
   bool result = next_token(l, filename);
   if (l->token == CLEX_eof) {
-    printf("EOF\n");
-    pcompile_info(l, filename, "error: unexpected EOF\n",
-                  (int)(l->where_lastchar - l->where_lastchar), l->where_lastchar);
+    pcompile_info(filename, lex_location(l), "error: unexpected EOF\n");
     return false;
   }
   
   return result;
 }
 
-bool expect_token(stb_lexer *l, const char *filename, long token)
+static bool expect_token(stb_lexer *l, const char *filename, long token)
 {
   if (l->token == token) return true;
   
   size_t mark = temp_save(); {
-    pcompile_info(l, filename, "error: expect token %s but got %s\n",
+    pcompile_info(filename, lex_location(l), "error: expect token %s but got %s\n",
                   token_name(token), token_name(l->token));
   } temp_rewind(mark);
   return false;
 }
 
-bool prefetch_expect_token(stb_lexer *l, const char *filename, long token)
+static bool prefetch_expect_token(stb_lexer *l, const char *filename, long token)
 {
   next_token(l, filename);
   if (!expect_token(l, filename, token)) return false;
   return true;
 }
 
-bool prefetch_expect_tokens_(stb_lexer *l, const char *filename, ...)
+static bool prefetch_expect_tokens_(stb_lexer *l, const char *filename, ...)
 {
   next_token(l, filename);
   bool found = false;
@@ -132,7 +135,7 @@ bool prefetch_expect_tokens_(stb_lexer *l, const char *filename, ...)
   if (found) return true;
 
   va_start(ap, filename); size_t mark = temp_save(); {
-    pcompile_info(l, filename, "error: expect token ");
+    pcompile_info(filename, lex_location(l), "error: expect token ");
     
     long arg = va_arg(ap, long);
     while (arg != CLEX_parse_error) {
@@ -148,7 +151,7 @@ bool prefetch_expect_tokens_(stb_lexer *l, const char *filename, ...)
 #define prefetch_expect_tokens(l, filename, ...)                        \
   prefetch_expect_tokens_(l, filename, __VA_ARGS__, CLEX_parse_error)
 
-bool expect_ids_(stb_lexer *l, const char *filename, ...)
+static bool expect_ids_(stb_lexer *l, const char *filename, ...)
 {
   if (!expect_token(l, filename, CLEX_id)) return false;
   
@@ -168,7 +171,7 @@ bool expect_ids_(stb_lexer *l, const char *filename, ...)
   if (found) return true;
 
   va_start(ap, filename); size_t mark = temp_save(); {
-    pcompile_info(l, filename, "error: expect ");
+    pcompile_info(filename, lex_location(l), "error: expect ");
 
     char* arg = va_arg(ap, char*);
     while (arg != NULL) {
@@ -179,6 +182,89 @@ bool expect_ids_(stb_lexer *l, const char *filename, ...)
   } temp_rewind(mark); va_end(ap);
   
   return false;
+}
+
+
+static void destroy_type_expr(TypeExpr* type)
+{
+  if (type == NULL) return;
+  
+  switch(type->kind) {
+  case TYPE_INT: break;
+  case TYPE_UINT: break;
+  case TYPE_VOID: break;
+  case TYPE_UNKNOWN: break;
+  case TYPE_PTR:
+    assert(type->ref_type != NULL);
+    destroy_type_expr(type->ref_type);
+    free(type->ref_type);
+    break;
+  case TYPE_FN: {
+    assert(type->ret_type != NULL);
+    destroy_type_expr(type->ret_type);
+    free(type->ret_type);
+    
+    da_foreach (TypeExpr, arg, &type->arg_types) {
+      destroy_type_expr(arg);
+    }
+    if (type->arg_types.count > 0) da_free(type->arg_types);
+  } break;
+  default: UNREACHABLE("type");
+  }
+}
+
+static void destroy_symbol(Symbol *sym)
+{
+  if (sym->name != NULL) free(sym->name);
+  destroy_type_expr(&sym->type);
+}
+
+static void destroy_arg(Arg *arg)
+{
+  destroy_type_expr(&arg->type);
+  switch(arg->kind) {
+  case ARG_NONE: break;
+  case ARG_NAME: free(arg->name); break;
+  case ARG_VAR_LOC: break;
+  case ARG_LIT_INT: break;
+  case ARG_LIT_STR: break;
+  default: UNREACHABLE("destroy arg");
+  }
+}
+
+static void destroy_op(Op *op)
+{
+  switch (op->kind) {
+  case OP_INVOKE:
+    destroy_arg(&op->fn);
+    da_foreach(Arg, arg, &op->args) {
+      destroy_arg(arg);
+    }
+    break;
+  case OP_RETURN: destroy_arg(&op->ret_val); break;
+  case OP_SET_VAR:
+    destroy_arg(&op->var);
+    destroy_arg(&op->val);
+    break;
+  default: UNREACHABLE("destroy op");
+  }
+}
+
+static void destroy_fn_list(FnList *fn_list)
+{
+  da_foreach (Fn, fn, fn_list) {
+    free(fn->name);
+    da_foreach (Op, op, &fn->fn_body) {
+      destroy_op(op);
+    }
+    da_free(fn->fn_body);
+    
+    da_foreach (Symbol, sym, &fn->local) {
+      destroy_symbol(sym);
+    }
+    da_free(fn->local);
+  }
+  da_free(*fn_list);
 }
 
 #define BASIC_TYPE_NAMES \
@@ -202,7 +288,7 @@ static char *keywords[] = {
   BASIC_TYPE_NAMES
 };
 
-bool is_keywords(const char *str)
+static bool is_keywords(const char *str)
 {
   for (size_t i = 0; i < ARRAY_LEN(keywords); ++i) {
     if (strcmp(str, keywords[i]) == 0) return true;
@@ -214,24 +300,18 @@ bool is_keywords(const char *str)
 #define expect_ids(l, filename, ...)            \
   expect_ids_(l, filename, __VA_ARGS__, NULL)
 
-bool global_symbol_defined(Program *prog, char *name)
+static size_t search_symbol(SymbolList *syms, char *name)
 {
-  for (size_t i = 0; i < prog->externs.count; ++i) {
-    if (strcmp(prog->externs.items[i].name, name) == 0) {
-      return true;
+  for (size_t i = 0; i < syms->count; ++i) {
+    if (strcmp(syms->items[i].name, name) == 0) {
+      return i;
     }
   }
   
-  for (size_t i = 0; i < prog->fn_list.count; ++i) {
-    if (strcmp(prog->fn_list.items[i].name, name) == 0) {
-      return true;
-    }
-  }
-
-  return false;
+  return syms->count;
 }
 
-size_t compile_strlit(Program *prog, char *str)
+static size_t compile_strlit(Program *prog, char *str)
 {
   size_t str_count = prog->str_lits.count;
   for (size_t i = 0; i < str_count; ++i) {
@@ -244,13 +324,67 @@ size_t compile_strlit(Program *prog, char *str)
   return str_count;
 }
 
-bool get_local_var(const VarList *var_list, Arg* arg, const char *name)
+static TypeExpr ptr_type(TypeExpr inner)
+{
+  TypeExpr type = {
+    .kind = TYPE_PTR,
+    .size = 8,
+    .ref_type = malloc(sizeof(TypeExpr))
+  };
+  *type.ref_type = inner;
+  
+  return type;
+}
+
+static TypeExpr fn_type(TypeExpr ret_type, TypeList arg_types, bool va_args)
+{
+  TypeExpr type = {
+    .kind = TYPE_FN,
+    .size = 8,
+    .ret_type = malloc(sizeof(TypeExpr)),
+    .arg_types = arg_types,
+    .va_args = va_args,
+  };
+  *type.ref_type = ret_type;
+  
+  return type;
+}
+
+static TypeExpr type_clone(TypeExpr t)
+{
+  TypeExpr result = {0};
+  switch (t.kind) {
+  case TYPE_UNKNOWN:
+  case TYPE_VOID:
+  case TYPE_INT:
+  case TYPE_UINT:
+    result = t;
+    break;
+  case TYPE_PTR:
+    result = ptr_type(type_clone(*t.ref_type));
+    break;
+  case TYPE_FN: {
+    TypeList arg_types = {0};
+    da_foreach (TypeExpr, arg, &t.arg_types) {
+      da_append(&arg_types, type_clone(*arg));
+    }
+    result = fn_type(*t.ret_type, arg_types, t.va_args);
+  }break;
+  default: UNREACHABLE("type_clone");
+  }
+
+  return result;
+}
+
+static bool get_local_var(const SymbolList *var_list, Arg* arg, const char *name)
 {
   size_t label = 0;
   while (label < var_list->count) {
     if (strcmp(name, var_list->items[label].name) == 0) {
       arg->kind = ARG_VAR_LOC;
       arg->label = label + 1;
+      arg->type = type_clone(var_list->items[label].type);
+      
       return true;
     }
     label += 1;
@@ -258,7 +392,7 @@ bool get_local_var(const VarList *var_list, Arg* arg, const char *name)
   return false;
 }
 
-bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Fn *fn, Arg *arg)
+static bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Fn *fn, Arg *arg)
 {
   UNUSED(prog);
   assert(l->token != CLEX_eof);
@@ -268,11 +402,17 @@ bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Fn *fn, Arg 
     if (!get_local_var(&fn->local, arg, l->string)) {
       arg->kind = ARG_NAME;
       arg->name = strdup(l->string);
+      stb_c_lexer_get_location(l, l->where_lastchar, &arg->loc);
+      arg->type = (TypeExpr){.kind = TYPE_UNKNOWN};
     }
     break;
   case CLEX_dqstring:
     arg->kind = ARG_LIT_STR;
     arg->label = compile_strlit(prog, l->string);
+    arg->type = ptr_type((TypeExpr) {
+      .kind = TYPE_INT,
+      .size = 1,
+    });
     break;
   case CLEX_charlit:
     TODO("CLEX_charlit");
@@ -280,13 +420,17 @@ bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Fn *fn, Arg 
   case CLEX_intlit:
     arg->kind = ARG_LIT_INT;
     arg->num_int = l->int_number;
+    arg->type = (TypeExpr) {
+      .kind = TYPE_INT,
+      .size = 4,
+    };
     break;
   case CLEX_floatlit:
     TODO("CLEX_floatlit");
     break;
   default:
     size_t mark = temp_save(); {
-      pcompile_info(l, filename, "error: invalid token %s in an argument\n",
+      pcompile_info(filename, lex_location(l), "error: invalid token %s in an argument\n",
                     token_name(l->token));
     } temp_rewind(mark);
     return false;
@@ -295,7 +439,7 @@ bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Fn *fn, Arg 
   return true;
 }
 
-bool compile_statement(stb_lexer *l, const char *filename, Program *prog, Fn *fn)
+static bool compile_statement(stb_lexer *l, const char *filename, Program *prog, Fn *fn)
 {
   Arg arg;
   if (!compile_arg(l, filename, prog, fn, &arg)) return false;
@@ -312,7 +456,7 @@ bool compile_statement(stb_lexer *l, const char *filename, Program *prog, Fn *fn
           
       if (l->token != ',' && l->token != ')') {
         size_t mark = temp_save(); {
-          pcompile_info(l, filename, "error: expected ',' or ')', but got %s\n",
+          pcompile_info(filename, lex_location(l), "error: expected ',' or ')', but got %s\n",
                         token_name(l->token));
         } temp_rewind(mark);
         free(invoke.args.items);
@@ -327,7 +471,7 @@ bool compile_statement(stb_lexer *l, const char *filename, Program *prog, Fn *fn
     da_append(&fn->fn_body, invoke);
   } else if (l->token == '=') {
     if (arg.kind != ARG_VAR_LOC) {
-      pcompile_info(l, filename, "error: try to assign to an rvalue\n");
+      pcompile_info(filename, lex_location(l), "error: try to assign to an rvalue\n");
       return false;
     };
     
@@ -348,32 +492,7 @@ bool compile_statement(stb_lexer *l, const char *filename, Program *prog, Fn *fn
   return true;
 }
 
-void destroy_type_expr(TypeExpr* type)
-{
-  if (type == NULL) return;
-  
-  switch(type->kind) {
-  case TYPE_INT: break;
-  case TYPE_UINT: break;
-  case TYPE_VOID: break;
-  case TYPE_PTR:
-    destroy_type_expr(type->ref_type);
-    if (type->ref_type != NULL) free(type->ref_type);
-    break;
-  case TYPE_FN: {
-    destroy_type_expr(type->ret_type);
-    if (type->ret_type != NULL) free(type->ret_type);
-    
-    da_foreach (TypeExpr, arg, &type->arg_types) {
-      destroy_type_expr(arg);
-    }
-    if (type->arg_types.count > 0) da_free(type->arg_types);
-  } break;
-  default: UNREACHABLE("type");
-  }
-}
-
-bool compile_internal_type(stb_lexer *l, const char *filename, TypeExpr *type) {
+static bool compile_internal_type(stb_lexer *l, const char *filename, TypeExpr *type) {
   // TODO: support more internal type and user defined types;
   if (!expect_ids(l, filename, BASIC_TYPE_NAMES)) { return false; }
 
@@ -406,9 +525,9 @@ bool compile_internal_type(stb_lexer *l, const char *filename, TypeExpr *type) {
   return true;
 }
 
-bool compile_type_fn(stb_lexer *l, const char *filename, TypeExpr *type);
+static bool compile_type_fn(stb_lexer *l, const char *filename, TypeExpr *type);
 
-bool compile_type_expr(stb_lexer *l, const char *filename, TypeExpr *type)
+static bool compile_type_expr(stb_lexer *l, const char *filename, TypeExpr *type)
 {
   switch (l->token) {
   case CLEX_id: {
@@ -419,21 +538,18 @@ bool compile_type_expr(stb_lexer *l, const char *filename, TypeExpr *type)
     if (!prefetch_not_none(l, filename)) return false;
     TypeExpr ref_type;
     if (!compile_type_expr(l, filename, &ref_type)) return false;
-
-    type->kind = TYPE_PTR;
-    type->ref_type = malloc(sizeof(TypeExpr));
-    *type->ref_type = ref_type;
+    *type = ptr_type(ref_type);
     return true;
   }
   default:
     size_t mark = temp_save(); {
-      pcompile_info(l, filename, "error: expected a type but got %s\n", token_name(l->token));
+      pcompile_info(filename, lex_location(l), "error: expected a type but got %s\n", token_name(l->token));
     } temp_rewind(mark);
     return false;
   }
 }
 
-bool compile_type_fn(stb_lexer *l, const char *filename, TypeExpr *type)
+static bool compile_type_fn(stb_lexer *l, const char *filename, TypeExpr *type)
 {
   assert(l->token == CLEX_id && strcmp(l->string, "fn") == 0);
 
@@ -478,62 +594,75 @@ bool compile_type_fn(stb_lexer *l, const char *filename, TypeExpr *type)
   return result;
 }
 
-
-bool compile_local_var(stb_lexer *l, const char *filename, Program *prog, Fn *fn)
+static bool compile_local_var_singn(stb_lexer *l, const char *filename, Symbol* var)
 {
   bool result;
 
-  Var var = { 0 };
   if (!prefetch_expect_token(l, filename, CLEX_id)) return_defer(false);
   if (is_keywords(l->string)) {
-    pcompile_info(l, filename, "error: expected an id, but got a keyword \"%s\"\n", l->string);
+    pcompile_info(filename, lex_location(l), "error: expected an id, but got a keyword \"%s\"\n", l->string);
     return_defer(false);
   }
-  var.name = strdup(l->string);
+  var->name = strdup(l->string);
   if (!prefetch_not_none(l, filename)) return_defer(false);
-  da_append(&fn->local, var);
 
   if (l->token == ':') {
     if (!prefetch_not_none(l, filename)) return_defer(false);
-    if (!compile_type_expr(l, filename, &var.type)) return_defer(false);
-    if (var.type.kind == TYPE_VOID) {
-      pcompile_info(l, filename, "error: the type of a local variable cannot be \"void\"");
+    if (!compile_type_expr(l, filename, &var->type)) return_defer(false);
+    if (var->type.kind == TYPE_VOID) {
+      pcompile_info(filename, lex_location(l), "error: the type of a local variable cannot be \"void\"");
       return_defer(false);
     }
     if (!prefetch_not_none(l, filename)) return_defer(false);
   }
-  
-  if (l->token == '=') {
-    Arg val;
-    if (!prefetch_not_none(l, filename)) return_defer(false);
-    if (!compile_arg(l, filename, prog, fn, &val)) return_defer(false);
-    
-    Op set_var = {
-      .kind = OP_SET_VAR,
-      .val = val,
-    };
-    get_local_var(&fn->local, &set_var.var, var.name);
-    da_append(&fn->fn_body, set_var);
-    if (!prefetch_not_none(l, filename)) return_defer(false);
-
-    switch (val.kind) {
-    case ARG_LIT_INT: var.type = (TypeExpr) {
-        .kind = TYPE_INT,
-        .size = 4,
-      };
-      break;
-    default: TODO("auto detect more type during variable declaration");
-    }
-  }
-  
   return_defer(true);
-  
  defer:
-  if (!result && var.name != NULL) free(var.name);
+  if (!result) destroy_symbol(var);
   return result;
 }
 
-bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, Fn *fn) {
+static bool compile_local_var(stb_lexer *l, const char *filename, Program *prog, Fn *fn)
+{
+  Symbol var = {0};
+  Arg val = {0};
+  Arg var_arg = {0};
+  
+  if (!compile_local_var_singn(l, filename, &var)) return false;
+
+  bool result;
+  if (l->token != '=') {
+    da_append(&fn->local, var);
+  } else {
+    if (!prefetch_not_none(l, filename)) return_defer(false);
+    if (!compile_arg(l, filename, prog, fn, &val)) return_defer(false);
+
+    if (var.type.kind == TYPE_UNKNOWN) {
+      var.type = type_clone(val.type);
+    }
+
+    da_append(&fn->local, var);
+    bool ok = get_local_var(&fn->local, &var_arg, var.name);
+    assert(ok);
+    if (!prefetch_not_none(l, filename)) return_defer(false);
+    
+    Op set_var = {
+      .kind = OP_SET_VAR,
+      .var = var_arg,
+      .val = val,
+    };
+    da_append(&fn->fn_body, set_var);
+  }
+  return_defer(true);
+ defer:
+  if (!result) {
+    destroy_arg(&val);
+    destroy_arg(&var_arg);
+    destroy_symbol(&var);
+  }
+  return result;
+}
+
+static bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, Fn *fn) {
   assert(l->token == '{');
 
   bool returned = false;
@@ -564,19 +693,19 @@ bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, Fn *fn) 
   return true;
 }
 
-bool compile_function(stb_lexer *l, const char *filename, Program *prog)
+static bool compile_function(stb_lexer *l, const char *filename, Program *prog)
 {
   assert(expect_token(l, filename, CLEX_id) && strcmp(l->string, "fn") == 0);
 
   if (!prefetch_expect_token(l, filename, CLEX_id)) return false;
 
-  if (global_symbol_defined(prog, l->string)) {
-    pcompile_info(l, filename, "error: symbol %s redefined\n", l->string);
+  if (search_symbol(&prog->global, l->string) < prog->global.count) {
+    pcompile_info(filename, lex_location(l), "error: symbol %s redefined\n", l->string);
     return false;
   }
 
   if (is_keywords(l->string)) {
-    pcompile_info(l, filename, "error: expected an id, but got a keyword \"%s\"\n", l->string);
+    pcompile_info(filename, lex_location(l), "error: expected an id, but got a keyword \"%s\"\n", l->string);
     return false;
   }
 
@@ -589,7 +718,9 @@ bool compile_function(stb_lexer *l, const char *filename, Program *prog)
   
   if (!prefetch_expect_token(l, filename, ':')) return false;
   if (!prefetch_not_none(l, filename)) return false;
-  if (!compile_type_expr(l, filename, &fn.ret_type)) return false;
+
+  TypeExpr ret_type;
+  if (!compile_type_expr(l, filename, &ret_type)) return false;
   
   if (!prefetch_expect_token(l, filename, '{')) return false;
 
@@ -599,17 +730,82 @@ bool compile_function(stb_lexer *l, const char *filename, Program *prog)
 
   da_append(&prog->fn_list, fn);
 
+  Symbol sym = {
+    .name = strdup(fn.name),
+    .type = (TypeExpr) {
+      .kind = TYPE_FN,
+      .ret_type = malloc(sizeof(TypeExpr)),
+      .arg_types = {0},
+      .va_args = false,
+    },
+  };
+  *sym.type.ret_type = ret_type;
+  da_append(&prog->global, sym);
+
   return true;
 }
 
-void destroy_ext(Extern *ext)
+static bool fix_unknown_type_arg(Arg *arg, Program *prog) {
+  if (arg->type.kind != TYPE_UNKNOWN) return true;
+
+  assert(arg->kind == ARG_NAME || arg->kind == ARG_VAR_LOC);
+  
+  switch (arg->kind) {
+  case ARG_NAME:
+    size_t loc = search_symbol(&prog->global, arg->name);
+    if (loc >= prog->global.count) {
+      pcompile_info(prog->filename, arg->loc, "error: refered symbol \"%s\" is not defined\n", arg->name);
+      return false;
+    }
+
+    arg->type = type_clone(prog->global.items[loc].type);
+    break;
+  case ARG_VAR_LOC:
+    TODO("fix var local type");
+  default: UNREACHABLE("arg");
+  }
+
+  return true;
+}
+
+static bool detect_all_unknown_type(Program *prog)
 {
-  if (ext->name != NULL) free(ext->name);
-  destroy_type_expr(&ext->type);
+  da_foreach (Fn, fn, &prog->fn_list) {
+    da_foreach (Op, op, &fn->fn_body) {
+      switch (op->kind) {
+      case OP_RETURN:
+        if (!fix_unknown_type_arg(&op->ret_val, prog)) return false;
+        break;
+      case OP_SET_VAR:
+        // must first fix type of val and then fix var
+        // because the type of var is unknown only if
+        // the type of val is unkown when it is initialized.
+        if (!fix_unknown_type_arg(&op->val, prog)) return false;
+        if (!fix_unknown_type_arg(&op->var, prog)) return false;
+        break;
+      case OP_INVOKE:
+        if (!fix_unknown_type_arg(&op->fn, prog)) return false;
+        da_foreach (Arg, arg, &op->args) {
+          if (!fix_unknown_type_arg(arg, prog)) return false;
+        }
+        break;
+      default: UNREACHABLE("op");
+      }
+    }
+  }
+  return true;
+}
+
+static bool backpatch_prog(Program *prog)
+{
+  if (!detect_all_unknown_type(prog)) return false;
+  
+  return true;
 }
 
 bool compile_file(stb_lexer *l, const char *filename, Program *prog)
 {
+  prog->filename = filename;
   while (next_token(l, filename)) {
     if (l->token == ';') {
       continue;
@@ -620,87 +816,36 @@ bool compile_file(stb_lexer *l, const char *filename, Program *prog)
     if (strcmp(l->string, "fn") == 0) {
       if (!compile_function(l, filename, prog)) return false;
     } else if (strcmp(l->string, "extern") == 0) {
-      Extern ext = {0};
+      Symbol sym = { .external = true };
       if (!prefetch_expect_token(l, filename, CLEX_id)) return false;
-      if (global_symbol_defined(prog, l->string)) {
-        pcompile_info(l, filename, "error: symbol %s redefined\n", l->string);
+      if (search_symbol(&prog->global, l->string) < prog->global.count) {
+        pcompile_info(filename, lex_location(l), "error: symbol %s redefined\n", l->string);
         return false;
       }
       if (is_keywords(l->string)) {
-        pcompile_info(l, filename, "error: expected an id, but got a keyword \"%s\"\n", l->string);
+        pcompile_info(filename, lex_location(l), "error: expected an id, but got a keyword \"%s\"\n", l->string);
         return false;
       }
-      ext.name = strdup(l->string);
+      sym.name = strdup(l->string);
       if (!prefetch_expect_token(l, filename, ':')) return false;
       if (!prefetch_not_none(l, filename)) return false;
-      if (!compile_type_expr(l, filename, &ext.type)) return false;
+      if (!compile_type_expr(l, filename, &sym.type)) return false;
 
-      da_append(&prog->externs, ext);
+      da_append(&prog->global, sym);
     } else {
       UNREACHABLE(temp_sprintf("unexpected id: %s", l->string));
     }
   }
 
-  return true;
-}
-
-void destroy_arg(Arg *arg)
-{
-  switch(arg->kind) {
-  case ARG_NONE: break;
-  case ARG_NAME: free(arg->name); break;
-  case ARG_VAR_LOC: break;
-  case ARG_LIT_INT: break;
-  case ARG_LIT_STR: break;
-  default: UNREACHABLE("destroy arg");
-  }
-}
-
-void destroy_op(Op *op)
-{
-  switch (op->kind) {
-  case OP_INVOKE:
-    destroy_arg(&op->fn);
-    da_foreach(Arg, arg, &op->args) {
-      destroy_arg(arg);
-    }
-    break;
-  case OP_RETURN: destroy_arg(&op->ret_val); break;
-  case OP_SET_VAR:
-    destroy_arg(&op->var);
-    destroy_arg(&op->val);
-    break;
-  default: UNREACHABLE("destroy op");
-  }
-}
-
-void destroy_fn_list(FnList *fn_list)
-{
-  da_foreach (Fn, fn, fn_list) {
-    free(fn->name);
-    destroy_type_expr(&fn->ret_type);
-    
-    da_foreach (Op, op, &fn->fn_body) {
-      destroy_op(op);
-    }
-    da_free(fn->fn_body);
-    
-    da_foreach (Var, var, &fn->local) {
-      free(var->name);
-      destroy_type_expr(&var->type);
-    }
-    da_free(fn->local);
-  }
-  da_free(*fn_list);
+  return backpatch_prog(prog);
 }
 
 void destroy_program(Program *prog)
 {
-  da_foreach (Extern, ext, &prog->externs) {
-    free(ext->name);
-    destroy_type_expr(&ext->type);
+  da_foreach (Symbol, sym, &prog->global) {
+    destroy_symbol(sym);
   }
-  da_free(prog->externs);
+  da_free(prog->global);
 
   destroy_fn_list(&prog->fn_list);
   if (prog->str_lits.capacity > 0) {

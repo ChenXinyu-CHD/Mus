@@ -63,8 +63,10 @@ String_Builder gen_code_ir(const Program *prog)
   String_Builder sb = {0};
 
   sb_appendf(&sb, "extern:");
-  da_foreach (Extern, ext, &prog->externs) {
-    sb_appendf(&sb, " %s", ext->name);
+  da_foreach (Symbol, sym, &prog->global) {
+    if (sym->external) {
+      sb_appendf(&sb, " %s", sym->name);
+    }
   }
   sb_appendf(&sb, "\n\n");
   
