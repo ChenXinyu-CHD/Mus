@@ -133,7 +133,7 @@ size_t ceil16(size_t x) {
   return x;
 }
 
-String_Builder gen_code_x64_linux(const Program *prog)
+String_Builder gen_code_x86_64_gas(const Program *prog)
 {
   String_Builder sb = {0};
 
@@ -238,12 +238,12 @@ String_Builder gen_code_x64_linux(const Program *prog)
   return sb;
 }
 
-bool build_x64_linux(const char *filename, const Program *prog)
+bool build_x86_64_native(const char *filename, const Program *prog)
 {
   bool result;
   size_t mark = temp_save();
   
-  String_Builder code = gen_code_x64_linux(prog);
+  String_Builder code = gen_code_x86_64_gas(prog);
   char *asm_file = temp_sprintf("%s.s", filename);
   if (!write_entire_file(asm_file, code.items, code.count)) return_defer(false);
   
@@ -262,41 +262,9 @@ bool build_x64_linux(const char *filename, const Program *prog)
   return result;
 }
 
-bool build_x64_hurd(const char *filename, const Program *prog)
-{
-  bool result;
-  size_t mark = temp_save();
-  
-  String_Builder code = gen_code_x64_linux(prog);
-  char *asm_file = temp_sprintf("%s.s", filename);
-  if (!write_entire_file(asm_file, code.items, code.count)) return_defer(false);
-  
-  char *obj_file = temp_sprintf("%s.o", filename);
-  Cmd cmd = {0};
-  cmd_append(&cmd, "as", "-o", obj_file, asm_file);
-  if(!cmd_run(&cmd)) return_defer(false);
-  
-  cmd.count = 0;
-  nob_cmd_append(&cmd, "ld", "-o", filename, obj_file,
-                 "/usr/lib/x86_64-gnu/crt1.o", "-lc",
-                 "--dynamic-linker", "/lib/ld-x86-64.so.1");
-  if(!cmd_run(&cmd)) return_defer(false);
-  
-  if (!write_entire_file(asm_file, code.items, code.count)) return_defer(false);
-
-  return_defer(true);
-
- defer:
-  temp_rewind(mark);
-  da_free(code);
-  if (cmd.capacity > 0) cmd_free(cmd);
-  return result;
-}
-
 typedef enum {
   TARGET_IR,
-  TARGET_X64_LINUX,
-  TARGET_X64_HURD,
+  TARGET_X86_64_NATIVE,
 } Target;
 
 static const struct {
@@ -304,8 +272,7 @@ static const struct {
   const Target target;
 } TARGETS[] = {
   { "ir",        TARGET_IR        },
-  { "x64_linux", TARGET_X64_LINUX },
-  { "x64_hurd",  TARGET_X64_HURD  },
+  { "x86_64-native", TARGET_X86_64_NATIVE },
 };
 
 static struct {
@@ -324,7 +291,7 @@ void usage(FILE *stream)
 bool parse_mcc_args(int argc, char **argv)
 {
   mcc_args.program = argv[0];
-  mcc_args.target  = TARGET_IR;
+  mcc_args.target  = TARGET_X86_64_NATIVE;
   mcc_args.outfile = NULL;
 
   bool result = true;
@@ -411,11 +378,8 @@ int main(int argc, char **argv)
   case TARGET_IR:
     if(!build_ir(mcc_args.outfile, &prog)) return_defer(1);
     break;
-  case TARGET_X64_LINUX:
-    if (!build_x64_linux(mcc_args.outfile, &prog)) return_defer(1);
-    break;
-  case TARGET_X64_HURD:
-    if (!build_x64_hurd(mcc_args.outfile, &prog)) return_defer(1);
+  case TARGET_X86_64_NATIVE:
+    if (!build_x86_64_native(mcc_args.outfile, &prog)) return_defer(1);
     break;
   default: UNREACHABLE("target");
   }
