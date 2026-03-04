@@ -267,18 +267,18 @@ static void destroy_fn_list(FnList *fn_list)
   da_free(*fn_list);
 }
 
-#define BASIC_TYPE_NAMES \
-  "i8",                  \
-  "i16",                 \
-  "i32",                 \
-  "i64",                 \
-  "i32",                 \
-  "u8",                  \
-  "u16",                 \
-  "u32",                 \
-  "u64",                 \
-  "u32",                 \
-  "void"
+#define BASIC_TYPE_NAMES                        \
+  "i8",                                         \
+    "i16",                                      \
+    "i32",                                      \
+    "i64",                                      \
+    "i32",                                      \
+    "u8",                                       \
+    "u16",                                      \
+    "u32",                                      \
+    "u64",                                      \
+    "u32",                                      \
+    "void"
 
 static char *keywords[] = {
   "extern",
@@ -300,7 +300,7 @@ static bool is_keywords(const char *str)
 #define expect_ids(l, filename, ...)            \
   expect_ids_(l, filename, __VA_ARGS__, NULL)
 
-static size_t search_symbol(SymbolList *syms, char *name)
+static size_t search_symbol(SymbolList *syms, const char *name)
 {
   for (size_t i = 0; i < syms->count; ++i) {
     if (strcmp(syms->items[i].name, name) == 0) {
@@ -309,6 +309,11 @@ static size_t search_symbol(SymbolList *syms, char *name)
   }
   
   return syms->count;
+}
+
+static bool symbol_defined(SymbolList *syms, const char *name)
+{
+  return search_symbol(syms, name) < syms->count;
 }
 
 static size_t compile_strlit(Program *prog, char *str)
@@ -376,20 +381,14 @@ static TypeExpr type_clone(TypeExpr t)
   return result;
 }
 
-static bool get_local_var(const SymbolList *var_list, Arg* arg, const char *name)
+static Arg arg_local_var(Fn *fn, size_t i)
 {
-  size_t label = 0;
-  while (label < var_list->count) {
-    if (strcmp(name, var_list->items[label].name) == 0) {
-      arg->kind = ARG_VAR_LOC;
-      arg->label = label + 1;
-      arg->type = type_clone(var_list->items[label].type);
-      
-      return true;
-    }
-    label += 1;
-  }
-  return false;
+  assert(i < fn->local.count);
+  return (Arg) {
+    .kind = ARG_VAR_LOC,
+    .type = type_clone(fn->local.items[i].type),
+    .label = i + 1.
+  };
 }
 
 static bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Fn *fn, Arg *arg)
@@ -399,7 +398,10 @@ static bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Fn *f
   
   switch (l->token) {
   case CLEX_id:
-    if (!get_local_var(&fn->local, arg, l->string)) {
+    size_t i = search_symbol(&fn->local, l->string);
+    if (i < fn->local.count) {
+      *arg = arg_local_var(fn, i);
+    } else {
       arg->kind = ARG_NAME;
       arg->name = strdup(l->string);
       stb_c_lexer_get_location(l, l->where_lastchar, &arg->loc);
@@ -410,9 +412,9 @@ static bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Fn *f
     arg->kind = ARG_LIT_STR;
     arg->label = compile_strlit(prog, l->string);
     arg->type = ptr_type((TypeExpr) {
-      .kind = TYPE_INT,
-      .size = 1,
-    });
+        .kind = TYPE_INT,
+        .size = 1,
+      });
     break;
   case CLEX_charlit:
     TODO("CLEX_charlit");
@@ -493,7 +495,7 @@ static bool compile_statement(stb_lexer *l, const char *filename, Program *prog,
 }
 
 static bool compile_internal_type(stb_lexer *l, const char *filename, TypeExpr *type) {
-  // TODO: support more internal type and user defined types;
+  // TODO: support more internal type
   if (!expect_ids(l, filename, BASIC_TYPE_NAMES)) { return false; }
 
   if (strcmp(l->string, "void") == 0) {
@@ -594,13 +596,18 @@ static bool compile_type_fn(stb_lexer *l, const char *filename, TypeExpr *type)
   return result;
 }
 
-static bool compile_local_var_singn(stb_lexer *l, const char *filename, Symbol* var)
+static bool compile_local_var_singn(stb_lexer *l, const char *filename, Fn *fn, Symbol* var)
 {
   bool result;
 
   if (!prefetch_expect_token(l, filename, CLEX_id)) return_defer(false);
   if (is_keywords(l->string)) {
     pcompile_info(filename, lex_location(l), "error: expected an id, but got a keyword \"%s\"\n", l->string);
+    return_defer(false);
+  }
+
+  if (symbol_defined(&fn->local, l->string)) {
+    pcompile_info(filename, lex_location(l), "error: variable \"%s\" is alreay defined in this field\n", l->string);
     return_defer(false);
   }
   var->name = strdup(l->string);
@@ -624,42 +631,23 @@ static bool compile_local_var_singn(stb_lexer *l, const char *filename, Symbol* 
 static bool compile_local_var(stb_lexer *l, const char *filename, Program *prog, Fn *fn)
 {
   Symbol var = {0};
-  Arg val = {0};
-  Arg var_arg = {0};
+  if (!compile_local_var_singn(l, filename, fn, &var)) return false;
+  da_append(&fn->local, var);
+  size_t pos = fn->local.count - 1;
   
-  if (!compile_local_var_singn(l, filename, &var)) return false;
+  if (l->token != '=') return true;
 
-  bool result;
-  if (l->token != '=') {
-    da_append(&fn->local, var);
-  } else {
-    if (!prefetch_not_none(l, filename)) return_defer(false);
-    if (!compile_arg(l, filename, prog, fn, &val)) return_defer(false);
+  if (!prefetch_not_none(l, filename)) return false;
+  Arg val = {0};
+  if (!compile_arg(l, filename, prog, fn, &val)) return false;    
+  Op set_var = {
+    .kind = OP_SET_VAR,
+    .var = arg_local_var(fn, pos),
+    .val = val,
+  };
+  da_append(&fn->fn_body, set_var);
 
-    if (var.type.kind == TYPE_UNKNOWN) {
-      var.type = type_clone(val.type);
-    }
-
-    da_append(&fn->local, var);
-    bool ok = get_local_var(&fn->local, &var_arg, var.name);
-    assert(ok);
-    if (!prefetch_not_none(l, filename)) return_defer(false);
-    
-    Op set_var = {
-      .kind = OP_SET_VAR,
-      .var = var_arg,
-      .val = val,
-    };
-    da_append(&fn->fn_body, set_var);
-  }
-  return_defer(true);
- defer:
-  if (!result) {
-    destroy_arg(&val);
-    destroy_arg(&var_arg);
-    destroy_symbol(&var);
-  }
-  return result;
+  return prefetch_not_none(l, filename);
 }
 
 static bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, Fn *fn) {
@@ -686,7 +674,13 @@ static bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, F
   }
 
   if (!returned) {
-    Op ret = { .kind = OP_RETURN };
+    Op ret = {
+      .kind = OP_RETURN,
+      .ret_val = {
+        .kind = ARG_NONE,
+        .type = { .kind = TYPE_VOID },
+      },
+    };
     da_append(&fn->fn_body, ret);
   }
 
@@ -699,7 +693,7 @@ static bool compile_function(stb_lexer *l, const char *filename, Program *prog)
 
   if (!prefetch_expect_token(l, filename, CLEX_id)) return false;
 
-  if (search_symbol(&prog->global, l->string) < prog->global.count) {
+  if (symbol_defined(&prog->global, l->string)) {
     pcompile_info(filename, lex_location(l), "error: symbol %s redefined\n", l->string);
     return false;
   }
@@ -745,48 +739,32 @@ static bool compile_function(stb_lexer *l, const char *filename, Program *prog)
   return true;
 }
 
-static bool fix_unknown_type_arg(Arg *arg, Program *prog) {
-  if (arg->type.kind != TYPE_UNKNOWN) return true;
-
-  assert(arg->kind == ARG_NAME || arg->kind == ARG_VAR_LOC);
-  
-  switch (arg->kind) {
-  case ARG_NAME:
-    size_t loc = search_symbol(&prog->global, arg->name);
-    if (loc >= prog->global.count) {
-      pcompile_info(prog->filename, arg->loc, "error: refered symbol \"%s\" is not defined\n", arg->name);
-      return false;
-    }
-
-    arg->type = type_clone(prog->global.items[loc].type);
-    break;
-  case ARG_VAR_LOC:
-    TODO("fix var local type");
-  default: UNREACHABLE("arg");
+static bool name_arg_defined(Program *prog, Arg *arg)
+{
+  if (arg->kind == ARG_NAME && !symbol_defined(&prog->global, arg->name)) {
+    pcompile_info(prog->filename, arg->loc,
+                  "error: refered symbol \"%s\" is not defined\n", arg->name);
+    return false;
   }
-
   return true;
 }
 
-static bool detect_all_unknown_type(Program *prog)
+static bool all_refered_defined(Program *prog)
 {
   da_foreach (Fn, fn, &prog->fn_list) {
     da_foreach (Op, op, &fn->fn_body) {
       switch (op->kind) {
       case OP_RETURN:
-        if (!fix_unknown_type_arg(&op->ret_val, prog)) return false;
+        if (!name_arg_defined(prog, &op->ret_val)) return false;
         break;
       case OP_SET_VAR:
-        // must first fix type of val and then fix var
-        // because the type of var is unknown only if
-        // the type of val is unkown when it is initialized.
-        if (!fix_unknown_type_arg(&op->val, prog)) return false;
-        if (!fix_unknown_type_arg(&op->var, prog)) return false;
+        if (!name_arg_defined(prog, &op->val)) return false;
+        if (!name_arg_defined(prog, &op->var)) return false;
         break;
       case OP_INVOKE:
-        if (!fix_unknown_type_arg(&op->fn, prog)) return false;
+        if (!name_arg_defined(prog, &op->fn)) return false;
         da_foreach (Arg, arg, &op->args) {
-          if (!fix_unknown_type_arg(arg, prog)) return false;
+          if (!name_arg_defined(prog, arg)) return false;
         }
         break;
       default: UNREACHABLE("op");
@@ -796,8 +774,78 @@ static bool detect_all_unknown_type(Program *prog)
   return true;
 }
 
-static bool backpatch_prog(Program *prog)
+static bool detect_arg_type(Arg *arg, SymbolList *global, SymbolList *local) {
+  if (arg->type.kind != TYPE_UNKNOWN) return true;
+
+  if (arg->kind == ARG_NAME) {
+    assert(symbol_defined(global, arg->name));
+    size_t loc = search_symbol(global, arg->name);
+    arg->type = type_clone(global->items[loc].type);
+  } else if (arg->kind == ARG_VAR_LOC) {
+    assert(arg->label - 1 < local->count);
+    TypeExpr *var_type = &local->items[arg->label - 1].type;
+    assert(var_type->kind != TYPE_UNKNOWN);
+    arg->type = type_clone(*var_type);
+  } else {
+    UNREACHABLE("detect_arg_type");
+  }
+  return true;
+}
+
+static bool detect_var_type(Arg *var, Arg *val, SymbolList *global, SymbolList *local)
 {
+  assert(val->type.kind != TYPE_UNKNOWN);
+  if (var->type.kind != TYPE_UNKNOWN) return true;
+  
+  TypeExpr *var_type = NULL;
+  if (var->kind == ARG_VAR_LOC) {
+    assert(var->label - 1 < local->count);
+    var_type = &local->items[var->label - 1].type;
+  } else if (var->kind == ARG_NAME) {
+    assert(symbol_defined(global, var->name));
+    size_t i = search_symbol(global, var->name);
+    var_type = &global->items[i].type;
+  } else {
+    UNREACHABLE("fix_type_var");
+  }
+
+  if (var_type->kind == TYPE_UNKNOWN) {
+    *var_type = type_clone(val->type);
+  }
+
+  return true;
+}
+
+static bool detect_all_unknown_type(Program *prog)
+{
+  SymbolList *global = &prog->global;
+  da_foreach (Fn, fn, &prog->fn_list) {
+    SymbolList *local = &fn->local;
+    da_foreach (Op, op, &fn->fn_body) {
+      switch (op->kind) {
+      case OP_RETURN:
+        if (!detect_arg_type(&op->ret_val, global, local)) return false;
+        break;
+      case OP_SET_VAR:
+        if (!detect_arg_type(&op->val, global, local)) return false;
+        if (!detect_var_type(&op->var, &op->val, global, local)) return false;
+        break;
+      case OP_INVOKE:
+        if (!detect_arg_type(&op->fn, global, local)) return false;
+        da_foreach (Arg, arg, &op->args) {
+          if (!detect_arg_type(arg, global, local)) return false;
+        }
+        break;
+      default: UNREACHABLE("op");
+      }
+    }
+  }
+  return true;
+}
+
+static bool recheck_prog(Program *prog)
+{
+  if (!all_refered_defined(prog)) return false;
   if (!detect_all_unknown_type(prog)) return false;
   
   return true;
@@ -818,7 +866,7 @@ bool compile_file(stb_lexer *l, const char *filename, Program *prog)
     } else if (strcmp(l->string, "extern") == 0) {
       Symbol sym = { .external = true };
       if (!prefetch_expect_token(l, filename, CLEX_id)) return false;
-      if (search_symbol(&prog->global, l->string) < prog->global.count) {
+      if (symbol_defined(&prog->global, l->string)) {
         pcompile_info(filename, lex_location(l), "error: symbol %s redefined\n", l->string);
         return false;
       }
@@ -837,7 +885,7 @@ bool compile_file(stb_lexer *l, const char *filename, Program *prog)
     }
   }
 
-  return backpatch_prog(prog);
+  return recheck_prog(prog);
 }
 
 void destroy_program(Program *prog)
