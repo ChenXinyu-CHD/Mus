@@ -73,6 +73,7 @@ typedef enum {
 
 typedef struct {
   OpKind kind;
+  stb_lex_location loc;
   union {
     struct {
       Arg fn;
@@ -129,7 +130,7 @@ typedef struct {
   } str_lits;
 } Program;
 
-bool compile_file(stb_lexer *l, const char *filename, Program *grog);
+bool compile_program(stb_lexer *l, const char *filename, Program *grog);
 void destroy_program(Program *prog);
 
 #endif // MCC_PASER_H

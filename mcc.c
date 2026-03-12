@@ -371,7 +371,7 @@ int main(int argc, char **argv)
   stb_lexer lex;
   stb_c_lexer_init(&lex, sb.items, sb.items + sb.count, lexer_buffer, LEXER_BUFFER_SIZE);
 
-  if (!compile_file(&lex, mcc_args.files.items[0], &prog)) {
+  if (!compile_program(&lex, mcc_args.files.items[0], &prog)) {
     fprintf(stderr, "fatal error: failed to compile file %s\n", argv[1]);
     return_defer(1);
   }

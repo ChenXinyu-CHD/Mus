@@ -444,11 +444,16 @@ static bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Fn *f
 static bool compile_statement(stb_lexer *l, const char *filename, Program *prog, Fn *fn)
 {
   Arg arg;
+  stb_lex_location loc = lex_location(l);
   if (!compile_arg(l, filename, prog, fn, &arg)) return false;
   if (!prefetch_not_none(l, filename)) return false;
 
   if (l->token == '(') {
-    Op invoke = { .kind = OP_INVOKE, .fn = arg };
+    Op invoke = {
+      .kind = OP_INVOKE,
+      .loc = loc,
+      .fn = arg
+    };
     
     if (!prefetch_not_none(l, filename)) return false;
     while (l->token != ')') {
@@ -483,6 +488,7 @@ static bool compile_statement(stb_lexer *l, const char *filename, Program *prog,
     
     Op set_var = {
       .kind = OP_SET_VAR,
+      .loc = loc,
       .var = arg,
       .val = val,
     };
@@ -637,11 +643,13 @@ static bool compile_local_var(stb_lexer *l, const char *filename, Program *prog,
   
   if (l->token != '=') return true;
 
+  stb_lex_location loc = lex_location(l);
   if (!prefetch_not_none(l, filename)) return false;
   Arg val = {0};
   if (!compile_arg(l, filename, prog, fn, &val)) return false;    
   Op set_var = {
     .kind = OP_SET_VAR,
+    .loc = loc,
     .var = arg_local_var(fn, pos),
     .val = val,
   };
@@ -659,7 +667,10 @@ static bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, F
     if (l->token == ';') {
       if (!prefetch_not_none(l, filename)) return false;
     } else if (l->token == CLEX_id && strcmp(l->string, "return") == 0) {
-      Op ret = { .kind = OP_RETURN };
+      Op ret = {
+        .kind = OP_RETURN,
+        .loc = lex_location(l),
+      };
       if (!prefetch_not_none(l, filename)) return false;
       if (!compile_arg(l, filename, prog, fn, &ret.ret_val)) return false;
       da_append(&fn->fn_body, ret);
@@ -676,6 +687,7 @@ static bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, F
   if (!returned) {
     Op ret = {
       .kind = OP_RETURN,
+      .loc = lex_location(l),
       .ret_val = {
         .kind = ARG_NONE,
         .type = { .kind = TYPE_VOID },
@@ -843,15 +855,7 @@ static bool detect_all_unknown_type(Program *prog)
   return true;
 }
 
-static bool recheck_prog(Program *prog)
-{
-  if (!all_refered_defined(prog)) return false;
-  if (!detect_all_unknown_type(prog)) return false;
-  
-  return true;
-}
-
-bool compile_file(stb_lexer *l, const char *filename, Program *prog)
+static bool compile_file(stb_lexer *l, const char *filename, Program *prog)
 {
   prog->filename = filename;
   while (next_token(l, filename)) {
@@ -885,7 +889,140 @@ bool compile_file(stb_lexer *l, const char *filename, Program *prog)
     }
   }
 
-  return recheck_prog(prog);
+  return true;
+}
+
+static bool type_matched(TypeExpr *required, TypeExpr *actual)
+{
+  // TODO: check pointer type and function type
+  if (required->kind != actual->kind) {
+    return false;
+  }
+
+  if (required->kind == TYPE_INT || required->kind == TYPE_UINT) {
+    return required->size >= actual->size;
+  }
+
+  return true;
+}
+
+static void dump_type_expr(TypeExpr *type, FILE *stream)
+{
+  UNUSED(stream);
+  switch(type->kind) {
+  case TYPE_UNKNOWN:
+    fprintf(stream, "unknown type");
+    break;
+  case TYPE_VOID:
+    fprintf(stream, "void");
+    break;
+  case TYPE_INT:
+    fprintf(stream, "i%ld", type->size * 8);
+    break;
+  case TYPE_UINT:
+    fprintf(stream, "u%ld", type->size * 8);
+    break;
+  case TYPE_FN: 
+    fprintf(stream, "fn(");
+    for (size_t i = 0; i < type->arg_types.count; ++i) {
+      dump_type_expr(&type->arg_types.items[i], stream);
+      if (i + 1 < type->arg_types.count) {
+        fprintf(stream, ",");
+      } else if (type->va_args) {
+        fprintf(stream, ",...");
+      }
+    }
+    fprintf(stream, "):");
+    dump_type_expr(type->ret_type, stream);
+    break;
+  case TYPE_PTR:
+    fprintf(stream, "*");
+    dump_type_expr(type->ref_type, stream);
+    break;
+  default: UNREACHABLE("type");
+  }
+}
+
+static bool check_type(Program *prog)
+{
+  da_foreach (Fn, fn, &prog->fn_list) {
+    assert(symbol_defined(&prog->global, fn->name));
+    size_t fn_loc = search_symbol(&prog->global, fn->name);
+    TypeExpr *fn_type = &prog->global.items[fn_loc].type;
+    
+    assert(fn_type->kind == TYPE_FN);
+    da_foreach (Op, op, &fn->fn_body) {
+      switch (op->kind) {
+      case OP_RETURN:
+        TypeExpr *ret_type = &op->ret_val.type;
+        if (!type_matched(fn_type->ret_type, ret_type)) {
+          pcompile_info(prog->filename, op->loc, "error: the return type of %s is required to be ", fn->name);
+          dump_type_expr(fn_type->ret_type, stderr);
+          fprintf(stderr, ", but got ");
+          dump_type_expr(ret_type, stderr);
+          fputc('\n', stderr);
+          return false;
+        }
+        break;
+      case OP_SET_VAR:
+        if (!type_matched(&op->var.type, &op->val.type)) {
+          pcompile_info(prog->filename, op->loc, "error: incompatible types when assigning to type \"");
+          dump_type_expr(&op->var.type, stderr);
+          fprintf(stderr, "\" from type \"");
+          dump_type_expr(&op->val.type, stderr);
+          fprintf(stderr, "\"\n");
+          return false;
+        }
+        
+        break;
+      case OP_INVOKE:
+        // TODO: report a better error message.
+        if (op->fn.type.kind != TYPE_FN) {
+          pcompile_info(prog->filename, op->loc, "error: try to invoke an uncallable value\n");
+          return false;
+        }
+        TypeExpr *invoked_type = &op->fn.type;
+        TypeList *expected_types = &invoked_type->arg_types;
+
+        bool size_matched = invoked_type->va_args?
+          expected_types->count <= op->args.count:
+          expected_types->count == op->args.count;
+        if (!size_matched) {
+          pcompile_info(prog->filename, op->loc,
+                        "error: this function expected %ld arguments, but got %ld arguments\n",
+                        expected_types->count, op->args.count);
+          return false;
+        }
+
+        assert(expected_types->count <= op->args.count);
+        for (size_t i = 0; i < expected_types->count; ++i) {
+          TypeExpr *expected = &expected_types->items[i];
+          TypeExpr *actual = &op->args.items[i].type;
+          if (!type_matched(expected, actual)) {
+            pcompile_info(prog->filename, op->loc, "error: the %ld-th argument is expected to be ", i);
+            dump_type_expr(expected, stderr);
+            fprintf(stderr, ", but got ");
+            dump_type_expr(actual, stderr);
+            fputc('\n', stderr);
+            return false;
+          }
+        }
+        break;
+      default: UNREACHABLE("op");
+      }
+    }
+  }
+  return true;
+}
+
+bool compile_program(stb_lexer *l, const char *filename, Program *prog)
+{
+  if (!compile_file(l, filename, prog)) return false;
+  if (!all_refered_defined(prog)) return false;
+  if (!detect_all_unknown_type(prog)) return false;
+  if (!check_type(prog)) return false;
+  
+  return true;
 }
 
 void destroy_program(Program *prog)
@@ -903,3 +1040,4 @@ void destroy_program(Program *prog)
     da_free(prog->str_lits);
   }
 }
+

@@ -1,12 +1,13 @@
 extern printf: fn(&i8, ...):i32;
 
-fn hello(): void
-{
-  printf("hello, %s\n", "world");
-}
-
 fn main(): i64
 {
   hello()
   return 0
 }
+
+fn hello(): void
+{
+  printf("hello, %s\n", "world");
+}
+
