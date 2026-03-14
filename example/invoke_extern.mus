@@ -2,11 +2,11 @@ extern putchar: fn(i64): i64
 
 fn main(): i64
 {
-    putchar(72)  // H
-    putchar(101) // e
-    putchar(108) // l
-    putchar(108); // l
-    putchar(111) // o
-    putchar(10)  // \n
+    putchar(72)   # H
+    putchar(101)  # e
+    putchar(108)  # l
+    putchar(108); # l
+    putchar(111)  # o
+    putchar(10)   # \n
     return 0
 }

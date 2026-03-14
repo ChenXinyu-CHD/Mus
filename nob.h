@@ -1,4 +1,4 @@
-/* nob - v3.1.0 - Public Domain - https://github.com/tsoding/nob.h
+/* nob - v3.5.0 - Public Domain - https://github.com/tsoding/nob.h
 
    This library is the next generation of the [NoBuild](https://github.com/tsoding/nobuild) idea.
 
@@ -219,13 +219,16 @@ typedef enum {
 // Any messages with the level below nob_minimal_log_level are going to be suppressed.
 extern Nob_Log_Level nob_minimal_log_level;
 
-typedef void (nob_log_handler)(Nob_Log_Level level, const char *fmt, va_list args);
+typedef void (Nob_Log_Handler)(Nob_Log_Level level, const char *fmt, va_list args);
+NOB_DEPRECATED("Uncapitalized nob_log_handler type is deprecated. Use Nob_Log_Handler instead. It's just when we were releasing the log handler feature we forgot that we had a convention that all the types must be capitalized like that. Sorry about it!")
+typedef Nob_Log_Handler nob_log_handler;
 
-NOBDEF void nob_set_log_handler(nob_log_handler *handler);
-NOBDEF nob_log_handler *nob_get_log_handler(void);
+NOBDEF void nob_set_log_handler(Nob_Log_Handler *handler);
+NOBDEF Nob_Log_Handler *nob_get_log_handler(void);
 
-NOBDEF nob_log_handler nob_default_log_handler;
-NOBDEF nob_log_handler nob_cancer_log_handler;
+NOBDEF Nob_Log_Handler nob_default_log_handler;
+NOBDEF Nob_Log_Handler nob_cancer_log_handler;
+NOBDEF Nob_Log_Handler nob_null_log_handler;
 
 NOBDEF void nob_log(Nob_Log_Level level, const char *fmt, ...) NOB_PRINTF_FORMAT(2, 3);
 
@@ -315,7 +318,7 @@ typedef struct {
         DIR *posix_dir;
         struct dirent *posix_ent;
 #endif // _WIN32
-    } nob__private;
+    } nob__private; // TODO: we don't have solid conventions regarding private struct fields
 } Nob_Dir_Entry;
 
 // nob_dir_entry_open() - open the directory entry for iteration.
@@ -380,6 +383,8 @@ NOBDEF void nob_dir_entry_close(Nob_Dir_Entry dir);
         (da)->count = (new_size);       \
     } while (0)
 
+#define nob_da_pop(da) (da)->items[(NOB_ASSERT((da)->count > 0), --(da)->count)]
+#define nob_da_first(da) (da)->items[(NOB_ASSERT((da)->count > 0), 0)]
 #define nob_da_last(da) (da)->items[(NOB_ASSERT((da)->count > 0), (da)->count-1)]
 #define nob_da_remove_unordered(da, i)               \
     do {                                             \
@@ -410,6 +415,11 @@ NOBDEF void nob_dir_entry_close(Nob_Dir_Entry dir);
 // }
 // ```
 #define nob_da_foreach(Type, it, da) for (Type *it = (da)->items; it < (da)->items + (da)->count; ++it)
+
+// The Fixed Array append. `items` fields must be a fixed size array. Its size determines the capacity.
+#define nob_fa_append(fa, item) \
+    (NOB_ASSERT((fa)->count < NOB_ARRAY_LEN((fa)->items)), \
+     (fa)->items[(fa)->count++] = (item))
 
 typedef struct {
     char *items;
@@ -471,6 +481,13 @@ NOBDEF Nob_Fd nob_fd_open_for_write(const char *path);
 NOBDEF void nob_fd_close(Nob_Fd fd);
 
 typedef struct {
+    Nob_Fd read;
+    Nob_Fd write;
+} Nob_Pipe;
+
+NOBDEF bool nob_pipe_create(Nob_Pipe *pp);
+
+typedef struct {
     Nob_Proc *items;
     size_t count;
     size_t capacity;
@@ -519,6 +536,71 @@ typedef struct {
 // Run the command with options.
 NOBDEF bool nob_cmd_run_opt(Nob_Cmd *cmd, Nob_Cmd_Opt opt);
 
+// Command Chains (in Shell Scripting they are know as Pipes)
+//
+// Usage:
+// ```c
+// Nob_Cmd cmd = {0};
+// Nob_Chain chain = {0};
+// if (!nob_chain_begin(&chain)) return 1;
+// {
+//     nob_cmd_append(&cmd, "echo", "Hello, World");
+//     if (!nob_chain_cmd(&chain, &cmd)) return 1;
+//
+//     nob_cmd_append(&cmd, "rev");
+//     if (!nob_chain_cmd(&chain, &cmd)) return 1;
+//
+//     nob_cmd_append(&cmd, "xxd");
+//     if (!nob_chain_cmd(&chain, &cmd)) return 1;
+// }
+// if (!nob_chain_end(&chain)) return 1;
+// ```
+//
+// The above is equivalent to a shell command:
+//
+// ```sh
+// echo "Hello, World" | rev | xxd
+// ```
+//
+// After nob_chain_end() the Nob_Chain struct can be reused again.
+//
+// The fields of the Nob_Chain struct contain the intermediate state of the Command
+// Chain that is being built with the nob_chain_cmd() calls and generally have no
+// particular use for the user.
+//
+// The only memory dynamically allocated within Nob_Chain belongs to the .cmd field.
+// So if you want to clean it all up you can just do free(chain.cmd.items).
+typedef struct {
+    // The file descriptor of the output of the previous command. Will be used as the input for the next command.
+    Nob_Fd fdin;
+    // The command from the last nob_chain_cmd() call.
+    Nob_Cmd cmd;
+    // The value of the optional .err2out parameter from the last nob_chain_cmd() call.
+    bool err2out;
+} Nob_Chain;
+
+typedef struct {
+    const char *stdin_path;
+} Nob_Chain_Begin_Opt;
+#define nob_chain_begin(chain, ...) nob_chain_begin_opt((chain), (Nob_Chain_Begin_Opt) { __VA_ARGS__ })
+NOBDEF bool nob_chain_begin_opt(Nob_Chain *chain, Nob_Chain_Begin_Opt opt);
+
+typedef struct {
+    bool err2out;
+    bool dont_reset;
+} Nob_Chain_Cmd_Opt;
+#define nob_chain_cmd(chain, cmd, ...) nob_chain_cmd_opt((chain), (cmd), (Nob_Chain_Cmd_Opt) { __VA_ARGS__ })
+NOBDEF bool nob_chain_cmd_opt(Nob_Chain *chain, Nob_Cmd *cmd, Nob_Chain_Cmd_Opt opt);
+
+typedef struct {
+    Nob_Procs *async;
+    size_t max_procs;
+    const char *stdout_path;
+    const char *stderr_path;
+} Nob_Chain_End_Opt;
+#define nob_chain_end(chain, ...) nob_chain_end_opt((chain), (Nob_Chain_End_Opt) { __VA_ARGS__ })
+NOBDEF bool nob_chain_end_opt(Nob_Chain *chain, Nob_Chain_End_Opt opt);
+
 // Get amount of processors on the machine.
 NOBDEF int nob_nprocs(void);
 
@@ -566,10 +648,13 @@ typedef struct {
 // use it as a C string.
 NOBDEF void nob_cmd_render(Nob_Cmd cmd, Nob_String_Builder *render);
 
+NOBDEF void nob__cmd_append(Nob_Cmd *cmd, size_t n, ...);
 #define nob_cmd_append(cmd, ...) \
     nob__cmd_append(cmd, (sizeof((const char*[]){__VA_ARGS__})/sizeof(const char*)), __VA_ARGS__)
 
 // TODO: nob_cmd_extend() evaluates other_cmd twice
+// It can be fixed by turning nob_cmd_extend() call into a statement.
+// But that may break backward compatibility of the API.
 #define nob_cmd_extend(cmd, other_cmd) \
     nob_da_append_many(cmd, (other_cmd)->items, (other_cmd)->count)
 
@@ -676,7 +761,7 @@ NOBDEF char *nob_temp_file_name(const char *path);
 NOBDEF char *nob_temp_file_ext(const char *path);
 NOBDEF char *nob_temp_running_executable_path(void);
 
-// TODO: we should probably document somewhere all the compiler we support
+// TODO: we should probably document somewhere all the compilers we support
 
 // The nob_cc_* macros try to abstract away the specific compiler.
 // They are verify basic and not particularly flexible, but you can redefine them if you need to
@@ -800,8 +885,12 @@ typedef struct {
 
 NOBDEF const char *nob_temp_sv_to_cstr(Nob_String_View sv);
 
+NOBDEF Nob_String_View nob_sv_chop_while(Nob_String_View *sv, int (*p)(int x));
 NOBDEF Nob_String_View nob_sv_chop_by_delim(Nob_String_View *sv, char delim);
 NOBDEF Nob_String_View nob_sv_chop_left(Nob_String_View *sv, size_t n);
+// If `sv` starts with `prefix` chops off the prefix and returns true.
+// Otherwise, leaves `sv` unmodified and returns false.
+NOBDEF bool nob_sv_chop_prefix(Nob_String_View *sv, Nob_String_View prefix);
 NOBDEF Nob_String_View nob_sv_trim(Nob_String_View sv);
 NOBDEF Nob_String_View nob_sv_trim_left(Nob_String_View sv);
 NOBDEF Nob_String_View nob_sv_trim_right(Nob_String_View sv);
@@ -845,7 +934,7 @@ static Nob_Proc nob__cmd_start_process(Nob_Cmd cmd, Nob_Fd *fdin, Nob_Fd *fdout,
 // Any messages with the level below nob_minimal_log_level are going to be suppressed.
 Nob_Log_Level nob_minimal_log_level = NOB_INFO;
 
-void nob__cmd_append(Nob_Cmd *cmd, size_t n, ...)
+NOBDEF void nob__cmd_append(Nob_Cmd *cmd, size_t n, ...)
 {
     va_list args;
     va_start(args, n);
@@ -1169,6 +1258,143 @@ defer:
     return result;
 }
 
+NOBDEF bool nob_chain_begin_opt(Nob_Chain *chain, Nob_Chain_Begin_Opt opt)
+{
+    chain->cmd.count = 0;
+    chain->err2out = false;
+    chain->fdin = NOB_INVALID_FD;
+    if (opt.stdin_path) {
+        chain->fdin = nob_fd_open_for_read(opt.stdin_path);
+        if (chain->fdin == NOB_INVALID_FD) return false;
+    }
+    return true;
+}
+
+NOBDEF bool nob_chain_cmd_opt(Nob_Chain *chain, Nob_Cmd *cmd, Nob_Chain_Cmd_Opt opt)
+{
+    bool result = true;
+    Nob_Pipe pp = {0};
+    struct {
+        Nob_Fd items[5]; // should be no more than 3, but we allocate 5 just in case
+        size_t count;
+    } fds = {0};
+
+    NOB_ASSERT(cmd->count > 0);
+
+    if (chain->cmd.count != 0) { // not first cmd in the chain
+        Nob_Fd *pfdin = NULL;
+        if (chain->fdin != NOB_INVALID_FD) {
+            nob_fa_append(&fds, chain->fdin);
+            pfdin = &chain->fdin;
+        }
+        if (!nob_pipe_create(&pp)) nob_return_defer(false);
+        nob_fa_append(&fds, pp.write);
+        Nob_Fd *pfdout = &pp.write;
+        Nob_Fd *pfderr = chain->err2out ? pfdout : NULL;
+
+        Nob_Proc proc = nob__cmd_start_process(chain->cmd, pfdin, pfdout, pfderr);
+        chain->cmd.count = 0;
+        if (proc == NOB_INVALID_PROC) {
+            nob_fa_append(&fds, pp.read);
+            nob_return_defer(false);
+        }
+        chain->fdin = pp.read;
+    }
+
+    nob_da_append_many(&chain->cmd, cmd->items, cmd->count);
+    chain->err2out = opt.err2out;
+
+defer:
+    for (size_t i = 0; i < fds.count; ++i) {
+        nob_fd_close(fds.items[i]);
+    }
+    if (!opt.dont_reset) cmd->count = 0;
+    return result;
+}
+
+static Nob_Fd nob__fd_stdout(void)
+{
+#ifdef _WIN32
+    return GetStdHandle(STD_OUTPUT_HANDLE);
+#else
+    return STDOUT_FILENO;
+#endif // _WIN32
+}
+
+NOBDEF bool nob_chain_end_opt(Nob_Chain *chain, Nob_Chain_End_Opt opt)
+{
+    bool result = true;
+
+    Nob_Fd *pfdin = NULL;
+    struct {
+        Nob_Fd items[5]; // should be no more than 3, but we allocate 5 just in case
+        size_t count;
+    } fds = {0};
+
+    if (chain->fdin != NOB_INVALID_FD) {
+        nob_fa_append(&fds, chain->fdin);
+        pfdin = &chain->fdin;
+    }
+
+    if (chain->cmd.count != 0) { // Non-empty chain case
+        size_t max_procs = opt.max_procs > 0 ? opt.max_procs : (size_t) nob_nprocs() + 1;
+
+        if (opt.async && max_procs > 0) {
+            while (opt.async->count >= max_procs) {
+                for (size_t i = 0; i < opt.async->count; ++i) {
+                    int ret = nob__proc_wait_async(opt.async->items[i], 1);
+                    if (ret < 0) nob_return_defer(false);
+                    if (ret) {
+                        nob_da_remove_unordered(opt.async, i);
+                        break;
+                    }
+                }
+            }
+        }
+
+        Nob_Fd fdout = nob__fd_stdout();
+        if (opt.stdout_path) {
+            fdout = nob_fd_open_for_write(opt.stdout_path);
+            if (fdout == NOB_INVALID_FD) nob_return_defer(false);
+            nob_fa_append(&fds, fdout);
+        }
+
+        Nob_Fd fderr = 0;
+        Nob_Fd *pfderr = NULL;
+        if (chain->err2out) pfderr = &fdout;
+        if (opt.stderr_path) {
+            if (pfderr == NULL) {
+                fderr = nob_fd_open_for_write(opt.stderr_path);
+                if (fderr == NOB_INVALID_FD) nob_return_defer(false);
+                nob_fa_append(&fds, fderr);
+                pfderr = &fderr;
+            } else {
+                // There was err2out set for the last command.
+                // All the stderr will go to stdout.
+                // So the stderr file is going to be empty.
+                NOB_ASSERT(chain->err2out);
+                if (!nob_write_entire_file(opt.stderr_path, NULL, 0)) nob_return_defer(false);
+            }
+        }
+
+        Nob_Proc proc = nob__cmd_start_process(chain->cmd, pfdin, &fdout, pfderr);
+        chain->cmd.count = 0;
+
+        if (opt.async) {
+            if (proc == NOB_INVALID_PROC) nob_return_defer(false);
+            nob_da_append(opt.async, proc);
+        } else {
+            if (!nob_proc_wait(proc)) nob_return_defer(false);
+        }
+    }
+
+defer:
+    for (size_t i = 0; i < fds.count; ++i) {
+        nob_fd_close(fds.items[i]);
+    }
+    return result;
+}
+
 // The maximum time span representable is 584 years.
 NOBDEF uint64_t nob_nanos_since_unspecified_epoch(void)
 {
@@ -1398,6 +1624,35 @@ NOBDEF void nob_fd_close(Nob_Fd fd)
 #endif // _WIN32
 }
 
+NOBDEF bool nob_pipe_create(Nob_Pipe *pp)
+{
+#ifdef _WIN32
+    // https://docs.microsoft.com/en-us/windows/win32/ProcThread/creating-a-child-process-with-redirected-input-and-output
+
+    SECURITY_ATTRIBUTES saAttr = {0};
+    saAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
+    saAttr.bInheritHandle = TRUE;
+
+    if (!CreatePipe(&pp->read, &pp->write, &saAttr, 0)) {
+        nob_log(NOB_ERROR, "Could not create pipe: %s", nob_win32_error_message(GetLastError()));
+        return false;
+    }
+
+    return true;
+#else
+    int pipefd[2];
+    if (pipe(pipefd) < 0) {
+        nob_log(NOB_ERROR, "Could not create pipe: %s\n", strerror(errno));
+        return false;
+    }
+
+    pp->read  = pipefd[0];
+    pp->write = pipefd[1];
+
+    return true;
+#endif // _WIN32
+}
+
 NOBDEF bool nob_procs_wait(Nob_Procs procs)
 {
     bool success = true;
@@ -1597,14 +1852,14 @@ NOBDEF bool nob_cmd_run_sync_redirect_and_reset(Nob_Cmd *cmd, Nob_Cmd_Redirect r
     return nob_proc_wait(p);
 }
 
-static nob_log_handler *nob__log_handler = &nob_default_log_handler;
+static Nob_Log_Handler *nob__log_handler = &nob_default_log_handler;
 
-NOBDEF void nob_set_log_handler(nob_log_handler *handler)
+NOBDEF void nob_set_log_handler(Nob_Log_Handler *handler)
 {
     nob__log_handler = handler;
 }
 
-NOBDEF nob_log_handler *nob_get_log_handler(void)
+NOBDEF Nob_Log_Handler *nob_get_log_handler(void)
 {
     return nob__log_handler;
 }
@@ -1630,6 +1885,13 @@ NOBDEF void nob_default_log_handler(Nob_Log_Level level, const char *fmt, va_lis
 
     vfprintf(stderr, fmt, args);
     fprintf(stderr, "\n");
+}
+
+NOBDEF void nob_null_log_handler(Nob_Log_Level level, const char *fmt, va_list args)
+{
+    NOB_UNUSED(level);
+    NOB_UNUSED(fmt);
+    NOB_UNUSED(args);
 }
 
 NOBDEF void nob_cancer_log_handler(Nob_Log_Level level, const char *fmt, va_list args)
@@ -1677,7 +1939,7 @@ NOBDEF bool nob_dir_entry_open(const char *dir_path, Nob_Dir_Entry *dir)
     }
 #else
     dir->nob__private.posix_dir = opendir(dir_path);
-    if (dir == NULL) {
+    if (dir->nob__private.posix_dir == NULL) {
         nob_log(NOB_ERROR, "Could not open directory %s: %s", dir_path, strerror(errno));
         dir->error = true;
         return false;
@@ -1828,6 +2090,10 @@ NOBDEF bool nob_walk_dir_opt(const char *root, Nob_Walk_Func func, Nob_Walk_Dir_
 
 NOBDEF bool nob_read_entire_dir(const char *parent, Nob_File_Paths *children)
 {
+    if (strlen(parent) == 0) {
+        nob_log(NOB_ERROR, "Cannot read empty path");
+        return false;
+    }
     bool result = true;
     Nob_Dir_Entry dir = {0};
     if (!nob_dir_entry_open(parent, &dir)) nob_return_defer(false);
@@ -2244,6 +2510,20 @@ NOBDEF void nob_sb_pad_align(Nob_String_Builder *sb, size_t size)
     }
 }
 
+NOBDEF Nob_String_View nob_sv_chop_while(Nob_String_View *sv, int (*p)(int x))
+{
+    size_t i = 0;
+    while (i < sv->count && p(sv->data[i])) {
+        i += 1;
+    }
+
+    Nob_String_View result = nob_sv_from_parts(sv->data, i);
+    sv->count -= i;
+    sv->data  += i;
+
+    return result;
+}
+
 NOBDEF Nob_String_View nob_sv_chop_by_delim(Nob_String_View *sv, char delim)
 {
     size_t i = 0;
@@ -2262,6 +2542,15 @@ NOBDEF Nob_String_View nob_sv_chop_by_delim(Nob_String_View *sv, char delim)
     }
 
     return result;
+}
+
+NOBDEF bool nob_sv_chop_prefix(Nob_String_View *sv, Nob_String_View prefix)
+{
+    if (nob_sv_starts_with(*sv, prefix)) {
+        nob_sv_chop_left(sv, prefix.count);
+        return true;
+    }
+    return false;
 }
 
 NOBDEF Nob_String_View nob_sv_chop_left(Nob_String_View *sv, size_t n)
@@ -2522,8 +2811,10 @@ NOBDEF char *nob_temp_running_executable_path(void)
         #define Log_Level Nob_Log_Level
         #define minimal_log_level nob_minimal_log_level
         #define log_handler nob_log_handler
+        #define Log_Handler Nob_Log_Handler
         #define set_log_handler nob_set_log_handler
         #define get_log_handler nob_get_log_handler
+        #define null_log_handler nob_null_log_handler
         #define default_log_handler nob_default_log_handler
         #define cancer_log_handler nob_cancer_log_handler
         // NOTE: Name log is already defined in math.h and historically always was the natural logarithmic function.
@@ -2566,8 +2857,11 @@ NOBDEF char *nob_temp_running_executable_path(void)
         #define da_resize nob_da_resize
         #define da_reserve nob_da_reserve
         #define da_last nob_da_last
+        #define da_first nob_da_first
+        #define da_pop nob_da_pop
         #define da_remove_unordered nob_da_remove_unordered
         #define da_foreach nob_da_foreach
+        #define fa_append nob_fa_append
         #define swap nob_swap
         #define String_Builder Nob_String_Builder
         #define read_entire_file nob_read_entire_file
@@ -2581,6 +2875,18 @@ NOBDEF char *nob_temp_running_executable_path(void)
         #define Proc Nob_Proc
         #define INVALID_PROC NOB_INVALID_PROC
         #define Fd Nob_Fd
+        #define Pipe Nob_Pipe
+        #define pipe_create nob_pipe_create
+        #define Chain Nob_Chain
+        #define Chain_Begin_Opt Nob_Chain_Begin_Opt
+        #define chain_begin nob_chain_begin
+        #define chain_begin_opt nob_chain_begin_opt
+        #define Chain_Cmd_Opt Nob_Chain_Cmd_Opt
+        #define chain_cmd nob_chain_cmd
+        #define chain_cmd_opt nob_chain_cmd_opt
+        #define Chain_End_Opt Nob_Chain_End_Opt
+        #define chain_end nob_chain_end
+        #define chain_end_opt nob_chain_end_opt
         #define INVALID_FD NOB_INVALID_FD
         #define fd_open_for_read nob_fd_open_for_read
         #define fd_open_for_write nob_fd_open_for_write
@@ -2631,6 +2937,8 @@ NOBDEF char *nob_temp_running_executable_path(void)
         #define String_View Nob_String_View
         #define temp_sv_to_cstr nob_temp_sv_to_cstr
         #define sv_chop_by_delim nob_sv_chop_by_delim
+        #define sv_chop_while nob_sv_chop_while
+        #define sv_chop_prefix nob_sv_chop_prefix
         #define sv_chop_left nob_sv_chop_left
         #define sv_trim nob_sv_trim
         #define sv_trim_left nob_sv_trim_left
@@ -2651,6 +2959,29 @@ NOBDEF char *nob_temp_running_executable_path(void)
 /*
    Revision history:
 
+      3.5.0 (2026-03-13) Add nob_null_log_handler (by @rexim)
+                         Rename nob_log_handler to Nob_Log_Handler (by @rexim)
+      3.4.0 (2026-03-12) Add nob_da_first() (by @rexim)
+                         Add nob_da_pop() (by @rexim)
+                         Add nob_sv_chop_while() (by @rexim)
+      3.3.0 (2026-03-07) Add nob_sv_chop_prefix() (by @rexim)
+      3.2.2 (2026-02-06) Fix read_entire_dir crash on empty path (by @ysoftware)
+      3.2.1 (2026-01-29) Fix the implicit declaration error when nob is included as a header (by @ysoftware)
+      3.2.0 (2026-01-28) Introduce Chain API
+                           - Nob_Chain
+                           - Nob_Chain_Begin_Opt
+                           - nob_chain_begin()
+                           - nob_chain_begin_opt()
+                           - Nob_Chain_Cmd_Opt
+                           - nob_chain_cmd()
+                           - nob_chain_cmd_opt()
+                           - Nob_Chain_End_Opt
+                           - nob_chain_end()
+                           - nob_chain_end_opt()
+                         Introduce some auxiliary things that were used in Chain API implementation, but might be useful outside of it:
+                           - Nob_Pipe
+                           - nob_pipe_create()
+                           - nob_fa_append()
       3.1.0 (2026-01-22) Make nob_delete_file() be able to delete empty dir on Windows (by @rexim)
                          Introduce Directory Entry API - similar to POSIX dirent but with names that don't collide
                            - Nob_Dir_Entry
@@ -2821,12 +3152,16 @@ NOBDEF char *nob_temp_running_executable_path(void)
       - Breaking backward compatibility in a MINOR release should be considered a bug and
         should be promptly fixed in the next PATCH release.
 
-   Naming Conventions:
+   API conventions:
 
-      - All the user facing names should be prefixed with `nob_` or `NOB_` depending on the case.
+      - All the user facing names should be prefixed with `nob_`, `NOB_`, or `Nob_` depending on the case.
       - The prefixes of non-redefinable names should be stripped in NOB_STRIP_PREFIX_GUARD_ section,
         unless explicitly stated otherwise like in case of nob_log() or nob_rename().
-      - Internal names should be prefixed with `nob__` (double underscore).
+      - Internal (private) names should be prefixed with `nob__` (double underscore). The user code is discouraged
+        from using such names since they are allowed to be broken in a backward incompatible way even in PATCH
+        releases. (This is why they are internal)
+      - If a public macro uses an private function internally such function must be forward declared in the NOB_H_
+        section.
 */
 
 /*

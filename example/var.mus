@@ -1,4 +1,4 @@
-//extern printf: fn(&i8, ...):i64
+# extern printf: fn(&i8, ...):i64
 
 fn main(): i64
 {

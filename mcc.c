@@ -2,18 +2,10 @@
 #include <string.h>
 #include <stdarg.h>
 
+#include "lexer.h"
 #include "parser.h"
 
 #include "stb_c_lexer.h"
-
-// nob.h uses this macro
-// but debian hurd do not have it
-// TODO: find out the real limit on PATH_MAX, and feed back to upstream
-#ifndef PATH_MAX
-#define PATH_MAX 2048
-#endif
-
-#define NOB_IMPLEMENTATION
 #include "nob.h"
 
 #define LEXER_BUFFER_SIZE 1<<20
@@ -250,7 +242,7 @@ bool build_x86_64_native(const char *filename, const Program *prog)
   if (!write_entire_file(asm_file, code.items, code.count)) return_defer(false);
   
   Cmd cmd = {0};
-  nob_cmd_append(&cmd, "cc", "-o", filename, asm_file);
+  cmd_append(&cmd, "cc", "-o", filename, asm_file);
   if(!cmd_run(&cmd)) return_defer(false);
   
   if (!write_entire_file(asm_file, code.items, code.count)) return_defer(false);
@@ -279,6 +271,7 @@ static const struct {
 
 static struct {
   const char *program;
+  bool only_lexer;
   Target target;
   File_Paths files;
   const char *outfile;
@@ -329,6 +322,9 @@ bool parse_mcc_args(int argc, char **argv)
         fprintf(stderr, "%s:error: Unsupported target '%s'\n", mcc_args.program, argv[i]);
         result = false;
       }
+    } else if (strcmp(argv[i], "-l") == 0) {
+      mcc_args.only_lexer = true;
+      i += 1;
     }
   }
 
@@ -349,6 +345,24 @@ bool parse_mcc_args(int argc, char **argv)
   return result;
 }
 
+bool dump_all_tokens(Lexer *l)
+{
+  while (lexer_next(l)) {
+    Token t = l->current;
+    printf(CS_Fmt, CS_Arg(t.start));
+    dump_token_kind(stdout, t.kind);
+    printf(": "SV_Fmt"\n", SV_Arg(t.token));
+  }
+  
+  Token t = l->current;
+  printf(CS_Fmt, CS_Arg(t.start));
+  dump_token_kind(stdout, t.kind);
+  printf(": "SV_Fmt"\n", SV_Arg(t.token));
+  if (t.kind == TOKEN_ERR) return false;
+
+  return true;
+}
+
 int main(int argc, char **argv)
 {
   if (!parse_mcc_args(argc, argv)) {
@@ -361,6 +375,13 @@ int main(int argc, char **argv)
 
   if (mcc_args.files.count > 1) {
     TODO("support multiple files");
+  }
+  
+  if (mcc_args.only_lexer) {
+    Lexer lexer = {0};
+
+    if (!lexer_init(&lexer, sv_from_cstr(mcc_args.files.items[0]))) return_defer(1);
+    return_defer(dump_all_tokens(&lexer)? 0 : 1);
   }
   
   if (!read_entire_file(mcc_args.files.items[0], &sb)) {
