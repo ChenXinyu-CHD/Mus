@@ -4,7 +4,7 @@
 #include <stddef.h>
 
 #include "nob.h"
-#include "stb_c_lexer.h"
+#include "lexer.h"
 
 typedef enum {
   TYPE_UNKNOWN,
@@ -14,6 +14,8 @@ typedef enum {
   TYPE_FN,
   TYPE_PTR,
 } TypeKind;
+
+#define TYPE_KIND_COUNT 6
 
 struct TypeExpr;
 
@@ -51,8 +53,8 @@ typedef struct {
   TypeExpr type;
   union {
     struct {
-      char *name;
-      stb_lex_location loc;
+      String_View name;
+      Cursor loc;
     };
     int    num_int;
     size_t label;
@@ -73,7 +75,7 @@ typedef enum {
 
 typedef struct {
   OpKind kind;
-  stb_lex_location loc;
+  Cursor loc;
   union {
     struct {
       Arg fn;
@@ -97,7 +99,7 @@ typedef struct {
 
 typedef struct {
   bool external;
-  char *name;
+  String_View name;
   TypeExpr type;
 } Symbol;
 
@@ -108,7 +110,7 @@ typedef struct {
 } SymbolList;
 
 typedef struct {
-  char *name;
+  String_View name;
   OpList fn_body;
   SymbolList local;
 } Fn;
@@ -120,17 +122,16 @@ typedef struct {
 } FnList;
 
 typedef struct {
-  const char *filename;
   FnList fn_list;
   SymbolList global;
   struct {
-    char **items;
+    String_View *items;
     size_t count;
     size_t capacity;
   } str_lits;
 } Program;
 
-bool compile_program(stb_lexer *l, const char *filename, Program *grog);
+bool compile_program(Lexer *l, Program *grog);
 void destroy_program(Program *prog);
 
 #endif // MCC_PASER_H

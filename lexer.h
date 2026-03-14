@@ -5,6 +5,8 @@
 
 #include "nob.h"
 
+int sv_to_int(String_View sv);
+
 typedef struct {
   String_View filename;
   size_t row;
@@ -57,6 +59,17 @@ void lexer_terminate(Lexer *lexer);
 #endif // MCC_LEXER_H
 
 #ifdef MCC_LEXER_IMPLEMENTATION
+
+int sv_to_int(String_View sv)
+{
+  int val = 0;
+  for (size_t i = 0; i < sv.count; ++i) {
+    assert(isdigit(sv.data[i]));
+    val *= 10;
+    val += sv.data[i] - '0';
+  }
+  return val;
+}
 
 char cs_getc(String_Builder sb, Cursor c)
 {

@@ -5,37 +5,18 @@
 #include "lexer.h"
 #include "parser.h"
 
-#include "stb_c_lexer.h"
 #include "nob.h"
 
-#define LEXER_BUFFER_SIZE 1<<20
-static char lexer_buffer[LEXER_BUFFER_SIZE];
-
-void append_str_lit(String_Builder *sb, char *str)
+void append_str_lit(String_Builder *sb, String_View str)
 {
-  da_append(sb, '"');
-  for (char *it = str; *it != '\0'; ++it) {
-    switch(*it) {
-    case '\n': sb_appendf(sb, "\\n");  break;
-    case '\b': sb_appendf(sb, "\\b");  break;
-    case '\t': sb_appendf(sb, "\\t");  break;
-    case '\r': sb_appendf(sb, "\\r");  break;
-    case '\v': sb_appendf(sb, "\\v");  break;
-    case '\'': sb_appendf(sb, "'");    break;
-    case '\"': sb_appendf(sb, "\\\""); break;
-    case '\a': sb_appendf(sb, "\\a");  break;
-    default: da_append(sb, *it);
-    }
-  }
-  
-  da_append(sb, '"');
+  sb_appendf(sb, "\""SV_Fmt"\"", SV_Arg(str));
 }
 
 void gen_arg_ir(String_Builder *sb, Arg arg)
 {
   switch(arg.kind) {
   case ARG_NAME:
-    sb_appendf(sb, "%s", arg.name);
+    sb_appendf(sb, SV_Fmt, SV_Arg(arg.name));
     break;
   case ARG_VAR_LOC:
     sb_appendf(sb, "%%local[%ld]", arg.label);
@@ -57,7 +38,7 @@ String_Builder gen_code_ir(const Program *prog)
   sb_appendf(&sb, "extern:");
   da_foreach (Symbol, sym, &prog->global) {
     if (sym->external) {
-      sb_appendf(&sb, " %s", sym->name);
+      sb_appendf(&sb, " "SV_Fmt"", SV_Arg(sym->name));
     }
   }
   sb_appendf(&sb, "\n\n");
@@ -72,7 +53,7 @@ String_Builder gen_code_ir(const Program *prog)
   sb_appendf(&sb, "\n");
   
   da_foreach (Fn, fn, &prog->fn_list) {
-    sb_appendf(&sb, "%s:\n", fn->name);
+    sb_appendf(&sb, SV_Fmt":\n", SV_Arg(fn->name));
     da_foreach (Op, op, &fn->fn_body) {
       switch(op->kind) {
       case OP_INVOKE:
@@ -142,9 +123,9 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
   
   sb_appendf(&sb, "    .text\n");
   da_foreach (Fn, fn, &prog->fn_list) {
-    sb_appendf(&sb, "    .globl  %s\n", fn->name);
-    sb_appendf(&sb, "    .type  %s, @function\n", fn->name);
-    sb_appendf(&sb, "%s:\n", fn->name);
+    sb_appendf(&sb, "    .globl  "SV_Fmt"\n", SV_Arg(fn->name));
+    sb_appendf(&sb, "    .type  "SV_Fmt", @function\n", SV_Arg(fn->name));
+    sb_appendf(&sb, SV_Fmt":\n", SV_Arg(fn->name));
     sb_appendf(&sb, "    pushq %%rbp\n");
     sb_appendf(&sb, "    movq  %%rsp, %%rbp\n");
     if (fn->local.count != 0) {
@@ -188,7 +169,7 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
           
         switch(op->fn.kind) {
         case ARG_NAME:
-          sb_appendf(&sb, "    call %s\n", op->fn.name);
+          sb_appendf(&sb, "    call "SV_Fmt"\n", SV_Arg(op->fn.name));
           break;
         default: UNREACHABLE("arg");
         }
@@ -377,22 +358,14 @@ int main(int argc, char **argv)
     TODO("support multiple files");
   }
   
+  Lexer lexer = {0};
+  if (!lexer_init(&lexer, sv_from_cstr(mcc_args.files.items[0]))) return_defer(1);
+  
   if (mcc_args.only_lexer) {
-    Lexer lexer = {0};
-
-    if (!lexer_init(&lexer, sv_from_cstr(mcc_args.files.items[0]))) return_defer(1);
     return_defer(dump_all_tokens(&lexer)? 0 : 1);
   }
   
-  if (!read_entire_file(mcc_args.files.items[0], &sb)) {
-    fprintf(stderr, "fatal error: can not read file %s\n", mcc_args.files.items[0]);
-    return_defer(1);
-  }
-
-  stb_lexer lex;
-  stb_c_lexer_init(&lex, sb.items, sb.items + sb.count, lexer_buffer, LEXER_BUFFER_SIZE);
-
-  if (!compile_program(&lex, mcc_args.files.items[0], &prog)) {
+  if (!compile_program(&lexer, &prog)) {
     fprintf(stderr, "fatal error: failed to compile file %s\n", argv[1]);
     return_defer(1);
   }

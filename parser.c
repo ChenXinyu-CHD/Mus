@@ -1,61 +1,9 @@
 #include "parser.h"
+#include "lexer.h"
 
 #include "nob.h"
-#define STB_C_LEXER_IMPLEMENTATION
-#include "stb_c_lexer.h"
 
-static char *token_name(long token)
-{
-  switch (token) {
-  case CLEX_id          : return temp_strdup("id");
-  case CLEX_eq          : return temp_strdup("\"==\"");
-  case CLEX_noteq       : return temp_strdup("\"!=\"");
-  case CLEX_lesseq      : return temp_strdup("\"<=\"");
-  case CLEX_greatereq   : return temp_strdup("\">=\"");
-  case CLEX_andand      : return temp_strdup("\"&&\"");
-  case CLEX_oror        : return temp_strdup("\"||\"");
-  case CLEX_shl         : return temp_strdup("\"<<\"");
-  case CLEX_shr         : return temp_strdup("\">>\"");
-  case CLEX_plusplus    : return temp_strdup("\"++\"");
-  case CLEX_minusminus  : return temp_strdup("\"--\"");
-  case CLEX_arrow       : return temp_strdup("\"->\"");
-  case CLEX_andeq       : return temp_strdup("\"&=\"");
-  case CLEX_oreq        : return temp_strdup("\"|=\"");
-  case CLEX_xoreq       : return temp_strdup("\"^=\"");
-  case CLEX_pluseq      : return temp_strdup("\"+=\"");
-  case CLEX_minuseq     : return temp_strdup("\"-=\"");
-  case CLEX_muleq       : return temp_strdup("\"*=\"");
-  case CLEX_diveq       : return temp_strdup("\"/=\"");
-  case CLEX_modeq       : return temp_strdup("\"%=\"");
-  case CLEX_shleq       : return temp_strdup("\"<<=\"");
-  case CLEX_shreq       : return temp_strdup("\">>=\"");
-  case CLEX_eqarrow     : return temp_strdup("\"=>\"");
-  case CLEX_dqstring    : return temp_strdup("dqstring");
-  case CLEX_sqstring    : return temp_strdup("sqstring");
-  case CLEX_charlit     : return temp_strdup("character literal");
-  case CLEX_intlit      : return temp_strdup("integer literal");
-  case CLEX_floatlit    : return temp_strdup("float literal");
-  case CLEX_eof         : return temp_strdup("EOF");
-  case CLEX_parse_error : return temp_strdup("ERROR");
-  default:
-    if (token >= 0 && token < 256) {
-      char* str = temp_strdup("\' \'");
-      str[1] = (char)token;
-      return str;
-    } else {
-      UNREACHABLE("token");
-    }
-  }
-}
-
-static stb_lex_location lex_location(stb_lexer *l)
-{
-  stb_lex_location loc = {0};
-  stb_c_lexer_get_location(l, l->where_lastchar, &loc);
-  return loc;
-}
-
-static void vpcompile_info(const char *filename, stb_lex_location loc, const char* fmt, va_list args)
+static void vpcompile_info(Cursor cs, const char* fmt, va_list args)
 {
   size_t mark = temp_save(); {
     va_list ap;
@@ -63,127 +11,97 @@ static void vpcompile_info(const char *filename, stb_lex_location loc, const cha
     char *msg = temp_vsprintf(fmt, ap);
     va_end(ap);
   
-    fprintf(stderr, "%s:%d:%d: %s",
-            filename, loc.line_number, loc.line_offset, msg);
+    fprintf(stderr, CS_Fmt" %s", CS_Arg(cs), msg);
   } temp_rewind(mark);
 }
 
-static void pcompile_info(const char *filename, stb_lex_location loc, const char* fmt, ...)
+static void pcompile_info(Cursor cs, const char* fmt, ...)
 {
   va_list args;
   va_start(args, fmt);
-  vpcompile_info(filename, loc, fmt, args);
+  vpcompile_info(cs, fmt, args);
   va_end(args);
 }
 
-static bool next_token(stb_lexer *l, const char *filename)
+static bool next_token(Lexer *l)
 {
-  bool result = stb_c_lexer_get_token(l);
-  if (l->token == CLEX_parse_error) {
-    pcompile_info(filename, lex_location(l), "error: parse error when read \"%.*s\"\n",
-                  (int)(l->where_lastchar - l->where_firstchar), l->where_firstchar);
+  bool result = lexer_next(l);
+  if (l->current.kind == TOKEN_ERR) {
+    pcompile_info(l->current.start, "error: parse error when read \""SV_Fmt"\"\n",
+                  SV_Arg(l->current.token));
   }
 
   return result;
 }
 
-static bool prefetch_not_none(stb_lexer *l, const char *filename)
+static bool prefetch_not_none(Lexer *l)
 {
-  bool result = next_token(l, filename);
-  if (l->token == CLEX_eof) {
-    pcompile_info(filename, lex_location(l), "error: unexpected EOF\n");
+  bool result = next_token(l);
+  if (l->current.kind == TOKEN_EOF) {
+    pcompile_info(l->current.start, "error: unexpected EOF\n");
     return false;
   }
   
   return result;
 }
 
-static bool expect_token(stb_lexer *l, const char *filename, long token)
+static bool expect_token(Lexer *l, int token)
 {
-  if (l->token == token) return true;
+  if (l->current.kind == token) return true;
   
-  size_t mark = temp_save(); {
-    pcompile_info(filename, lex_location(l), "error: expect token %s but got %s\n",
-                  token_name(token), token_name(l->token));
-  } temp_rewind(mark);
+  pcompile_info(l->current.start, "error: expect token ");
+  dump_token_kind(stderr, token);
+  fprintf(stderr, ", but got");
+  dump_token_kind(stderr, token);
+  fprintf(stderr, "\n");
+  
   return false;
 }
 
-static bool prefetch_expect_token(stb_lexer *l, const char *filename, long token)
+static bool prefetch_expect_token(Lexer *l, int token)
 {
-  next_token(l, filename);
-  if (!expect_token(l, filename, token)) return false;
+  next_token(l);
+  if (!expect_token(l, token)) return false;
   return true;
 }
 
-static bool prefetch_expect_tokens_(stb_lexer *l, const char *filename, ...)
+static bool prefetch_expect_tokens_(Lexer *l, ...)
 {
-  next_token(l, filename);
+  next_token(l);
   bool found = false;
   
-  va_list ap; va_start(ap, filename); {
-    long arg = va_arg(ap, long);
-    while (arg != CLEX_parse_error) {
-      if (arg == l->token) {
+  va_list ap; va_start(ap, l); {
+    int arg = va_arg(ap, int);
+    while (arg != TOKEN_ERR) {
+      if (arg == l->current.kind) {
         found = true;
         break;
       }
-      arg = va_arg(ap, long);
+      arg = va_arg(ap, int);
     }
   } va_end(ap);
 
   if (found) return true;
 
-  va_start(ap, filename); size_t mark = temp_save(); {
-    pcompile_info(filename, lex_location(l), "error: expect token ");
+  va_start(ap, l); {
+    pcompile_info(l->current.start, "error: expect token ");
     
-    long arg = va_arg(ap, long);
-    while (arg != CLEX_parse_error) {
-      fprintf(stderr, "%s, ", token_name(arg));
-      arg = va_arg(ap, long);
+    int arg = va_arg(ap, int);
+    while (arg != TOKEN_ERR) {
+      dump_token_kind(stderr, arg);
+      fprintf(stderr, ", ");
+      arg = va_arg(ap, int);
     }
-    fprintf(stderr, "but got %s\n", token_name(l->token));
-  } temp_rewind(mark); va_end(ap);
-  
-  return false;
-}
-
-#define prefetch_expect_tokens(l, filename, ...)                        \
-  prefetch_expect_tokens_(l, filename, __VA_ARGS__, CLEX_parse_error)
-
-static bool expect_ids_(stb_lexer *l, const char *filename, ...)
-{
-  if (!expect_token(l, filename, CLEX_id)) return false;
-  
-  bool found = false;
-  
-  va_list ap; va_start(ap, filename); {
-    char *arg = va_arg(ap, char*);
-    while (arg != NULL) {
-      if (strcmp(arg, l->string) == 0) {
-        found = true;
-        break;
-      }
-      arg = va_arg(ap, char*);
-    }
+    fprintf(stderr, "but got");
+    dump_token_kind(stderr, l->current.kind);
+    fprintf(stderr, "\n");
   } va_end(ap);
-
-  if (found) return true;
-
-  va_start(ap, filename); size_t mark = temp_save(); {
-    pcompile_info(filename, lex_location(l), "error: expect ");
-
-    char* arg = va_arg(ap, char*);
-    while (arg != NULL) {
-      fprintf(stderr, "%s, ", arg);
-      arg = va_arg(ap, char*);
-    }
-    fprintf(stderr, "but got %s\n", l->string);
-  } temp_rewind(mark); va_end(ap);
   
   return false;
 }
 
+#define prefetch_expect_tokens(l, ...)                        \
+  prefetch_expect_tokens_(l, __VA_ARGS__, TOKEN_ERR)
 
 static void destroy_type_expr(TypeExpr* type)
 {
@@ -215,7 +133,6 @@ static void destroy_type_expr(TypeExpr* type)
 
 static void destroy_symbol(Symbol *sym)
 {
-  if (sym->name != NULL) free(sym->name);
   destroy_type_expr(&sym->type);
 }
 
@@ -224,7 +141,7 @@ static void destroy_arg(Arg *arg)
   destroy_type_expr(&arg->type);
   switch(arg->kind) {
   case ARG_NONE: break;
-  case ARG_NAME: free(arg->name); break;
+  case ARG_NAME: break;
   case ARG_VAR_LOC: break;
   case ARG_LIT_INT: break;
   case ARG_LIT_STR: break;
@@ -253,7 +170,6 @@ static void destroy_op(Op *op)
 static void destroy_fn_list(FnList *fn_list)
 {
   da_foreach (Fn, fn, fn_list) {
-    free(fn->name);
     da_foreach (Op, op, &fn->fn_body) {
       destroy_op(op);
     }
@@ -267,43 +183,13 @@ static void destroy_fn_list(FnList *fn_list)
   da_free(*fn_list);
 }
 
-#define BASIC_TYPE_NAMES                        \
-  "i8",                                         \
-    "i16",                                      \
-    "i32",                                      \
-    "i64",                                      \
-    "i32",                                      \
-    "u8",                                       \
-    "u16",                                      \
-    "u32",                                      \
-    "u64",                                      \
-    "u32",                                      \
-    "void"
-
-static char *keywords[] = {
-  "extern",
-  "fn",
-  "return",
-  "var",
-  BASIC_TYPE_NAMES
-};
-
-static bool is_keywords(const char *str)
-{
-  for (size_t i = 0; i < ARRAY_LEN(keywords); ++i) {
-    if (strcmp(str, keywords[i]) == 0) return true;
-  }
-
-  return false;
-}
-
 #define expect_ids(l, filename, ...)            \
   expect_ids_(l, filename, __VA_ARGS__, NULL)
 
-static size_t search_symbol(SymbolList *syms, const char *name)
+static size_t search_symbol(SymbolList *syms, String_View name)
 {
   for (size_t i = 0; i < syms->count; ++i) {
-    if (strcmp(syms->items[i].name, name) == 0) {
+    if (sv_eq(syms->items[i].name, name)) {
       return i;
     }
   }
@@ -311,21 +197,21 @@ static size_t search_symbol(SymbolList *syms, const char *name)
   return syms->count;
 }
 
-static bool symbol_defined(SymbolList *syms, const char *name)
+static bool symbol_defined(SymbolList *syms, String_View name)
 {
   return search_symbol(syms, name) < syms->count;
 }
 
-static size_t compile_strlit(Program *prog, char *str)
+static size_t compile_strlit(Program *prog, String_View str)
 {
   size_t str_count = prog->str_lits.count;
   for (size_t i = 0; i < str_count; ++i) {
-    if (strcmp(prog->str_lits.items[i], str) == 0) {
+    if (sv_eq(prog->str_lits.items[i], str)) {
       return i;
     }
   }
   
-  da_append(&prog->str_lits, strdup(str));
+  da_append(&prog->str_lits, str);
   return str_count;
 }
 
@@ -391,49 +277,44 @@ static Arg arg_local_var(Fn *fn, size_t i)
   };
 }
 
-static bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Fn *fn, Arg *arg)
+static bool compile_arg(Lexer *l, Program *prog, Fn *fn, Arg *arg)
 {
   UNUSED(prog);
-  assert(l->token != CLEX_eof);
+  assert(l->current.kind != TOKEN_EOF);
   
-  switch (l->token) {
-  case CLEX_id:
-    size_t i = search_symbol(&fn->local, l->string);
+  switch (l->current.kind) {
+  case TOKEN_ID:
+    size_t i = search_symbol(&fn->local, l->current.token);
     if (i < fn->local.count) {
       *arg = arg_local_var(fn, i);
     } else {
       arg->kind = ARG_NAME;
-      arg->name = strdup(l->string);
-      stb_c_lexer_get_location(l, l->where_lastchar, &arg->loc);
+      arg->name = l->current.token;
+      arg->loc = l->current.start;
       arg->type = (TypeExpr){.kind = TYPE_UNKNOWN};
     }
     break;
-  case CLEX_dqstring:
+  case TOKEN_STR:
     arg->kind = ARG_LIT_STR;
-    arg->label = compile_strlit(prog, l->string);
+    arg->label = compile_strlit(prog, l->current.token);
     arg->type = ptr_type((TypeExpr) {
         .kind = TYPE_INT,
         .size = 1,
       });
     break;
-  case CLEX_charlit:
-    TODO("CLEX_charlit");
-    break;
-  case CLEX_intlit:
+  case TOKEN_INT:
     arg->kind = ARG_LIT_INT;
-    arg->num_int = l->int_number;
+    arg->num_int = sv_to_int(l->current.token);
     arg->type = (TypeExpr) {
       .kind = TYPE_INT,
       .size = 4,
     };
     break;
-  case CLEX_floatlit:
-    TODO("CLEX_floatlit");
-    break;
   default:
     size_t mark = temp_save(); {
-      pcompile_info(filename, lex_location(l), "error: invalid token %s in an argument\n",
-                    token_name(l->token));
+      pcompile_info(l->current.start, "error: invalid token ");
+      dump_token_kind(stderr, l->current.kind);
+      fprintf(stderr, " in an argument\n");
     } temp_rewind(mark);
     return false;
   }
@@ -441,50 +322,48 @@ static bool compile_arg(stb_lexer *l, const char *filename, Program *prog, Fn *f
   return true;
 }
 
-static bool compile_statement(stb_lexer *l, const char *filename, Program *prog, Fn *fn)
+static bool compile_statement(Lexer *l, Program *prog, Fn *fn)
 {
   Arg arg;
-  stb_lex_location loc = lex_location(l);
-  if (!compile_arg(l, filename, prog, fn, &arg)) return false;
-  if (!prefetch_not_none(l, filename)) return false;
+  Cursor loc = l->current.start;
+  if (!compile_arg(l, prog, fn, &arg)) return false;
+  if (!prefetch_not_none(l)) return false;
 
-  if (l->token == '(') {
+  if (l->current.kind == '(') {
     Op invoke = {
       .kind = OP_INVOKE,
       .loc = loc,
       .fn = arg
     };
     
-    if (!prefetch_not_none(l, filename)) return false;
-    while (l->token != ')') {
-      if (!compile_arg(l, filename, prog, fn, &arg)) return false;
-      if (!prefetch_not_none(l, filename)) return false;
+    if (!prefetch_not_none(l)) return false;
+    while (l->current.kind != ')') {
+      if (!compile_arg(l, prog, fn, &arg)) return false;
+      if (!prefetch_not_none(l)) return false;
       da_append(&invoke.args, arg);
           
-      if (l->token != ',' && l->token != ')') {
-        size_t mark = temp_save(); {
-          pcompile_info(filename, lex_location(l), "error: expected ',' or ')', but got %s\n",
-                        token_name(l->token));
-        } temp_rewind(mark);
+      if (l->current.kind != ',' && l->current.kind != ')') {
+        pcompile_info(l->current.start, "error: expected ',' or ')', but got ");
+        dump_token_kind(stderr, l->current.kind);
         free(invoke.args.items);
         return false;
       }
       
-      if (l->token == ',') {
-        if (!prefetch_not_none(l, filename)) return false;
+      if (l->current.kind == ',') {
+        if (!prefetch_not_none(l)) return false;
       }
     }
     
     da_append(&fn->fn_body, invoke);
-  } else if (l->token == '=') {
+  } else if (l->current.kind == '=') {
     if (arg.kind != ARG_VAR_LOC) {
-      pcompile_info(filename, lex_location(l), "error: try to assign to an rvalue\n");
+      pcompile_info(l->current.start, "error: try to assign to an rvalue\n");
       return false;
     };
     
     Arg val;
-    if (!prefetch_not_none(l, filename)) return false;
-    if (!compile_arg(l, filename, prog, fn, &val)) return false;
+    if (!prefetch_not_none(l)) return false;
+    if (!compile_arg(l, prog, fn, &val)) return false;
     
     Op set_var = {
       .kind = OP_SET_VAR,
@@ -494,106 +373,127 @@ static bool compile_statement(stb_lexer *l, const char *filename, Program *prog,
     };
     da_append(&fn->fn_body, set_var);
   } else {
-    UNREACHABLE(token_name(l->token));
+    UNREACHABLE("");
   }
   
   return true;
 }
 
-static bool compile_internal_type(stb_lexer *l, const char *filename, TypeExpr *type) {
-  // TODO: support more internal type
-  if (!expect_ids(l, filename, BASIC_TYPE_NAMES)) { return false; }
-
-  if (strcmp(l->string, "void") == 0) {
-    type->kind = TYPE_VOID;
-    return true;
+static_assert(TYPE_KIND_COUNT == 6);
+static struct {
+  char *name;
+  TypeExpr type;
+} internal_types[] = {
+  {
+    .name = "void",
+    .type = { .kind = TYPE_VOID, .size = 0, },
+  },
+  {
+    .name = "u8",
+    .type = { .kind = TYPE_UINT, .size = 1, },
+  },
+  {
+    .name = "u16",
+    .type = { .kind = TYPE_UINT, .size = 2, },
+  },
+  {
+    .name = "u32",
+    .type = { .kind = TYPE_UINT, .size = 4, },
+  },
+  {
+    .name = "u64",
+    .type = { .kind = TYPE_UINT, .size = 8, },
+  },
+  {
+    .name = "i8",
+    .type = { .kind = TYPE_INT, .size = 1, },
+  },
+  {
+    .name = "i16",
+    .type = { .kind = TYPE_INT, .size = 2, },
+  },
+  {
+    .name = "i32",
+    .type = { .kind = TYPE_INT, .size = 4, },
+  },
+  {
+    .name = "i64",
+    .type = { .kind = TYPE_INT, .size = 8, },
   }
+};
+
+static bool compile_internal_type(Lexer *l, TypeExpr *type) {
+  assert(l->current.kind == TOKEN_ID);
   
-  switch(l->string[0]) {
-  case 'i': type->kind = TYPE_INT; break;
-  case 'u': type->kind = TYPE_UINT; break;
-  default: UNREACHABLE("l->string");
+  for (size_t i = 0; i < ARRAY_LEN(internal_types); ++i) {
+    String_View name = sv_from_cstr(internal_types[i].name);
+    if (sv_eq(name, l->current.token)) {
+      *type = type_clone(internal_types[i].type);
+      return true;
+    }
   }
-  
-  size_t bitwide = 0;
-  char *it = l->string + 1;
-  while (*it != '\0') {
-    if (!isdigit(*it)) return false;
-    bitwide = bitwide * 10 + *it++ - '0';
-  }
-
-  switch(bitwide) {
-  case 8:  type->size = 1; break;
-  case 16: type->size = 2; break;
-  case 32: type->size = 4; break;
-  case 64: type->size = 8; break;
-  default: UNREACHABLE("Unsipported size");
-  }
-
-  return true;
+  pcompile_info(l->current.start, "error: unknown type "SV_Fmt"\n", SV_Arg(l->current.token));
+  return false;
 }
 
-static bool compile_type_fn(stb_lexer *l, const char *filename, TypeExpr *type);
+static bool compile_type_fn(Lexer *l, TypeExpr *type);
 
-static bool compile_type_expr(stb_lexer *l, const char *filename, TypeExpr *type)
+static bool compile_type_expr(Lexer *l, TypeExpr *type)
 {
-  switch (l->token) {
-  case CLEX_id: {
-    if (strcmp(l->string, "fn") == 0) return compile_type_fn(l, filename, type);
-    else return compile_internal_type(l, filename, type);
-  }
+  switch (l->current.kind) {
+  case TOKEN_FN:
+    return compile_type_fn(l, type);
+  case TOKEN_ID:
+    return compile_internal_type(l, type);
   case '&': {
-    if (!prefetch_not_none(l, filename)) return false;
+    if (!prefetch_not_none(l)) return false;
     TypeExpr ref_type;
-    if (!compile_type_expr(l, filename, &ref_type)) return false;
+    if (!compile_type_expr(l, &ref_type)) return false;
     *type = ptr_type(ref_type);
     return true;
   }
   default:
-    size_t mark = temp_save(); {
-      pcompile_info(filename, lex_location(l), "error: expected a type but got %s\n", token_name(l->token));
-    } temp_rewind(mark);
+    pcompile_info(l->current.start, "error: expected a type but got ");
+    dump_token_kind(stderr, l->current.kind);
+    fprintf(stderr, "\n");
     return false;
   }
 }
 
-static bool compile_type_fn(stb_lexer *l, const char *filename, TypeExpr *type)
+static bool compile_type_fn(Lexer *l, TypeExpr *type)
 {
-  assert(l->token == CLEX_id && strcmp(l->string, "fn") == 0);
+  assert(l->current.kind == TOKEN_FN);
 
   bool result;
 
   type->kind = TYPE_FN;
-  if (!prefetch_expect_token(l, filename, '(')) return_defer(false);
+  if (!prefetch_expect_token(l, '(')) return_defer(false);
 
-  if (!prefetch_not_none(l, filename)) return_defer(false);
+  if (!prefetch_not_none(l)) return_defer(false);
   type->arg_types = (TypeList) {0};
-  while (l->token != ')') {
-    if (l->token == '.') { // parse "..." for va_args
-      if (!prefetch_expect_token(l, filename, '.')) return false;
-      if (!prefetch_expect_token(l, filename, '.')) return false;
-      // va_args must be the last argument
-      if (!prefetch_expect_token(l, filename, ')')) return false;
+  while (l->current.kind != ')') {
+    if (l->current.kind == TOKEN_DOTS) { // parse "..." for va_args
+      if (!prefetch_expect_token(l, ')')) return false;
       type->va_args = true;
     } else {
       // failures in this loop would not cause memory leak;
       TypeExpr arg_type = {0};
       // memory would clean up in the compile_type_expr;
-      if (!compile_type_expr(l, filename, &arg_type)) return_defer(false);
+      if (!compile_type_expr(l, &arg_type)) return_defer(false);
       da_append(&type->arg_types, arg_type);
       // from here, the ownership has moved to ext.type.arg_types;
       // thus, they will be clean up together with ext.type.arg_types;
-      if (!prefetch_expect_tokens(l, filename, ',', ')')) return_defer(false);
-      if (l->token == ',') {
-        if (!prefetch_not_none(l, filename)) return_defer(false);
+      if (!prefetch_expect_tokens(l, ',', ')')) return_defer(false);
+      if (l->current.kind == ',') {
+        if (!prefetch_not_none(l)) return_defer(false);
       }
     }
   }
 
-  if (!prefetch_expect_token(l, filename, ':')) return_defer(false);
-  if (!prefetch_not_none(l, filename)) return_defer(false);
+  if (!prefetch_expect_token(l, ':')) return_defer(false);
+  if (!prefetch_not_none(l)) return_defer(false);
   type->ret_type = calloc(1, sizeof(TypeExpr));
-  if (!compile_type_expr(l, filename, type->ret_type)) return_defer(false);
+  if (!compile_type_expr(l, type->ret_type)) return_defer(false);
 
   return_defer(true);
 
@@ -602,31 +502,28 @@ static bool compile_type_fn(stb_lexer *l, const char *filename, TypeExpr *type)
   return result;
 }
 
-static bool compile_local_var_singn(stb_lexer *l, const char *filename, Fn *fn, Symbol* var)
+static bool compile_local_var_singn(Lexer *l, Fn *fn, Symbol* var)
 {
   bool result;
 
-  if (!prefetch_expect_token(l, filename, CLEX_id)) return_defer(false);
-  if (is_keywords(l->string)) {
-    pcompile_info(filename, lex_location(l), "error: expected an id, but got a keyword \"%s\"\n", l->string);
+  if (!prefetch_expect_token(l, TOKEN_ID)) return_defer(false);
+
+  if (symbol_defined(&fn->local, l->current.token)) {
+    pcompile_info(l->current.start, "error: variable \""SV_Fmt"\" is alreay defined in this field\n",
+                  SV_Arg(l->current.token));
     return_defer(false);
   }
+  var->name = l->current.token;
+  if (!prefetch_not_none(l)) return_defer(false);
 
-  if (symbol_defined(&fn->local, l->string)) {
-    pcompile_info(filename, lex_location(l), "error: variable \"%s\" is alreay defined in this field\n", l->string);
-    return_defer(false);
-  }
-  var->name = strdup(l->string);
-  if (!prefetch_not_none(l, filename)) return_defer(false);
-
-  if (l->token == ':') {
-    if (!prefetch_not_none(l, filename)) return_defer(false);
-    if (!compile_type_expr(l, filename, &var->type)) return_defer(false);
+  if (l->current.kind == ':') {
+    if (!prefetch_not_none(l)) return_defer(false);
+    if (!compile_type_expr(l, &var->type)) return_defer(false);
     if (var->type.kind == TYPE_VOID) {
-      pcompile_info(filename, lex_location(l), "error: the type of a local variable cannot be \"void\"");
+      pcompile_info(l->current.start, "error: the type of a local variable cannot be \"void\"");
       return_defer(false);
     }
-    if (!prefetch_not_none(l, filename)) return_defer(false);
+    if (!prefetch_not_none(l)) return_defer(false);
   }
   return_defer(true);
  defer:
@@ -634,19 +531,19 @@ static bool compile_local_var_singn(stb_lexer *l, const char *filename, Fn *fn, 
   return result;
 }
 
-static bool compile_local_var(stb_lexer *l, const char *filename, Program *prog, Fn *fn)
+static bool compile_local_var(Lexer *l, Program *prog, Fn *fn)
 {
   Symbol var = {0};
-  if (!compile_local_var_singn(l, filename, fn, &var)) return false;
+  if (!compile_local_var_singn(l, fn, &var)) return false;
   da_append(&fn->local, var);
   size_t pos = fn->local.count - 1;
   
-  if (l->token != '=') return true;
+  if (l->current.kind != '=') return true;
 
-  stb_lex_location loc = lex_location(l);
-  if (!prefetch_not_none(l, filename)) return false;
+  Cursor loc = l->current.start;
+  if (!prefetch_not_none(l)) return false;
   Arg val = {0};
-  if (!compile_arg(l, filename, prog, fn, &val)) return false;    
+  if (!compile_arg(l, prog, fn, &val)) return false;    
   Op set_var = {
     .kind = OP_SET_VAR,
     .loc = loc,
@@ -655,39 +552,39 @@ static bool compile_local_var(stb_lexer *l, const char *filename, Program *prog,
   };
   da_append(&fn->fn_body, set_var);
 
-  return prefetch_not_none(l, filename);
+  return prefetch_not_none(l);
 }
 
-static bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, Fn *fn) {
-  assert(l->token == '{');
+static bool compile_fn_body(Lexer *l, Program *prog, Fn *fn) {
+  assert(l->current.kind == '{');
 
   bool returned = false;
-  if (!prefetch_not_none(l, filename)) return false;
-  while (l->token != '}') {
-    if (l->token == ';') {
-      if (!prefetch_not_none(l, filename)) return false;
-    } else if (l->token == CLEX_id && strcmp(l->string, "return") == 0) {
+  if (!prefetch_not_none(l)) return false;
+  while (l->current.kind != '}') {
+    if (l->current.kind == ';') {
+      if (!prefetch_not_none(l)) return false;
+    } else if (l->current.kind == TOKEN_RET) {
       Op ret = {
         .kind = OP_RETURN,
-        .loc = lex_location(l),
+        .loc = l->current.start,
       };
-      if (!prefetch_not_none(l, filename)) return false;
-      if (!compile_arg(l, filename, prog, fn, &ret.ret_val)) return false;
+      if (!prefetch_not_none(l)) return false;
+      if (!compile_arg(l, prog, fn, &ret.ret_val)) return false;
       da_append(&fn->fn_body, ret);
       returned = true;
-      if (!prefetch_not_none(l, filename)) return false;
-    } else if (l->token == CLEX_id && strcmp(l->string, "var") == 0) {
-      if (!compile_local_var(l, filename, prog, fn)) return false;
+      if (!prefetch_not_none(l)) return false;
+    } else if (l->current.kind == TOKEN_VAR) {
+      if (!compile_local_var(l, prog, fn)) return false;
     } else {
-      if (!compile_statement(l, filename, prog, fn)) return false;
-      if (!prefetch_not_none(l, filename)) return false;
+      if (!compile_statement(l, prog, fn)) return false;
+      if (!prefetch_not_none(l)) return false;
     }
   }
 
   if (!returned) {
     Op ret = {
       .kind = OP_RETURN,
-      .loc = lex_location(l),
+      .loc = l->current.start,
       .ret_val = {
         .kind = ARG_NONE,
         .type = { .kind = TYPE_VOID },
@@ -699,45 +596,40 @@ static bool compile_fn_body(stb_lexer *l, const char *filename, Program *prog, F
   return true;
 }
 
-static bool compile_function(stb_lexer *l, const char *filename, Program *prog)
+static bool compile_function(Lexer *l, Program *prog)
 {
-  assert(expect_token(l, filename, CLEX_id) && strcmp(l->string, "fn") == 0);
+  assert(l->current.kind == TOKEN_FN);
 
-  if (!prefetch_expect_token(l, filename, CLEX_id)) return false;
+  if (!prefetch_expect_token(l, TOKEN_ID)) return false;
 
-  if (symbol_defined(&prog->global, l->string)) {
-    pcompile_info(filename, lex_location(l), "error: symbol %s redefined\n", l->string);
-    return false;
-  }
-
-  if (is_keywords(l->string)) {
-    pcompile_info(filename, lex_location(l), "error: expected an id, but got a keyword \"%s\"\n", l->string);
+  if (symbol_defined(&prog->global, l->current.token)) {
+    pcompile_info(l->current.start, "error: symbol "SV_Fmt" redefined\n", SV_Arg(l->current.token));
     return false;
   }
 
   Fn fn = {
-    .name = strdup(l->string),
+    .name = l->current.token,
   };
   
-  if (!prefetch_expect_token(l, filename, '(')) return false;
-  if (!prefetch_expect_token(l, filename, ')')) return false;
+  if (!prefetch_expect_token(l, '(')) return false;
+  if (!prefetch_expect_token(l, ')')) return false;
   
-  if (!prefetch_expect_token(l, filename, ':')) return false;
-  if (!prefetch_not_none(l, filename)) return false;
+  if (!prefetch_expect_token(l, ':')) return false;
+  if (!prefetch_not_none(l)) return false;
 
   TypeExpr ret_type;
-  if (!compile_type_expr(l, filename, &ret_type)) return false;
+  if (!compile_type_expr(l, &ret_type)) return false;
   
-  if (!prefetch_expect_token(l, filename, '{')) return false;
+  if (!prefetch_expect_token(l, '{')) return false;
 
-  if (!compile_fn_body(l, filename, prog, &fn)) return false;
+  if (!compile_fn_body(l, prog, &fn)) return false;
   
-  if (!expect_token(l, filename, '}')) return false;
+  if (!expect_token(l, '}')) return false;
 
   da_append(&prog->fn_list, fn);
 
   Symbol sym = {
-    .name = strdup(fn.name),
+    .name = fn.name,
     .type = (TypeExpr) {
       .kind = TYPE_FN,
       .ret_type = malloc(sizeof(TypeExpr)),
@@ -754,7 +646,7 @@ static bool compile_function(stb_lexer *l, const char *filename, Program *prog)
 static bool name_arg_defined(Program *prog, Arg *arg)
 {
   if (arg->kind == ARG_NAME && !symbol_defined(&prog->global, arg->name)) {
-    pcompile_info(prog->filename, arg->loc,
+    pcompile_info(arg->loc,
                   "error: refered symbol \"%s\" is not defined\n", arg->name);
     return false;
   }
@@ -855,37 +747,30 @@ static bool detect_all_unknown_type(Program *prog)
   return true;
 }
 
-static bool compile_file(stb_lexer *l, const char *filename, Program *prog)
+static bool compile_file(Lexer *l, Program *prog)
 {
-  prog->filename = filename;
-  while (next_token(l, filename)) {
-    if (l->token == ';') {
+  while (next_token(l)) {
+    if (l->current.kind == ';') {
       continue;
     }
     
-    if (!expect_ids(l, filename, "fn", "extern")) return false;
-    
-    if (strcmp(l->string, "fn") == 0) {
-      if (!compile_function(l, filename, prog)) return false;
-    } else if (strcmp(l->string, "extern") == 0) {
+    if (l->current.kind == TOKEN_FN) {
+      if (!compile_function(l, prog)) return false;
+    } else if (l->current.kind == TOKEN_EXT) {
       Symbol sym = { .external = true };
-      if (!prefetch_expect_token(l, filename, CLEX_id)) return false;
-      if (symbol_defined(&prog->global, l->string)) {
-        pcompile_info(filename, lex_location(l), "error: symbol %s redefined\n", l->string);
+      if (!prefetch_expect_token(l, TOKEN_ID)) return false;
+      if (symbol_defined(&prog->global, l->current.token)) {
+        pcompile_info(l->current.start, "error: symbol "SV_Fmt" redefined\n", SV_Arg(l->current.token));
         return false;
       }
-      if (is_keywords(l->string)) {
-        pcompile_info(filename, lex_location(l), "error: expected an id, but got a keyword \"%s\"\n", l->string);
-        return false;
-      }
-      sym.name = strdup(l->string);
-      if (!prefetch_expect_token(l, filename, ':')) return false;
-      if (!prefetch_not_none(l, filename)) return false;
-      if (!compile_type_expr(l, filename, &sym.type)) return false;
+      sym.name = l->current.token;
+      if (!prefetch_expect_token(l, ':')) return false;
+      if (!prefetch_not_none(l)) return false;
+      if (!compile_type_expr(l, &sym.type)) return false;
 
       da_append(&prog->global, sym);
     } else {
-      UNREACHABLE(temp_sprintf("unexpected id: %s", l->string));
+      UNREACHABLE("");
     }
   }
 
@@ -956,7 +841,7 @@ static bool check_type(Program *prog)
       case OP_RETURN:
         TypeExpr *ret_type = &op->ret_val.type;
         if (!type_matched(fn_type->ret_type, ret_type)) {
-          pcompile_info(prog->filename, op->loc, "error: the return type of %s is required to be ", fn->name);
+          pcompile_info(op->loc, "error: the return type of "SV_Fmt" is required to be ", SV_Arg(fn->name));
           dump_type_expr(fn_type->ret_type, stderr);
           fprintf(stderr, ", but got ");
           dump_type_expr(ret_type, stderr);
@@ -966,7 +851,7 @@ static bool check_type(Program *prog)
         break;
       case OP_SET_VAR:
         if (!type_matched(&op->var.type, &op->val.type)) {
-          pcompile_info(prog->filename, op->loc, "error: incompatible types when assigning to type \"");
+          pcompile_info(op->loc, "error: incompatible types when assigning to type \"");
           dump_type_expr(&op->var.type, stderr);
           fprintf(stderr, "\" from type \"");
           dump_type_expr(&op->val.type, stderr);
@@ -978,7 +863,7 @@ static bool check_type(Program *prog)
       case OP_INVOKE:
         // TODO: report a better error message.
         if (op->fn.type.kind != TYPE_FN) {
-          pcompile_info(prog->filename, op->loc, "error: try to invoke an uncallable value\n");
+          pcompile_info(op->loc, "error: try to invoke an uncallable value\n");
           return false;
         }
         TypeExpr *invoked_type = &op->fn.type;
@@ -988,7 +873,7 @@ static bool check_type(Program *prog)
           expected_types->count <= op->args.count:
           expected_types->count == op->args.count;
         if (!size_matched) {
-          pcompile_info(prog->filename, op->loc,
+          pcompile_info(op->loc,
                         "error: this function expected %ld arguments, but got %ld arguments\n",
                         expected_types->count, op->args.count);
           return false;
@@ -999,7 +884,7 @@ static bool check_type(Program *prog)
           TypeExpr *expected = &expected_types->items[i];
           TypeExpr *actual = &op->args.items[i].type;
           if (!type_matched(expected, actual)) {
-            pcompile_info(prog->filename, op->loc, "error: the %ld-th argument is expected to be ", i);
+            pcompile_info(op->loc, "error: the %ld-th argument is expected to be ", i);
             dump_type_expr(expected, stderr);
             fprintf(stderr, ", but got ");
             dump_type_expr(actual, stderr);
@@ -1015,9 +900,9 @@ static bool check_type(Program *prog)
   return true;
 }
 
-bool compile_program(stb_lexer *l, const char *filename, Program *prog)
+bool compile_program(Lexer *l, Program *prog)
 {
-  if (!compile_file(l, filename, prog)) return false;
+  if (!compile_file(l, prog)) return false;
   if (!all_refered_defined(prog)) return false;
   if (!detect_all_unknown_type(prog)) return false;
   if (!check_type(prog)) return false;
@@ -1034,9 +919,6 @@ void destroy_program(Program *prog)
 
   destroy_fn_list(&prog->fn_list);
   if (prog->str_lits.capacity > 0) {
-    da_foreach (char *, str, &prog->str_lits) {
-      free(*str);
-    }
     da_free(prog->str_lits);
   }
 }
