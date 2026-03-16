@@ -160,8 +160,8 @@ static void destroy_op(Op *op)
     break;
   case OP_RETURN: destroy_arg(&op->ret_val); break;
   case OP_SET_VAR:
-    destroy_arg(&op->var);
-    destroy_arg(&op->val);
+    destroy_arg(&op->set_var.var);
+    destroy_arg(&op->set_var.val);
     break;
   default: UNREACHABLE("destroy op");
   }
@@ -370,8 +370,10 @@ static bool compile_statement(Lexer *l, Program *prog, Fn *fn)
     Op set_var = {
       .kind = OP_SET_VAR,
       .loc = loc,
-      .var = arg,
-      .val = val,
+      .set_var = {
+        .var = arg,
+        .val = val,
+      },
     };
     da_append(&fn->fn_body, set_var);
   } else {
@@ -549,8 +551,10 @@ static bool compile_local_var(Lexer *l, Program *prog, Fn *fn)
   Op set_var = {
     .kind = OP_SET_VAR,
     .loc = loc,
-    .var = arg_local_var(fn, pos),
-    .val = val,
+    .set_var = {
+      .var = arg_local_var(fn, pos),
+      .val = val,
+    },
   };
   da_append(&fn->fn_body, set_var);
 
@@ -666,8 +670,8 @@ static bool all_refered_defined(Program *prog)
         if (!name_arg_defined(prog, &op->ret_val)) return false;
         break;
       case OP_SET_VAR:
-        if (!name_arg_defined(prog, &op->val)) return false;
-        if (!name_arg_defined(prog, &op->var)) return false;
+        if (!name_arg_defined(prog, &op->set_var.val)) return false;
+        if (!name_arg_defined(prog, &op->set_var.var)) return false;
         break;
       case OP_INVOKE:
         if (!name_arg_defined(prog, &op->invoke.fn)) return false;
@@ -737,8 +741,8 @@ static bool detect_all_unknown_type(Program *prog)
         if (!detect_arg_type(&op->ret_val, global, local)) return false;
         break;
       case OP_SET_VAR:
-        if (!detect_arg_type(&op->val, global, local)) return false;
-        if (!detect_var_type(&op->var, &op->val, global, local)) return false;
+        if (!detect_arg_type(&op->set_var.val, global, local)) return false;
+        if (!detect_var_type(&op->set_var.var, &op->set_var.val, global, local)) return false;
         break;
       case OP_INVOKE:
         if (!detect_arg_type(&op->invoke.fn, global, local)) return false;
@@ -856,11 +860,11 @@ static bool check_type(Program *prog)
         }
         break;
       case OP_SET_VAR:
-        if (!type_matched(&op->var.type, &op->val.type)) {
+        if (!type_matched(&op->set_var.var.type, &op->set_var.val.type)) {
           pcompile_info(op->loc, "error: incompatible types when assigning to type \"");
-          dump_type_expr(&op->var.type, stderr);
+          dump_type_expr(&op->set_var.var.type, stderr);
           fprintf(stderr, "\" from type \"");
-          dump_type_expr(&op->val.type, stderr);
+          dump_type_expr(&op->set_var.val.type, stderr);
           fprintf(stderr, "\"\n");
           return false;
         }

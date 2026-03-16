@@ -81,17 +81,17 @@ typedef struct {
 } OpInvoke;
 
 typedef struct {
+  Arg var;
+  Arg val;
+} OpSetVar;
+
+typedef struct {
   OpKind kind;
   Cursor loc;
   union {
     OpInvoke invoke;
-    struct {
-      Arg ret_val;
-    };
-    struct {
-      Arg var;
-      Arg val;
-    };
+    Arg ret_val;
+    OpSetVar set_var;
   };
 } Op;
 

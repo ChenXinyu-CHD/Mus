@@ -74,9 +74,9 @@ String_Builder gen_code_ir(const Program *prog)
         break;
       case OP_SET_VAR:
         sb_appendf(&sb, "    set ");
-        gen_arg_ir(&sb, op->var);
+        gen_arg_ir(&sb, op->set_var.var);
         sb_appendf(&sb, " = ");
-        gen_arg_ir(&sb, op->val);
+        gen_arg_ir(&sb, op->set_var.val);
         sb_append(&sb, '\n');
         break;
       default:
@@ -191,15 +191,15 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         sb_appendf(&sb, "    ret\n");
         break;
       case OP_SET_VAR: {
-        assert(op->var.kind == ARG_VAR_LOC);
+        assert(op->set_var.var.kind == ARG_VAR_LOC);
 
-        size_t label = op->var.label;
-        switch(op->val.kind) {
+        size_t label = op->set_var.var.label;
+        switch(op->set_var.val.kind) {
         case ARG_LIT_INT:
-          sb_appendf(&sb, "    movq $%d, -%ld(%%rbp)\n", op->val.num_int, label * 8);
+          sb_appendf(&sb, "    movq $%d, -%ld(%%rbp)\n", op->set_var.val.num_int, label * 8);
           break;
         case ARG_VAR_LOC:
-          sb_appendf(&sb, "    movq -%ld(%%rbp), %%rax\n", op->val.label * 8);
+          sb_appendf(&sb, "    movq -%ld(%%rbp), %%rax\n", op->set_var.val.label * 8);
           sb_appendf(&sb, "    movq %%rax, -%ld(%%rbp)\n", label * 8);
           break;
         default: UNREACHABLE("arg");
