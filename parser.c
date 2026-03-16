@@ -118,14 +118,14 @@ static void destroy_type_expr(TypeExpr* type)
     free(type->ref_type);
     break;
   case TYPE_FN: {
-    assert(type->ret_type != NULL);
-    destroy_type_expr(type->ret_type);
-    free(type->ret_type);
+    assert(type->fn_type.ret_type != NULL);
+    destroy_type_expr(type->fn_type.ret_type);
+    free(type->fn_type.ret_type);
     
-    da_foreach (TypeExpr, arg, &type->arg_types) {
+    da_foreach (TypeExpr, arg, &type->fn_type.arg_types) {
       destroy_type_expr(arg);
     }
-    if (type->arg_types.count > 0) da_free(type->arg_types);
+    if (type->fn_type.arg_types.count > 0) da_free(type->fn_type.arg_types);
   } break;
   default: UNREACHABLE("type");
   }
@@ -232,9 +232,11 @@ static TypeExpr fn_type(TypeExpr ret_type, TypeList arg_types, bool va_args)
   TypeExpr type = {
     .kind = TYPE_FN,
     .size = 8,
-    .ret_type = malloc(sizeof(TypeExpr)),
-    .arg_types = arg_types,
-    .va_args = va_args,
+    .fn_type = {
+      .ret_type = malloc(sizeof(TypeExpr)),
+      .arg_types = arg_types,
+      .va_args = va_args,
+    },
   };
   *type.ref_type = ret_type;
   
@@ -256,10 +258,10 @@ static TypeExpr type_clone(TypeExpr t)
     break;
   case TYPE_FN: {
     TypeList arg_types = {0};
-    da_foreach (TypeExpr, arg, &t.arg_types) {
+    da_foreach (TypeExpr, arg, &t.fn_type.arg_types) {
       da_append(&arg_types, type_clone(*arg));
     }
-    result = fn_type(*t.ret_type, arg_types, t.va_args);
+    result = fn_type(*t.fn_type.ret_type, arg_types, t.fn_type.va_args);
   }break;
   default: UNREACHABLE("type_clone");
   }
@@ -470,17 +472,17 @@ static bool compile_type_fn(Lexer *l, TypeExpr *type)
   if (!prefetch_expect_token(l, '(')) return_defer(false);
 
   if (!prefetch_not_none(l)) return_defer(false);
-  type->arg_types = (TypeList) {0};
+  type->fn_type.arg_types = (TypeList) {0};
   while (l->current.kind != ')') {
     if (l->current.kind == TOKEN_DOTS) { // parse "..." for va_args
       if (!prefetch_expect_token(l, ')')) return false;
-      type->va_args = true;
+      type->fn_type.va_args = true;
     } else {
       // failures in this loop would not cause memory leak;
       TypeExpr arg_type = {0};
       // memory would clean up in the compile_type_expr;
       if (!compile_type_expr(l, &arg_type)) return_defer(false);
-      da_append(&type->arg_types, arg_type);
+      da_append(&type->fn_type.arg_types, arg_type);
       // from here, the ownership has moved to ext.type.arg_types;
       // thus, they will be clean up together with ext.type.arg_types;
       if (!prefetch_expect_tokens(l, ',', ')')) return_defer(false);
@@ -492,8 +494,8 @@ static bool compile_type_fn(Lexer *l, TypeExpr *type)
 
   if (!prefetch_expect_token(l, ':')) return_defer(false);
   if (!prefetch_not_none(l)) return_defer(false);
-  type->ret_type = calloc(1, sizeof(TypeExpr));
-  if (!compile_type_expr(l, type->ret_type)) return_defer(false);
+  type->fn_type.ret_type = calloc(1, sizeof(TypeExpr));
+  if (!compile_type_expr(l, type->fn_type.ret_type)) return_defer(false);
 
   return_defer(true);
 
@@ -632,12 +634,14 @@ static bool compile_function(Lexer *l, Program *prog)
     .name = fn.name,
     .type = (TypeExpr) {
       .kind = TYPE_FN,
-      .ret_type = malloc(sizeof(TypeExpr)),
-      .arg_types = {0},
-      .va_args = false,
+      .fn_type = {
+        .ret_type = malloc(sizeof(TypeExpr)),
+        .arg_types = {0},
+        .va_args = false,
+      },
     },
   };
-  *sym.type.ret_type = ret_type;
+  *sym.type.fn_type.ret_type = ret_type;
   da_append(&prog->global, sym);
 
   return true;
@@ -716,6 +720,8 @@ static bool detect_var_type(Arg *var, Arg *val, SymbolList *global, SymbolList *
   if (var_type->kind == TYPE_UNKNOWN) {
     *var_type = type_clone(val->type);
   }
+
+  var->type = type_clone(val->type);
 
   return true;
 }
@@ -809,16 +815,16 @@ static void dump_type_expr(TypeExpr *type, FILE *stream)
     break;
   case TYPE_FN: 
     fprintf(stream, "fn(");
-    for (size_t i = 0; i < type->arg_types.count; ++i) {
-      dump_type_expr(&type->arg_types.items[i], stream);
-      if (i + 1 < type->arg_types.count) {
+    for (size_t i = 0; i < type->fn_type.arg_types.count; ++i) {
+      dump_type_expr(&type->fn_type.arg_types.items[i], stream);
+      if (i + 1 < type->fn_type.arg_types.count) {
         fprintf(stream, ",");
-      } else if (type->va_args) {
+      } else if (type->fn_type.va_args) {
         fprintf(stream, ",...");
       }
     }
     fprintf(stream, "):");
-    dump_type_expr(type->ret_type, stream);
+    dump_type_expr(type->fn_type.ret_type, stream);
     break;
   case TYPE_PTR:
     fprintf(stream, "*");
@@ -840,9 +846,9 @@ static bool check_type(Program *prog)
       switch (op->kind) {
       case OP_RETURN:
         TypeExpr *ret_type = &op->ret_val.type;
-        if (!type_matched(fn_type->ret_type, ret_type)) {
+        if (!type_matched(fn_type->fn_type.ret_type, ret_type)) {
           pcompile_info(op->loc, "error: the return type of "SV_Fmt" is required to be ", SV_Arg(fn->name));
-          dump_type_expr(fn_type->ret_type, stderr);
+          dump_type_expr(fn_type->fn_type.ret_type, stderr);
           fprintf(stderr, ", but got ");
           dump_type_expr(ret_type, stderr);
           fputc('\n', stderr);
@@ -867,9 +873,9 @@ static bool check_type(Program *prog)
           return false;
         }
         TypeExpr *invoked_type = &op->fn.type;
-        TypeList *expected_types = &invoked_type->arg_types;
+        TypeList *expected_types = &invoked_type->fn_type.arg_types;
 
-        bool size_matched = invoked_type->va_args?
+        bool size_matched = invoked_type->fn_type.va_args?
           expected_types->count <= op->args.count:
           expected_types->count == op->args.count;
         if (!size_matched) {

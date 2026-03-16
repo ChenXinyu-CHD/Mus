@@ -17,27 +17,29 @@ typedef enum {
 
 #define TYPE_KIND_COUNT 6
 
-struct TypeExpr;
+typedef struct TypeExpr TypeExpr;
 
 typedef struct {
-  struct TypeExpr *items;
+  TypeExpr *items;
   size_t count;
   size_t capacity;
 } TypeList;
 
-typedef struct TypeExpr {
+typedef struct {
+  TypeExpr *ret_type;
+  TypeList arg_types;
+  bool va_args;
+} FnType;
+
+struct TypeExpr {
   TypeKind kind;
   size_t size;
 
   union {
-    struct TypeExpr *ref_type;
-    struct {
-      struct TypeExpr *ret_type;
-      TypeList arg_types;
-      bool va_args;
-    };
+    TypeExpr *ref_type;
+    FnType fn_type;
   };
-} TypeExpr;
+};
 
 typedef enum {
   ARG_NONE,
