@@ -2,6 +2,7 @@
 #include "lexer.h"
 
 #include "nob.h"
+#include "utils.h"
 
 static void vpcompile_info(Cursor cs, const char* fmt, va_list args)
 {
@@ -175,8 +176,8 @@ static void destroy_fn_list(FnList *fn_list)
     }
     da_free(fn->fn_body);
     
-    da_foreach (Symbol, sym, &fn->local) {
-      destroy_symbol(sym);
+    da_foreach (Var, var, &fn->local) {
+      destroy_type_expr(&var->type);
     }
     da_free(fn->local);
   }
@@ -185,22 +186,6 @@ static void destroy_fn_list(FnList *fn_list)
 
 #define expect_ids(l, filename, ...)            \
   expect_ids_(l, filename, __VA_ARGS__, NULL)
-
-static size_t search_symbol(SymbolList *syms, String_View name)
-{
-  for (size_t i = 0; i < syms->count; ++i) {
-    if (sv_eq(syms->items[i].name, name)) {
-      return i;
-    }
-  }
-  
-  return syms->count;
-}
-
-static bool symbol_defined(SymbolList *syms, String_View name)
-{
-  return search_symbol(syms, name) < syms->count;
-}
 
 static size_t compile_strlit(Program *prog, String_View str)
 {
@@ -275,7 +260,7 @@ static Arg arg_local_var(Fn *fn, size_t i)
   return (Arg) {
     .kind = ARG_VAR_LOC,
     .type = type_clone(fn->local.items[i].type),
-    .label = i + 1.
+    .label = i,
   };
 }
 
@@ -286,7 +271,7 @@ static bool compile_arg(Lexer *l, Program *prog, Fn *fn, Arg *arg)
   
   switch (l->current.kind) {
   case TOKEN_ID:
-    size_t i = search_symbol(&fn->local, l->current.token);
+    size_t i = dct_geti(&fn->local, l->current.token);
     if (i < fn->local.count) {
       *arg = arg_local_var(fn, i);
     } else {
@@ -506,40 +491,41 @@ static bool compile_type_fn(Lexer *l, TypeExpr *type)
   return result;
 }
 
-static bool compile_local_var_singn(Lexer *l, Fn *fn, Symbol* var)
+static bool compile_local_var_singn(Lexer *l, Fn *fn)
 {
   bool result;
 
+  Var var = {0};
   if (!prefetch_expect_token(l, TOKEN_ID)) return_defer(false);
 
-  if (symbol_defined(&fn->local, l->current.token)) {
+  if (dct_contains(&fn->local, l->current.token)) {
     pcompile_info(l->current.start, "error: variable \""SV_Fmt"\" is alreay defined in this field\n",
                   SV_Arg(l->current.token));
     return_defer(false);
   }
-  var->name = l->current.token;
+  var.name = l->current.token;
   if (!prefetch_not_none(l)) return_defer(false);
 
   if (l->current.kind == ':') {
     if (!prefetch_not_none(l)) return_defer(false);
-    if (!compile_type_expr(l, &var->type)) return_defer(false);
-    if (var->type.kind == TYPE_VOID) {
+    if (!compile_type_expr(l, &var.type)) return_defer(false);
+    if (var.type.kind == TYPE_VOID) {
       pcompile_info(l->current.start, "error: the type of a local variable cannot be \"void\"");
       return_defer(false);
     }
     if (!prefetch_not_none(l)) return_defer(false);
   }
+  
+  da_append(&fn->local, var);
   return_defer(true);
  defer:
-  if (!result) destroy_symbol(var);
+  if (!result) destroy_type_expr(&var.type);
   return result;
 }
 
 static bool compile_local_var(Lexer *l, Program *prog, Fn *fn)
 {
-  Symbol var = {0};
-  if (!compile_local_var_singn(l, fn, &var)) return false;
-  da_append(&fn->local, var);
+  if (!compile_local_var_singn(l, fn)) return false;
   size_t pos = fn->local.count - 1;
   
   if (l->current.kind != '=') return true;
@@ -608,7 +594,7 @@ static bool compile_function(Lexer *l, Program *prog)
 
   if (!prefetch_expect_token(l, TOKEN_ID)) return false;
 
-  if (symbol_defined(&prog->global, l->current.token)) {
+  if (dct_contains(&prog->global, l->current.token)) {
     pcompile_info(l->current.start, "error: symbol "SV_Fmt" redefined\n", SV_Arg(l->current.token));
     return false;
   }
@@ -653,7 +639,7 @@ static bool compile_function(Lexer *l, Program *prog)
 
 static bool name_arg_defined(Program *prog, Arg *arg)
 {
-  if (arg->kind == ARG_NAME && !symbol_defined(&prog->global, arg->name)) {
+  if (arg->kind == ARG_NAME && !dct_contains(&prog->global, arg->name)) {
     pcompile_info(arg->loc,
                   "error: refered symbol \""SV_Fmt"\" is not defined\n", SV_Arg(arg->name));
     return false;
@@ -686,16 +672,16 @@ static bool all_refered_defined(Program *prog)
   return true;
 }
 
-static bool detect_arg_type(Arg *arg, SymbolList *global, SymbolList *local) {
+static bool detect_arg_type(Arg *arg, SymbolList *global, VarList *local) {
   if (arg->type.kind != TYPE_UNKNOWN) return true;
 
   if (arg->kind == ARG_NAME) {
-    assert(symbol_defined(global, arg->name));
-    size_t loc = search_symbol(global, arg->name);
+    assert(dct_contains(global, arg->name));
+    size_t loc = dct_geti(global, arg->name);
     arg->type = type_clone(global->items[loc].type);
   } else if (arg->kind == ARG_VAR_LOC) {
-    assert(arg->label - 1 < local->count);
-    TypeExpr *var_type = &local->items[arg->label - 1].type;
+    assert(arg->label < local->count);
+    TypeExpr *var_type = &local->items[arg->label].type;
     assert(var_type->kind != TYPE_UNKNOWN);
     arg->type = type_clone(*var_type);
   } else {
@@ -704,18 +690,18 @@ static bool detect_arg_type(Arg *arg, SymbolList *global, SymbolList *local) {
   return true;
 }
 
-static bool detect_var_type(Arg *var, Arg *val, SymbolList *global, SymbolList *local)
+static bool detect_var_type(Arg *var, Arg *val, SymbolList *global, VarList *local)
 {
   assert(val->type.kind != TYPE_UNKNOWN);
   if (var->type.kind != TYPE_UNKNOWN) return true;
   
   TypeExpr *var_type = NULL;
   if (var->kind == ARG_VAR_LOC) {
-    assert(var->label - 1 < local->count);
-    var_type = &local->items[var->label - 1].type;
+    assert(var->label < local->count);
+    var_type = &local->items[var->label].type;
   } else if (var->kind == ARG_NAME) {
-    assert(symbol_defined(global, var->name));
-    size_t i = search_symbol(global, var->name);
+    assert(dct_contains(global, var->name));
+    size_t i = dct_geti(global, var->name);
     var_type = &global->items[i].type;
   } else {
     UNREACHABLE("fix_type_var");
@@ -734,7 +720,7 @@ static bool detect_all_unknown_type(Program *prog)
 {
   SymbolList *global = &prog->global;
   da_foreach (Fn, fn, &prog->fn_list) {
-    SymbolList *local = &fn->local;
+    VarList *local = &fn->local;
     da_foreach (Op, op, &fn->fn_body) {
       switch (op->kind) {
       case OP_RETURN:
@@ -769,7 +755,7 @@ static bool compile_file(Lexer *l, Program *prog)
     } else if (l->current.kind == TOKEN_EXT) {
       Symbol sym = { .external = true };
       if (!prefetch_expect_token(l, TOKEN_ID)) return false;
-      if (symbol_defined(&prog->global, l->current.token)) {
+      if (dct_contains(&prog->global, l->current.token)) {
         pcompile_info(l->current.start, "error: symbol "SV_Fmt" redefined\n", SV_Arg(l->current.token));
         return false;
       }
@@ -841,8 +827,8 @@ static void dump_type_expr(TypeExpr *type, FILE *stream)
 static bool check_type(Program *prog)
 {
   da_foreach (Fn, fn, &prog->fn_list) {
-    assert(symbol_defined(&prog->global, fn->name));
-    size_t fn_loc = search_symbol(&prog->global, fn->name);
+    assert(dct_contains(&prog->global, fn->name));
+    size_t fn_loc = dct_geti(&prog->global, fn->name);
     TypeExpr *fn_type = &prog->global.items[fn_loc].type;
     
     assert(fn_type->kind == TYPE_FN);

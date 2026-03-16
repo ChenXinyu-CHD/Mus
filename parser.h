@@ -115,8 +115,22 @@ typedef struct {
 
 typedef struct {
   String_View name;
+  TypeExpr type;
+  ptrdiff_t offset;
+} Var;
+
+typedef struct {
+  Var *items;
+  size_t memsize;
+  
+  size_t count;
+  size_t capacity;
+} VarList;
+
+typedef struct {
+  String_View name;
   OpList fn_body;
-  SymbolList local;
+  VarList local;
 } Fn;
 
 typedef struct {

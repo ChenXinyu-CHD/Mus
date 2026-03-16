@@ -6,6 +6,7 @@
 #include "parser.h"
 
 #include "nob.h"
+#include "utils.h"
 
 void append_str_lit(String_Builder *sb, String_View str)
 {
@@ -101,11 +102,60 @@ bool build_ir(const char *filename, const Program *prog)
   return success;
 }
 
-size_t ceil16(size_t x) {
-  if (x % 16 > 0) {
-    x += 16 - (x % 16);
+static void build_var_offset_x86_64_gas(VarList *var_list)
+{
+  da_foreach (Var, var, var_list) {
+    size_t size = var->type.size;
+    assert(size != 0);
+    var_list->memsize = ceil_to(var_list->memsize, size) + size;
+    var->offset = -var_list->memsize;
   }
-  return x;
+  var_list->memsize = ceil_to(var_list->memsize, 16);
+}
+
+static void rax2loc_var(String_Builder *sb, Var *var)
+{
+  ptrdiff_t offset = var->offset;
+  switch (var->type.size) {
+  case 1:
+    sb_appendf(sb, "    movb %%al, %ld(%%rbp)\n", offset);
+    break;
+  case 2:
+    sb_appendf(sb, "    movw %%ax, %ld(%%rbp)\n", offset);
+    break;
+  case 4:
+    sb_appendf(sb, "    movl %%eax, %ld(%%rbp)\n", offset);
+    break;
+  case 8:
+    sb_appendf(sb, "    movq %%rax, %ld(%%rbp)\n", offset);
+    break;
+  default:
+    UNREACHABLE("");
+  }
+}
+
+static void loc_var2rax(String_Builder *sb, Var *var)
+{
+  ptrdiff_t offset = var->offset;
+  if (var->type.size != 8) {
+    sb_appendf(sb, "    xor %%rax, %%rax\n");
+  }
+  switch (var->type.size) {
+  case 1:
+    sb_appendf(sb, "    movb %ld(%%rbp), %%al\n", offset);
+    break;
+  case 2:
+    sb_appendf(sb, "    movw %ld(%%rbp), %%ax\n", offset);
+    break;
+  case 4:
+    sb_appendf(sb, "    movl %ld(%%rbp), %%eax\n", offset);
+    break;
+  case 8:
+    sb_appendf(sb, "    movq %ld(%%rbp), %%rax\n", offset);
+    break;
+  default:
+    UNREACHABLE("");
+  }
 }
 
 String_Builder gen_code_x86_64_gas(const Program *prog)
@@ -129,7 +179,8 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
     sb_appendf(&sb, "    pushq %%rbp\n");
     sb_appendf(&sb, "    movq  %%rsp, %%rbp\n");
     if (fn->local.count != 0) {
-      sb_appendf(&sb, "    subq $%ld, %%rsp\n", ceil16(fn->local.count * 8));
+      build_var_offset_x86_64_gas(&fn->local);
+      sb_appendf(&sb, "    subq $%ld, %%rsp\n", fn->local.memsize);
     }
       
     da_foreach (Op, op, &fn->fn_body) {
@@ -155,14 +206,15 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
               sb_appendf(&sb, "    leaq .S_%ld(%%rip), %s\n", op->invoke.args.items[i].label, reg[i]);
             }
             break;
-          case ARG_VAR_LOC:
+          case ARG_VAR_LOC: {
+            Var *var = &fn->local.items[op->invoke.args.items[i].label];
+            loc_var2rax(&sb, var);
             if ((size_t)i > ARRAY_LEN(reg)) {
-              sb_appendf(&sb, "    movq -%ld(%%rbp), %%rax\n", op->invoke.args.items[i].label * 8);
               sb_appendf(&sb, "    pushq %%rax\n");
             } else {
-              sb_appendf(&sb, "    movq -%ld(%%rbp), %s\n", op->invoke.args.items[i].label * 8, reg[i]);
+              sb_appendf(&sb, "    movq %%rax, %s\n", reg[i]);
             }
-            break;
+          } break;
           default: UNREACHABLE("arg");
           }
         }
@@ -181,9 +233,10 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         case ARG_LIT_INT:
           sb_appendf(&sb, "    movq $%d, %%rax\n", op->ret_val.num_int);
           break;
-        case ARG_VAR_LOC:
-          sb_appendf(&sb, "    movq -%ld(%%rbp), %%rax\n", op->ret_val.label * 8);
-          break;
+        case ARG_VAR_LOC: {
+          Var *var = &fn->local.items[op->ret_val.label];
+          loc_var2rax(&sb, var);
+        } break;
         default: UNREACHABLE("arg");
         }
         
@@ -192,20 +245,21 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         break;
       case OP_SET_VAR: {
         assert(op->set_var.var.kind == ARG_VAR_LOC);
-
-        size_t label = op->set_var.var.label;
         switch(op->set_var.val.kind) {
         case ARG_LIT_INT:
-          sb_appendf(&sb, "    movq $%d, -%ld(%%rbp)\n", op->set_var.val.num_int, label * 8);
+          sb_appendf(&sb, "    movq $%d, %%rax\n", op->set_var.val.num_int);
           break;
-        case ARG_VAR_LOC:
-          sb_appendf(&sb, "    movq -%ld(%%rbp), %%rax\n", op->set_var.val.label * 8);
-          sb_appendf(&sb, "    movq %%rax, -%ld(%%rbp)\n", label * 8);
-          break;
+        case ARG_VAR_LOC: {
+          Var *val = &fn->local.items[op->set_var.val.label];
+          loc_var2rax(&sb, val);
+        } break;
         default: UNREACHABLE("arg");
         }
-        break;
-      } default:
+        
+        Var *var = &fn->local.items[op->ret_val.label];
+        rax2loc_var(&sb, var);
+      } break;
+      default:
         UNREACHABLE("op");
       }
     }

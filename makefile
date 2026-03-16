@@ -1,7 +1,7 @@
 CFLAGS=-Wall -Wextra -Werror -ggdb -O0
 
-mcc: nob.o mcc.o parser.o lexer.o 
-	cc -o mcc nob.o mcc.o parser.o lexer.o $(CFLAGS)
+mcc: nob.o mcc.o parser.o lexer.o utils.o
+	cc -o mcc nob.o mcc.o parser.o lexer.o utils.o $(CFLAGS)
 
 mcc.o: mcc.c parser.h
 	cc -c mcc.c $(CFLAGS)
@@ -14,3 +14,6 @@ lexer.o: lexer.h
 
 nob.o: nob.h
 	cc -c -x c -DNOB_IMPLEMENTATION nob.h
+
+utils.o: utils.h
+	cc -c -x c -DMCC_UTILS_IMPLEMENTATION utils.h
