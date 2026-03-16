@@ -76,13 +76,15 @@ typedef enum {
 } OpKind;
 
 typedef struct {
+  Arg fn;
+  ArgList args;
+} OpInvoke;
+
+typedef struct {
   OpKind kind;
   Cursor loc;
   union {
-    struct {
-      Arg fn;
-      ArgList args;
-    };
+    OpInvoke invoke;
     struct {
       Arg ret_val;
     };

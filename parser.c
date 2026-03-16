@@ -153,8 +153,8 @@ static void destroy_op(Op *op)
 {
   switch (op->kind) {
   case OP_INVOKE:
-    destroy_arg(&op->fn);
-    da_foreach(Arg, arg, &op->args) {
+    destroy_arg(&op->invoke.fn);
+    da_foreach(Arg, arg, &op->invoke.args) {
       destroy_arg(arg);
     }
     break;
@@ -335,19 +335,19 @@ static bool compile_statement(Lexer *l, Program *prog, Fn *fn)
     Op invoke = {
       .kind = OP_INVOKE,
       .loc = loc,
-      .fn = arg
+      .invoke = { .fn = arg },
     };
     
     if (!prefetch_not_none(l)) return false;
     while (l->current.kind != ')') {
       if (!compile_arg(l, prog, fn, &arg)) return false;
       if (!prefetch_not_none(l)) return false;
-      da_append(&invoke.args, arg);
+      da_append(&invoke.invoke.args, arg);
           
       if (l->current.kind != ',' && l->current.kind != ')') {
         pcompile_info(l->current.start, "error: expected ',' or ')', but got ");
         dump_token_kind(stderr, l->current.kind);
-        free(invoke.args.items);
+        free(invoke.invoke.args.items);
         return false;
       }
       
@@ -670,8 +670,8 @@ static bool all_refered_defined(Program *prog)
         if (!name_arg_defined(prog, &op->var)) return false;
         break;
       case OP_INVOKE:
-        if (!name_arg_defined(prog, &op->fn)) return false;
-        da_foreach (Arg, arg, &op->args) {
+        if (!name_arg_defined(prog, &op->invoke.fn)) return false;
+        da_foreach (Arg, arg, &op->invoke.args) {
           if (!name_arg_defined(prog, arg)) return false;
         }
         break;
@@ -741,8 +741,8 @@ static bool detect_all_unknown_type(Program *prog)
         if (!detect_var_type(&op->var, &op->val, global, local)) return false;
         break;
       case OP_INVOKE:
-        if (!detect_arg_type(&op->fn, global, local)) return false;
-        da_foreach (Arg, arg, &op->args) {
+        if (!detect_arg_type(&op->invoke.fn, global, local)) return false;
+        da_foreach (Arg, arg, &op->invoke.args) {
           if (!detect_arg_type(arg, global, local)) return false;
         }
         break;
@@ -868,27 +868,27 @@ static bool check_type(Program *prog)
         break;
       case OP_INVOKE:
         // TODO: report a better error message.
-        if (op->fn.type.kind != TYPE_FN) {
+        if (op->invoke.fn.type.kind != TYPE_FN) {
           pcompile_info(op->loc, "error: try to invoke an uncallable value\n");
           return false;
         }
-        TypeExpr *invoked_type = &op->fn.type;
+        TypeExpr *invoked_type = &op->invoke.fn.type;
         TypeList *expected_types = &invoked_type->fn_type.arg_types;
 
         bool size_matched = invoked_type->fn_type.va_args?
-          expected_types->count <= op->args.count:
-          expected_types->count == op->args.count;
+          expected_types->count <= op->invoke.args.count:
+          expected_types->count == op->invoke.args.count;
         if (!size_matched) {
           pcompile_info(op->loc,
                         "error: this function expected %ld arguments, but got %ld arguments\n",
-                        expected_types->count, op->args.count);
+                        expected_types->count, op->invoke.args.count);
           return false;
         }
 
-        assert(expected_types->count <= op->args.count);
+        assert(expected_types->count <= op->invoke.args.count);
         for (size_t i = 0; i < expected_types->count; ++i) {
           TypeExpr *expected = &expected_types->items[i];
-          TypeExpr *actual = &op->args.items[i].type;
+          TypeExpr *actual = &op->invoke.args.items[i].type;
           if (!type_matched(expected, actual)) {
             pcompile_info(op->loc, "error: the %ld-th argument is expected to be ", i);
             dump_type_expr(expected, stderr);

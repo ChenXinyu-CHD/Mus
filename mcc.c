@@ -58,8 +58,8 @@ String_Builder gen_code_ir(const Program *prog)
       switch(op->kind) {
       case OP_INVOKE:
         sb_appendf(&sb, "    call ");
-        gen_arg_ir(&sb, op->fn);
-        da_foreach (Arg, arg, &op->args) {
+        gen_arg_ir(&sb, op->invoke.fn);
+        da_foreach (Arg, arg, &op->invoke.args) {
           sb_appendf(&sb, ", ");
           gen_arg_ir(&sb, *arg);
         }
@@ -135,41 +135,41 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
     da_foreach (Op, op, &fn->fn_body) {
       switch(op->kind) {
       case OP_INVOKE:
-        for (int i = op->args.count - 1; i >= 0; --i) {
+        for (int i = op->invoke.args.count - 1; i >= 0; --i) {
           static char *reg[] = {
             "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"
           };
-          switch(op->args.items[i].kind) {
+          switch(op->invoke.args.items[i].kind) {
           case ARG_LIT_INT:
             if ((size_t)i > ARRAY_LEN(reg)) {
-              sb_appendf(&sb, "    pushq $%d\n", op->args.items[i].num_int);
+              sb_appendf(&sb, "    pushq $%d\n", op->invoke.args.items[i].num_int);
             } else {
-              sb_appendf(&sb, "    movq $%d, %s\n", op->args.items[i].num_int, reg[i]);
+              sb_appendf(&sb, "    movq $%d, %s\n", op->invoke.args.items[i].num_int, reg[i]);
             }
             break;
           case ARG_LIT_STR:
             if ((size_t)i > ARRAY_LEN(reg)) {
-              sb_appendf(&sb, "    leaq .S_%ld(%%rip), %%rax\n", op->args.items[i].label);
+              sb_appendf(&sb, "    leaq .S_%ld(%%rip), %%rax\n", op->invoke.args.items[i].label);
               sb_appendf(&sb, "    pushq %%rax\n");
             } else {
-              sb_appendf(&sb, "    leaq .S_%ld(%%rip), %s\n", op->args.items[i].label, reg[i]);
+              sb_appendf(&sb, "    leaq .S_%ld(%%rip), %s\n", op->invoke.args.items[i].label, reg[i]);
             }
             break;
           case ARG_VAR_LOC:
             if ((size_t)i > ARRAY_LEN(reg)) {
-              sb_appendf(&sb, "    movq -%ld(%%rbp), %%rax\n", op->args.items[i].label * 8);
+              sb_appendf(&sb, "    movq -%ld(%%rbp), %%rax\n", op->invoke.args.items[i].label * 8);
               sb_appendf(&sb, "    pushq %%rax\n");
             } else {
-              sb_appendf(&sb, "    movq -%ld(%%rbp), %s\n", op->args.items[i].label * 8, reg[i]);
+              sb_appendf(&sb, "    movq -%ld(%%rbp), %s\n", op->invoke.args.items[i].label * 8, reg[i]);
             }
             break;
           default: UNREACHABLE("arg");
           }
         }
           
-        switch(op->fn.kind) {
+        switch(op->invoke.fn.kind) {
         case ARG_NAME:
-          sb_appendf(&sb, "    call "SV_Fmt"\n", SV_Arg(op->fn.name));
+          sb_appendf(&sb, "    call "SV_Fmt"\n", SV_Arg(op->invoke.fn.name));
           break;
         default: UNREACHABLE("arg");
         }
