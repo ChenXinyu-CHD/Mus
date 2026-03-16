@@ -655,7 +655,7 @@ static bool name_arg_defined(Program *prog, Arg *arg)
 {
   if (arg->kind == ARG_NAME && !symbol_defined(&prog->global, arg->name)) {
     pcompile_info(arg->loc,
-                  "error: refered symbol \"%s\" is not defined\n", arg->name);
+                  "error: refered symbol \""SV_Fmt"\" is not defined\n", SV_Arg(arg->name));
     return false;
   }
   return true;
