@@ -131,6 +131,7 @@ typedef struct {
   String_View name;
   OpList fn_body;
   VarList local;
+  VarList args;
 } Fn;
 
 typedef struct {

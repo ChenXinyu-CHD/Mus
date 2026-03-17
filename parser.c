@@ -488,6 +488,34 @@ static bool compile_fn_body(Lexer *l, Program *prog, Fn *fn) {
   return true;
 }
 
+static bool compile_fn_args(Lexer *l, Fn *fn)
+{
+  if (!prefetch_expect_tokens(l, ')', TOKEN_ID)) return false;
+  while (l->current.kind != ')') {
+    Var var = {0};
+    assert(l->current.kind == TOKEN_ID);
+    var.name = l->current.token;
+    if (dct_contains(&fn->args, var.name)) {
+      pcompile_info(l->cursor, "error: arg "SV_Fmt" redefined\n", SV_Arg(var.name));
+      return false;
+    }
+    
+    if (!prefetch_expect_token(l, ':')) return false;
+    if (!lexer_next(l)) return false;
+    if (!compile_type_expr(l, &var.type)) return false;
+    da_append(&fn->args, var);
+    
+    if (!prefetch_expect_tokens(l, ',', ')')) return false;
+
+    if (l->current.kind == ',') {
+      if (!prefetch_expect_token(l, TOKEN_ID)) return false;
+    }
+  }
+  
+  assert(l->current.kind == ')');
+  return true;
+}
+
 static bool compile_function(Lexer *l, Program *prog)
 {
   assert(l->current.kind == TOKEN_FN);
@@ -499,12 +527,12 @@ static bool compile_function(Lexer *l, Program *prog)
     return false;
   }
 
-  Fn fn = {
-    .name = l->current.token,
-  };
-  
+  Fn fn = { 0 };
+  fn.name = l->current.token;
+
   if (!prefetch_expect_token(l, '(')) return false;
-  if (!prefetch_expect_token(l, ')')) return false;
+  if (!compile_fn_args(l, &fn)) return false;
+  assert(l->current.kind == ')');
   
   if (!prefetch_expect_token(l, ':')) return false;
   if (!prefetch_not_none(l)) return false;
@@ -519,19 +547,10 @@ static bool compile_function(Lexer *l, Program *prog)
   if (!expect_token(l, '}')) return false;
 
   da_append(&prog->fn_list, fn);
-
   Symbol sym = {
     .name = fn.name,
-    .type = (TypeExpr) {
-      .kind = TYPE_FN,
-      .fn_type = {
-        .ret_type = malloc(sizeof(TypeExpr)),
-        .arg_types = {0},
-        .va_args = false,
-      },
-    },
+    .type = fn_type(ret_type, (TypeList){0}, false),
   };
-  *sym.type.fn_type.ret_type = ret_type;
   da_append(&prog->global, sym);
 
   return true;
