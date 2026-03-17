@@ -18,6 +18,9 @@ typedef struct {
 #define CS_Arg(cs) SV_Arg((cs).filename), ((cs).row + 1), ((cs).col + 1)
 #define cs_pos(cs) ((cs).col + (cs).stride)
 
+void vpcompile_info(Cursor cs, const char* fmt, va_list args);
+void pcompile_info(Cursor cs, const char* fmt, ...);
+
 char cs_getc(String_Builder sb, Cursor c);
 char cs_nextc(String_Builder sb, Cursor *c);
 bool cs_move_after_prefix(String_Builder sb, Cursor *cs, String_View prefix);
@@ -54,6 +57,14 @@ typedef struct {
 
 bool lexer_init(Lexer *lexer, String_View filename);
 bool lexer_next(Lexer *lexer);
+bool expect_token(Lexer *l, int token);
+bool prefetch_not_none(Lexer *l);
+bool prefetch_expect_token(Lexer *l, int token);
+
+bool prefetch_expect_tokens_impl(Lexer *l, ...);
+#define prefetch_expect_tokens(l, ...)                          \
+  prefetch_expect_tokens_impl(l, __VA_ARGS__, TOKEN_ERR)
+
 void lexer_terminate(Lexer *lexer);
 
 #endif // MCC_LEXER_H
@@ -70,6 +81,27 @@ int sv_to_int(String_View sv)
   }
   return val;
 }
+
+void vpcompile_info(Cursor cs, const char* fmt, va_list args)
+{
+  size_t mark = temp_save(); {
+    va_list ap;
+    va_copy(ap, args);
+    char *msg = temp_vsprintf(fmt, ap);
+    va_end(ap);
+  
+    fprintf(stderr, CS_Fmt" %s", CS_Arg(cs), msg);
+  } temp_rewind(mark);
+}
+
+void pcompile_info(Cursor cs, const char* fmt, ...)
+{
+  va_list args;
+  va_start(args, fmt);
+  vpcompile_info(cs, fmt, args);
+  va_end(args);
+}
+
 
 char cs_getc(String_Builder sb, Cursor c)
 {
@@ -330,8 +362,75 @@ bool lexer_next(Lexer *lexer)
       .start = lexer->cursor,
       .kind = TOKEN_ERR,
     };
+    pcompile_info(lexer->cursor, "error: lexer error\n");
     return false;
   }
+}
+
+bool prefetch_not_none(Lexer *l)
+{
+  bool result = lexer_next(l);
+  if (l->current.kind == TOKEN_EOF) {
+    pcompile_info(l->current.start, "error: unexpected EOF\n");
+    return false;
+  }
+  
+  return result;
+}
+
+bool expect_token(Lexer *l, int token)
+{
+  if (l->current.kind == token) return true;
+  
+  pcompile_info(l->current.start, "error: expect token ");
+  dump_token_kind(stderr, token);
+  fprintf(stderr, ", but got");
+  dump_token_kind(stderr, token);
+  fprintf(stderr, "\n");
+  
+  return false;
+}
+
+bool prefetch_expect_token(Lexer *l, int token)
+{
+  lexer_next(l);
+  if (!expect_token(l, token)) return false;
+  return true;
+}
+
+bool prefetch_expect_tokens_impl(Lexer *l, ...)
+{
+  lexer_next(l);
+  bool found = false;
+  
+  va_list ap; va_start(ap, l); {
+    int arg = va_arg(ap, int);
+    while (arg != TOKEN_ERR) {
+      if (arg == l->current.kind) {
+        found = true;
+        break;
+      }
+      arg = va_arg(ap, int);
+    }
+  } va_end(ap);
+
+  if (found) return true;
+
+  va_start(ap, l); {
+    pcompile_info(l->current.start, "error: expect token ");
+    
+    int arg = va_arg(ap, int);
+    while (arg != TOKEN_ERR) {
+      dump_token_kind(stderr, arg);
+      fprintf(stderr, ", ");
+      arg = va_arg(ap, int);
+    }
+    fprintf(stderr, "but got");
+    dump_token_kind(stderr, l->current.kind);
+    fprintf(stderr, "\n");
+  } va_end(ap);
+  
+  return false;
 }
 
 void lexer_terminate(Lexer *lexer)

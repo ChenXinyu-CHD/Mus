@@ -4,106 +4,6 @@
 #include "nob.h"
 #include "utils.h"
 
-static void vpcompile_info(Cursor cs, const char* fmt, va_list args)
-{
-  size_t mark = temp_save(); {
-    va_list ap;
-    va_copy(ap, args);
-    char *msg = temp_vsprintf(fmt, ap);
-    va_end(ap);
-  
-    fprintf(stderr, CS_Fmt" %s", CS_Arg(cs), msg);
-  } temp_rewind(mark);
-}
-
-static void pcompile_info(Cursor cs, const char* fmt, ...)
-{
-  va_list args;
-  va_start(args, fmt);
-  vpcompile_info(cs, fmt, args);
-  va_end(args);
-}
-
-static bool next_token(Lexer *l)
-{
-  bool result = lexer_next(l);
-  if (l->current.kind == TOKEN_ERR) {
-    pcompile_info(l->current.start, "error: parse error when read \""SV_Fmt"\"\n",
-                  SV_Arg(l->current.token));
-  }
-
-  return result;
-}
-
-static bool prefetch_not_none(Lexer *l)
-{
-  bool result = next_token(l);
-  if (l->current.kind == TOKEN_EOF) {
-    pcompile_info(l->current.start, "error: unexpected EOF\n");
-    return false;
-  }
-  
-  return result;
-}
-
-static bool expect_token(Lexer *l, int token)
-{
-  if (l->current.kind == token) return true;
-  
-  pcompile_info(l->current.start, "error: expect token ");
-  dump_token_kind(stderr, token);
-  fprintf(stderr, ", but got");
-  dump_token_kind(stderr, token);
-  fprintf(stderr, "\n");
-  
-  return false;
-}
-
-static bool prefetch_expect_token(Lexer *l, int token)
-{
-  next_token(l);
-  if (!expect_token(l, token)) return false;
-  return true;
-}
-
-static bool prefetch_expect_tokens_(Lexer *l, ...)
-{
-  next_token(l);
-  bool found = false;
-  
-  va_list ap; va_start(ap, l); {
-    int arg = va_arg(ap, int);
-    while (arg != TOKEN_ERR) {
-      if (arg == l->current.kind) {
-        found = true;
-        break;
-      }
-      arg = va_arg(ap, int);
-    }
-  } va_end(ap);
-
-  if (found) return true;
-
-  va_start(ap, l); {
-    pcompile_info(l->current.start, "error: expect token ");
-    
-    int arg = va_arg(ap, int);
-    while (arg != TOKEN_ERR) {
-      dump_token_kind(stderr, arg);
-      fprintf(stderr, ", ");
-      arg = va_arg(ap, int);
-    }
-    fprintf(stderr, "but got");
-    dump_token_kind(stderr, l->current.kind);
-    fprintf(stderr, "\n");
-  } va_end(ap);
-  
-  return false;
-}
-
-#define prefetch_expect_tokens(l, ...)                        \
-  prefetch_expect_tokens_(l, __VA_ARGS__, TOKEN_ERR)
-
 static void destroy_type_expr(TypeExpr* type)
 {
   if (type == NULL) return;
@@ -745,7 +645,7 @@ static bool detect_all_unknown_type(Program *prog)
 
 static bool compile_file(Lexer *l, Program *prog)
 {
-  while (next_token(l)) {
+  while (lexer_next(l)) {
     if (l->current.kind == ';') {
       continue;
     }
