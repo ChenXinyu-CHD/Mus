@@ -164,22 +164,17 @@ static Arg arg_local_var(Fn *fn, size_t i)
   };
 }
 
-static bool compile_arg(Lexer *l, Program *prog, Fn *fn, Arg *arg)
+static bool compile_arg(Lexer *l, Program *prog, Arg *arg)
 {
-  UNUSED(prog);
   assert(l->current.kind != TOKEN_EOF);
   
   switch (l->current.kind) {
   case TOKEN_ID:
-    size_t i = dct_geti(&fn->local, l->current.token);
-    if (i < fn->local.count) {
-      *arg = arg_local_var(fn, i);
-    } else {
-      arg->kind = ARG_NAME;
-      arg->name = l->current.token;
-      arg->loc = l->current.start;
-      arg->type = (TypeExpr){.kind = TYPE_UNKNOWN};
-    }
+    arg->kind = ARG_NAME;
+    arg->name = l->current.token;
+    arg->loc = l->current.start;
+    arg->type = (TypeExpr){.kind = TYPE_UNKNOWN};
+
     break;
   case TOKEN_STR:
     arg->kind = ARG_LIT_STR;
@@ -213,7 +208,7 @@ static bool compile_statement(Lexer *l, Program *prog, Fn *fn)
 {
   Arg arg;
   Cursor loc = l->current.start;
-  if (!compile_arg(l, prog, fn, &arg)) return false;
+  if (!compile_arg(l, prog, &arg)) return false;
   if (!prefetch_not_none(l)) return false;
 
   if (l->current.kind == '(') {
@@ -225,7 +220,7 @@ static bool compile_statement(Lexer *l, Program *prog, Fn *fn)
     
     if (!prefetch_not_none(l)) return false;
     while (l->current.kind != ')') {
-      if (!compile_arg(l, prog, fn, &arg)) return false;
+      if (!compile_arg(l, prog, &arg)) return false;
       if (!prefetch_not_none(l)) return false;
       da_append(&invoke.invoke.args, arg);
           
@@ -243,14 +238,9 @@ static bool compile_statement(Lexer *l, Program *prog, Fn *fn)
     
     da_append(&fn->fn_body, invoke);
   } else if (l->current.kind == '=') {
-    if (arg.kind != ARG_VAR_LOC) {
-      pcompile_info(l->current.start, "error: try to assign to an rvalue\n");
-      return false;
-    };
-    
     Arg val;
     if (!prefetch_not_none(l)) return false;
-    if (!compile_arg(l, prog, fn, &val)) return false;
+    if (!compile_arg(l, prog, &val)) return false;
     
     Op set_var = {
       .kind = OP_SET_VAR,
@@ -398,12 +388,8 @@ static bool compile_local_var_singn(Lexer *l, Fn *fn)
   Var var = {0};
   if (!prefetch_expect_token(l, TOKEN_ID)) return_defer(false);
 
-  if (dct_contains(&fn->local, l->current.token)) {
-    pcompile_info(l->current.start, "error: variable \""SV_Fmt"\" is alreay defined in this field\n",
-                  SV_Arg(l->current.token));
-    return_defer(false);
-  }
   var.name = l->current.token;
+  var.loc = l->current.start;
   if (!prefetch_not_none(l)) return_defer(false);
 
   if (l->current.kind == ':') {
@@ -433,7 +419,7 @@ static bool compile_local_var(Lexer *l, Program *prog, Fn *fn)
   Cursor loc = l->current.start;
   if (!prefetch_not_none(l)) return false;
   Arg val = {0};
-  if (!compile_arg(l, prog, fn, &val)) return false;    
+  if (!compile_arg(l, prog, &val)) return false;    
   Op set_var = {
     .kind = OP_SET_VAR,
     .loc = loc,
@@ -461,7 +447,7 @@ static bool compile_fn_body(Lexer *l, Program *prog, Fn *fn) {
         .loc = l->current.start,
       };
       if (!prefetch_not_none(l)) return false;
-      if (!compile_arg(l, prog, fn, &ret.ret_val)) return false;
+      if (!compile_arg(l, prog, &ret.ret_val)) return false;
       da_append(&fn->fn_body, ret);
       returned = true;
       if (!prefetch_not_none(l)) return false;
@@ -495,10 +481,7 @@ static bool compile_fn_args(Lexer *l, Fn *fn)
     Var var = {0};
     assert(l->current.kind == TOKEN_ID);
     var.name = l->current.token;
-    if (dct_contains(&fn->args, var.name)) {
-      pcompile_info(l->cursor, "error: arg "SV_Fmt" redefined\n", SV_Arg(var.name));
-      return false;
-    }
+    var.loc = l->current.start;
     
     if (!prefetch_expect_token(l, ':')) return false;
     if (!lexer_next(l)) return false;
@@ -522,13 +505,9 @@ static bool compile_function(Lexer *l, Program *prog)
 
   if (!prefetch_expect_token(l, TOKEN_ID)) return false;
 
-  if (dct_contains(&prog->global, l->current.token)) {
-    pcompile_info(l->current.start, "error: symbol "SV_Fmt" redefined\n", SV_Arg(l->current.token));
-    return false;
-  }
-
   Fn fn = { 0 };
   fn.name = l->current.token;
+  fn.loc = l->current.start;
 
   if (!prefetch_expect_token(l, '(')) return false;
   if (!compile_fn_args(l, &fn)) return false;
@@ -547,48 +526,62 @@ static bool compile_function(Lexer *l, Program *prog)
   if (!expect_token(l, '}')) return false;
 
   da_append(&prog->fn_list, fn);
-  Symbol sym = {
-    .name = fn.name,
-    .type = fn_type(ret_type, (TypeList){0}, false),
-  };
-  da_append(&prog->global, sym);
 
   return true;
 }
 
-static bool name_arg_defined(Program *prog, Arg *arg)
+static bool backpatch_name_arg_impl(Arg *arg, Program *prog, Fn *fn)
 {
-  if (arg->kind == ARG_NAME && !dct_contains(&prog->global, arg->name)) {
-    pcompile_info(arg->loc,
-                  "error: refered symbol \""SV_Fmt"\" is not defined\n", SV_Arg(arg->name));
-    return false;
+  UNUSED(arg);
+  UNUSED(prog);
+  UNUSED(fn);
+  
+  if (arg->kind != ARG_NAME) return true;
+  
+  if (dct_contains(&fn->local, arg->name)) {
+    TODO("");
+    return true;
   }
-  return true;
+  
+  if (dct_contains(&fn->args, arg->name)) {
+    TODO("");
+    return true;
+  }
+  
+  if (dct_contains(&prog->global, arg->name)) {
+    return true;
+  }
+  
+  pcompile_info(arg->loc,
+                "error: refered symbol \""SV_Fmt"\" is not defined\n", SV_Arg(arg->name));
+  return false;
 }
 
-static bool all_refered_defined(Program *prog)
+static bool backpatch_name_args(Program *prog)
 {
+  bool success = true;
   da_foreach (Fn, fn, &prog->fn_list) {
     da_foreach (Op, op, &fn->fn_body) {
       switch (op->kind) {
       case OP_RETURN:
-        if (!name_arg_defined(prog, &op->ret_val)) return false;
+        success = backpatch_name_arg_impl(&op->ret_val, prog, fn) && success;
         break;
       case OP_SET_VAR:
-        if (!name_arg_defined(prog, &op->set_var.val)) return false;
-        if (!name_arg_defined(prog, &op->set_var.var)) return false;
+        success = backpatch_name_arg_impl(&op->set_var.val, prog, fn) && success;
+        success = backpatch_name_arg_impl(&op->set_var.var, prog, fn) && success;
         break;
       case OP_INVOKE:
-        if (!name_arg_defined(prog, &op->invoke.fn)) return false;
+        success = backpatch_name_arg_impl(&op->invoke.fn, prog, fn) && success;
         da_foreach (Arg, arg, &op->invoke.args) {
-          if (!name_arg_defined(prog, arg)) return false;
+          success = backpatch_name_arg_impl(arg, prog, fn) && success;
         }
         break;
       default: UNREACHABLE("op");
       }
     }
   }
-  return true;
+
+  return success;
 }
 
 static bool detect_arg_type(Arg *arg, SymbolList *global, VarList *local) {
@@ -674,11 +667,10 @@ static bool compile_file(Lexer *l, Program *prog)
     } else if (l->current.kind == TOKEN_EXT) {
       Symbol sym = { .external = true };
       if (!prefetch_expect_token(l, TOKEN_ID)) return false;
-      if (dct_contains(&prog->global, l->current.token)) {
-        pcompile_info(l->current.start, "error: symbol "SV_Fmt" redefined\n", SV_Arg(l->current.token));
-        return false;
-      }
+      
       sym.name = l->current.token;
+      sym.loc = l->current.start;
+      
       if (!prefetch_expect_token(l, ':')) return false;
       if (!prefetch_not_none(l)) return false;
       if (!compile_type_expr(l, &sym.type)) return false;
@@ -815,10 +807,55 @@ static bool check_type(Program *prog)
   return true;
 }
 
+typedef struct {
+  String_View name;
+  Cursor loc;
+} Def;
+
+typedef struct {
+  Def *items;
+  size_t count;
+  size_t capacity;
+} DefList;
+
+#define check_redefined(list, defs) do {                                \
+    for (size_t i = 0; i < (list)->count; ++i) {                        \
+      String_View name = (list)->items[i].name;                         \
+      Cursor loc = (list)->items[i].loc;                                \
+      size_t j = dct_geti((defs), name);                                \
+      if (j < (defs)->count) {                                          \
+        Cursor first_loc = (defs)->items[j].loc;                        \
+        pcompile_info(loc, "error: symbol `"SV_Fmt"` redefined\n", SV_Arg(name)); \
+        pcompile_info(first_loc, "info: it is firstly defined here\n"); \
+        result = false;                                                 \
+      } else {                                                          \
+        da_append((defs), ((Def) {.name = name, .loc = loc}));          \
+      }                                                                 \
+    }                                                                   \
+  } while(0);
+
+static bool check_symbol_redefined(Program *prog)
+{
+  bool result = true;
+  
+  DefList defs = {0};
+  check_redefined(&prog->global, &defs);
+  check_redefined(&prog->fn_list, &defs);
+
+  da_foreach (Fn, fn, &prog->fn_list) {
+    defs.count = 0;
+    check_redefined(&fn->args, &defs);
+    check_redefined(&fn->local, &defs);
+  }
+  
+  return result;
+}
+
 bool compile_program(Lexer *l, Program *prog)
 {
   if (!compile_file(l, prog)) return false;
-  if (!all_refered_defined(prog)) return false;
+  if (!check_symbol_redefined(prog)) return false;
+  if (!backpatch_name_args(prog)) return false;
   if (!detect_all_unknown_type(prog)) return false;
   if (!check_type(prog)) return false;
   

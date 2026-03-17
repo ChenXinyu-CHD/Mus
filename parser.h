@@ -104,6 +104,7 @@ typedef struct {
 typedef struct {
   bool external;
   String_View name;
+  Cursor loc;
   TypeExpr type;
 } Symbol;
 
@@ -115,6 +116,7 @@ typedef struct {
 
 typedef struct {
   String_View name;
+  Cursor loc;
   TypeExpr type;
   ptrdiff_t offset;
 } Var;
@@ -129,6 +131,7 @@ typedef struct {
 
 typedef struct {
   String_View name;
+  Cursor loc;
   OpList fn_body;
   VarList local;
   VarList args;
