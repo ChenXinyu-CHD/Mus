@@ -102,22 +102,22 @@ typedef struct {
 } OpList;
 
 typedef struct {
-  bool external;
   String_View name;
   Cursor loc;
   TypeExpr type;
-} Symbol;
+} Extern;
 
 typedef struct {
-  Symbol *items;
+  Extern *items;
   size_t count;
   size_t capacity;
-} SymbolList;
+} ExternList;
 
 typedef struct {
   String_View name;
   Cursor loc;
   TypeExpr type;
+  
   ptrdiff_t offset;
 } Var;
 
@@ -132,6 +132,8 @@ typedef struct {
 typedef struct {
   String_View name;
   Cursor loc;
+  TypeExpr type;
+  
   OpList fn_body;
   VarList local;
   VarList args;
@@ -145,7 +147,7 @@ typedef struct {
 
 typedef struct {
   FnList fn_list;
-  SymbolList global;
+  ExternList externs;
   struct {
     String_View *items;
     size_t count;

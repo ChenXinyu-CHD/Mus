@@ -32,11 +32,6 @@ static void destroy_type_expr(TypeExpr* type)
   }
 }
 
-static void destroy_symbol(Symbol *sym)
-{
-  destroy_type_expr(&sym->type);
-}
-
 static void destroy_arg(Arg *arg)
 {
   destroy_type_expr(&arg->type);
@@ -68,18 +63,34 @@ static void destroy_op(Op *op)
   }
 }
 
-static void destroy_fn_list(FnList *fn_list)
+static void destroy_fn(Fn *fn)
 {
-  da_foreach (Fn, fn, fn_list) {
+  if (fn->fn_body.count != 0) {
     da_foreach (Op, op, &fn->fn_body) {
       destroy_op(op);
     }
     da_free(fn->fn_body);
-    
+  }
+
+  if (fn->local.count != 0) {
     da_foreach (Var, var, &fn->local) {
       destroy_type_expr(&var->type);
     }
     da_free(fn->local);
+  }
+
+  if (fn->args.count != 0) {
+    da_foreach (Var, var, &fn->args) {
+      destroy_type_expr(&var->type);
+    }
+    da_free(fn->args);
+  }
+}
+
+static void destroy_fn_list(FnList *fn_list)
+{
+  da_foreach (Fn, fn, fn_list) {
+    destroy_fn(fn);
   }
   da_free(*fn_list);
 }
@@ -319,6 +330,7 @@ static bool compile_type_fn(Lexer *l, TypeExpr *type);
 
 static bool compile_type_expr(Lexer *l, TypeExpr *type)
 {
+  assert(type != NULL);
   switch (l->current.kind) {
   case TOKEN_FN:
     return compile_type_fn(l, type);
@@ -474,81 +486,100 @@ static bool compile_fn_body(Lexer *l, Program *prog, Fn *fn) {
   return true;
 }
 
-static bool compile_fn_args(Lexer *l, Fn *fn)
+static bool compile_fn_sign(Lexer *l, Fn *fn)
 {
+  assert(l->current.kind == TOKEN_FN);
+
+  if (!prefetch_expect_token(l, TOKEN_ID)) return false;
+
+  *fn = (Fn) {
+    .name = l->current.token,
+    .loc = l->current.start,
+    .type = {.kind = TYPE_FN},
+  };
+
+  if (!prefetch_expect_token(l, '(')) return false;
   if (!prefetch_expect_tokens(l, ')', TOKEN_ID)) return false;
+  
+  bool result;
   while (l->current.kind != ')') {
     Var var = {0};
     assert(l->current.kind == TOKEN_ID);
     var.name = l->current.token;
     var.loc = l->current.start;
     
-    if (!prefetch_expect_token(l, ':')) return false;
-    if (!lexer_next(l)) return false;
-    if (!compile_type_expr(l, &var.type)) return false;
-    da_append(&fn->args, var);
+    if (!prefetch_expect_token(l, ':')) return_defer(false);
+    if (!lexer_next(l)) return_defer(false);
+    if (!compile_type_expr(l, &var.type)) return_defer(false);
     
-    if (!prefetch_expect_tokens(l, ',', ')')) return false;
+    da_append(&fn->args, var);
+    da_append(&fn->type.fn_type.arg_types, (type_clone(var.type)));
+    
+    if (!prefetch_expect_tokens(l, ',', ')')) return_defer(false);
 
     if (l->current.kind == ',') {
-      if (!prefetch_expect_token(l, TOKEN_ID)) return false;
+      if (!prefetch_expect_token(l, TOKEN_ID)) return_defer(false);
     }
   }
-  
-  assert(l->current.kind == ')');
-  return true;
-}
-
-static bool compile_function(Lexer *l, Program *prog)
-{
-  assert(l->current.kind == TOKEN_FN);
-
-  if (!prefetch_expect_token(l, TOKEN_ID)) return false;
-
-  Fn fn = { 0 };
-  fn.name = l->current.token;
-  fn.loc = l->current.start;
-
-  if (!prefetch_expect_token(l, '(')) return false;
-  if (!compile_fn_args(l, &fn)) return false;
   assert(l->current.kind == ')');
   
   if (!prefetch_expect_token(l, ':')) return false;
   if (!prefetch_not_none(l)) return false;
-
-  TypeExpr ret_type;
+  
+  TypeExpr ret_type = {0};
   if (!compile_type_expr(l, &ret_type)) return false;
+  fn->type.fn_type.ret_type = malloc(sizeof(TypeExpr));
+  *fn->type.fn_type.ret_type = ret_type;
   
-  if (!prefetch_expect_token(l, '{')) return false;
+  return true;
+  
+ defer:
+  destroy_fn(fn);
+  return result;
+}
 
-  if (!compile_fn_body(l, prog, &fn)) return false;
+static bool compile_function(Lexer *l, Program *prog)
+{
+  bool result;
   
-  if (!expect_token(l, '}')) return false;
+  Fn fn = {0};
+  if (!compile_fn_sign(l, &fn)) return_defer(false);
+
+  if (!prefetch_expect_token(l, '{')) return_defer(false);
+  if (!compile_fn_body(l, prog, &fn)) return_defer(false);
+  if (!expect_token(l, '}')) return_defer(false);
 
   da_append(&prog->fn_list, fn);
-
   return true;
+ defer:
+  destroy_fn(&fn);
+  return result;
 }
 
 static bool backpatch_name_arg_impl(Arg *arg, Program *prog, Fn *fn)
-{
-  UNUSED(arg);
-  UNUSED(prog);
-  UNUSED(fn);
-  
+{  
   if (arg->kind != ARG_NAME) return true;
-  
-  if (dct_contains(&fn->local, arg->name)) {
+
+  size_t i = dct_geti(&fn->local, arg->name);
+  if (i < fn->local.count) {
+    *arg = (Arg) {
+      .kind = ARG_VAR_LOC,
+      .label = i,
+    };
+    return true;
+  }
+
+  i = dct_geti(&fn->local, arg->name);
+  if (i < fn->local.count) {
     TODO("");
     return true;
   }
-  
-  if (dct_contains(&fn->args, arg->name)) {
-    TODO("");
+
+  if (dct_contains(&prog->externs, arg->name)) {
     return true;
   }
-  
-  if (dct_contains(&prog->global, arg->name)) {
+
+  if (dct_contains(&prog->fn_list, arg->name)) {
     return true;
   }
   
@@ -584,13 +615,13 @@ static bool backpatch_name_args(Program *prog)
   return success;
 }
 
-static bool detect_arg_type(Arg *arg, SymbolList *global, VarList *local) {
+static bool detect_arg_type(Arg *arg, ExternList *externs, VarList *local) {
   if (arg->type.kind != TYPE_UNKNOWN) return true;
 
   if (arg->kind == ARG_NAME) {
-    assert(dct_contains(global, arg->name));
-    size_t loc = dct_geti(global, arg->name);
-    arg->type = type_clone(global->items[loc].type);
+    assert(dct_contains(externs, arg->name));
+    size_t loc = dct_geti(externs, arg->name);
+    arg->type = type_clone(externs->items[loc].type);
   } else if (arg->kind == ARG_VAR_LOC) {
     assert(arg->label < local->count);
     TypeExpr *var_type = &local->items[arg->label].type;
@@ -602,7 +633,7 @@ static bool detect_arg_type(Arg *arg, SymbolList *global, VarList *local) {
   return true;
 }
 
-static bool detect_var_type(Arg *var, Arg *val, SymbolList *global, VarList *local)
+static bool detect_var_type(Arg *var, Arg *val, ExternList *externs, VarList *local)
 {
   assert(val->type.kind != TYPE_UNKNOWN);
   if (var->type.kind != TYPE_UNKNOWN) return true;
@@ -612,9 +643,9 @@ static bool detect_var_type(Arg *var, Arg *val, SymbolList *global, VarList *loc
     assert(var->label < local->count);
     var_type = &local->items[var->label].type;
   } else if (var->kind == ARG_NAME) {
-    assert(dct_contains(global, var->name));
-    size_t i = dct_geti(global, var->name);
-    var_type = &global->items[i].type;
+    assert(dct_contains(externs, var->name));
+    size_t i = dct_geti(externs, var->name);
+    var_type = &externs->items[i].type;
   } else {
     UNREACHABLE("fix_type_var");
   }
@@ -630,22 +661,22 @@ static bool detect_var_type(Arg *var, Arg *val, SymbolList *global, VarList *loc
 
 static bool detect_all_unknown_type(Program *prog)
 {
-  SymbolList *global = &prog->global;
+  ExternList *externs = &prog->externs;
   da_foreach (Fn, fn, &prog->fn_list) {
     VarList *local = &fn->local;
     da_foreach (Op, op, &fn->fn_body) {
       switch (op->kind) {
       case OP_RETURN:
-        if (!detect_arg_type(&op->ret_val, global, local)) return false;
+        if (!detect_arg_type(&op->ret_val, externs, local)) return false;
         break;
       case OP_SET_VAR:
-        if (!detect_arg_type(&op->set_var.val, global, local)) return false;
-        if (!detect_var_type(&op->set_var.var, &op->set_var.val, global, local)) return false;
+        if (!detect_arg_type(&op->set_var.val, externs, local)) return false;
+        if (!detect_var_type(&op->set_var.var, &op->set_var.val, externs, local)) return false;
         break;
       case OP_INVOKE:
-        if (!detect_arg_type(&op->invoke.fn, global, local)) return false;
+        if (!detect_arg_type(&op->invoke.fn, externs, local)) return false;
         da_foreach (Arg, arg, &op->invoke.args) {
-          if (!detect_arg_type(arg, global, local)) return false;
+          if (!detect_arg_type(arg, externs, local)) return false;
         }
         break;
       default: UNREACHABLE("op");
@@ -665,17 +696,18 @@ static bool compile_file(Lexer *l, Program *prog)
     if (l->current.kind == TOKEN_FN) {
       if (!compile_function(l, prog)) return false;
     } else if (l->current.kind == TOKEN_EXT) {
-      Symbol sym = { .external = true };
       if (!prefetch_expect_token(l, TOKEN_ID)) return false;
       
-      sym.name = l->current.token;
-      sym.loc = l->current.start;
+      Extern ext = {
+        .name = l->current.token,
+        .loc = l->current.start,
+      };
       
       if (!prefetch_expect_token(l, ':')) return false;
       if (!prefetch_not_none(l)) return false;
-      if (!compile_type_expr(l, &sym.type)) return false;
+      if (!compile_type_expr(l, &ext.type)) return false;
 
-      da_append(&prog->global, sym);
+      da_append(&prog->externs, ext);
     } else {
       UNREACHABLE("");
     }
@@ -738,9 +770,7 @@ static void dump_type_expr(TypeExpr *type, FILE *stream)
 static bool check_type(Program *prog)
 {
   da_foreach (Fn, fn, &prog->fn_list) {
-    assert(dct_contains(&prog->global, fn->name));
-    size_t fn_loc = dct_geti(&prog->global, fn->name);
-    TypeExpr *fn_type = &prog->global.items[fn_loc].type;
+    TypeExpr *fn_type = &fn->type;
     
     assert(fn_type->kind == TYPE_FN);
     da_foreach (Op, op, &fn->fn_body) {
@@ -839,7 +869,7 @@ static bool check_symbol_redefined(Program *prog)
   bool result = true;
   
   DefList defs = {0};
-  check_redefined(&prog->global, &defs);
+  check_redefined(&prog->externs, &defs);
   check_redefined(&prog->fn_list, &defs);
 
   da_foreach (Fn, fn, &prog->fn_list) {
@@ -847,6 +877,8 @@ static bool check_symbol_redefined(Program *prog)
     check_redefined(&fn->args, &defs);
     check_redefined(&fn->local, &defs);
   }
+
+  da_free(defs);
   
   return result;
 }
@@ -864,10 +896,10 @@ bool compile_program(Lexer *l, Program *prog)
 
 void destroy_program(Program *prog)
 {
-  da_foreach (Symbol, sym, &prog->global) {
-    destroy_symbol(sym);
+  da_foreach (Extern, ext, &prog->externs) {
+    destroy_type_expr(&ext->type);
   }
-  da_free(prog->global);
+  da_free(prog->externs);
 
   destroy_fn_list(&prog->fn_list);
   if (prog->str_lits.capacity > 0) {
