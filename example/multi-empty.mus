@@ -1,4 +1,4 @@
-// this should fail because main redefined
+# this should fail because main redefined
 
 fn main(): i64 {}
 fn main(): i32 {}

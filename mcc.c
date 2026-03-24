@@ -109,21 +109,37 @@ bool build_ir(const char *filename, const Program *prog)
   return success;
 }
 
-static void build_var_offset_x86_64_gas(VarList *var_list)
+static char *param_regs[] = {
+  "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"
+};
+
+#define PARAM_REGS_CNT ARRAY_LEN(param_regs)
+
+static void build_var_offset_x86_64_gas(VarList *args, VarList *local)
 {
-  da_foreach (Var, var, var_list) {
+  if (args->count > PARAM_REGS_CNT) TODO("support more than PARAM_REGS_CNT args");
+  size_t reg_args = args->count < PARAM_REGS_CNT? args->count: PARAM_REGS_CNT;
+  for (size_t i = 0; i < reg_args; ++i) {
+    Var *arg = &args->items[i];
+    size_t size = arg->type.size;
+    assert(size != 0);
+    args->memsize = ceil_to(args->memsize, size) + size;
+    arg->offset = -args->memsize;
+  }
+
+  local->memsize = args->memsize;
+  da_foreach (Var, var, local) {
     size_t size = var->type.size;
     assert(size != 0);
-    var_list->memsize = ceil_to(var_list->memsize, size) + size;
-    var->offset = -var_list->memsize;
+    local->memsize = ceil_to(local->memsize, size) + size;
+    var->offset = -local->memsize;
   }
-  var_list->memsize = ceil_to(var_list->memsize, 16);
+  local->memsize = ceil_to(local->memsize, 16);
 }
 
-static void rax2loc_var(String_Builder *sb, Var *var)
+static void rax2rbp_offset(String_Builder *sb, size_t size, ptrdiff_t offset)
 {
-  ptrdiff_t offset = var->offset;
-  switch (var->type.size) {
+  switch (size) {
   case 1:
     sb_appendf(sb, "    movb %%al, %ld(%%rbp)\n", offset);
     break;
@@ -141,13 +157,12 @@ static void rax2loc_var(String_Builder *sb, Var *var)
   }
 }
 
-static void loc_var2rax(String_Builder *sb, Var *var)
+static void rbp_offset2rax(String_Builder *sb, size_t size, ptrdiff_t offset)
 {
-  ptrdiff_t offset = var->offset;
-  if (var->type.size != 8) {
+  if (size != 8) {
     sb_appendf(sb, "    xor %%rax, %%rax\n");
   }
-  switch (var->type.size) {
+  switch (size) {
   case 1:
     sb_appendf(sb, "    movb %ld(%%rbp), %%al\n", offset);
     break;
@@ -172,12 +187,14 @@ static void arg2rax(String_Builder *sb, Arg *arg, const Program *prog, const Fn 
   case ARG_NONE:
     sb_appendf(sb, "    mov %%rax, %%rax\n");
     break;
-  case ARG_VAR_LOC:
-    loc_var2rax(sb, &label_item(&fn->local, arg->label));
-    break;
-  case ARG_VAR_ARG:
-    loc_var2rax(sb, &label_item(&fn->args, arg->label));
-    break;
+  case ARG_VAR_LOC: {
+    Var *var = &label_item(&fn->local, arg->label);
+    rbp_offset2rax(sb, var->type.size, var->offset);
+  } break;
+  case ARG_VAR_ARG: {
+    Var *var = &label_item(&fn->args, arg->label);
+    rbp_offset2rax(sb, var->type.size, var->offset);
+  } break;
   case ARG_FN:
     sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %%rax\n", SV_Arg(label_item(&prog->fn_list, arg->label).name));
     break;
@@ -215,28 +232,34 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
     sb_appendf(&sb, SV_Fmt":\n", SV_Arg(fn->name));
     sb_appendf(&sb, "    pushq %%rbp\n");
     sb_appendf(&sb, "    movq  %%rsp, %%rbp\n");
-    if (fn->local.count != 0) {
-      build_var_offset_x86_64_gas(&fn->local);
-      sb_appendf(&sb, "    subq $%ld, %%rsp\n", fn->local.memsize);
+
+    build_var_offset_x86_64_gas(&fn->args, &fn->local);
+    sb_appendf(&sb, "    subq $%ld, %%rsp\n", fn->local.memsize);
+
+    for (size_t i = 0; i < PARAM_REGS_CNT; ++i) {
+      if (i >= fn->args.count) break;
+      sb_appendf(&sb, "    movq %s, %%rax\n", param_regs[i]);
+      Var *arg = &label_item(&fn->args, i);
+      rax2rbp_offset(&sb, arg->type.size, arg->offset);
     }
       
     da_foreach (Op, op, &fn->fn_body) {
       switch(op->kind) {
-      case OP_INVOKE:
+      case OP_INVOKE: {
         for (int i = op->invoke.args.count - 1; i >= 0; --i) {
-          static char *reg[] = {
-            "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"
-          };
           arg2rax(&sb, &op->invoke.args.items[i], prog, fn);
-          if ((size_t)i > ARRAY_LEN(reg)) {
+          if ((size_t)i > PARAM_REGS_CNT) {
             sb_appendf(&sb, "    pushq %%rax\n");
           } else {
-            sb_appendf(&sb, "    movq %%rax, %s\n", reg[i]);            
+            sb_appendf(&sb, "    movq %%rax, %s\n", param_regs[i]);
           }
         }
         arg2rax(&sb, &op->invoke.fn, prog, fn);
         sb_appendf(&sb, "    call *%%rax\n");
-        break;
+
+        Var *ret = &label_item(&fn->local, op->invoke.result_label);
+        rax2rbp_offset(&sb, ret->type.size, ret->offset);        
+      } break;
       case OP_RETURN:
         arg2rax(&sb, &op->ret_val, prog, fn);
         sb_appendf(&sb, "    leave\n");
@@ -246,7 +269,7 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         arg2rax(&sb, &op->set_var.val, prog, fn);
         assert(op->set_var.var.kind == ARG_VAR_LOC);
         Var *var = &fn->local.items[op->set_var.var.label];
-        rax2loc_var(&sb, var);
+        rax2rbp_offset(&sb, var->type.size, var->offset);
       } break;
       default:
         UNREACHABLE("op");
