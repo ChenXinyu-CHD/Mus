@@ -384,8 +384,8 @@ bool expect_token(Lexer *l, int token)
   
   pcompile_info(l->current.start, "error: expect token ");
   dump_token_kind(stderr, token);
-  fprintf(stderr, ", but got");
-  dump_token_kind(stderr, token);
+  fprintf(stderr, ", but got ");
+  dump_token_kind(stderr, l->current.kind);
   fprintf(stderr, "\n");
   
   return false;

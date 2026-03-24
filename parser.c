@@ -4,6 +4,15 @@
 #include "nob.h"
 #include "utils.h"
 
+size_t alloc_var(VarList *vars)
+{
+  Var var = (Var) {
+    .type = {.kind = TYPE_UNKNOWN}
+  };
+  da_append(vars, var);
+  return vars->count - 1;
+}
+
 static void destroy_type_expr(TypeExpr* type)
 {
   if (type == NULL) return;
@@ -19,9 +28,10 @@ static void destroy_type_expr(TypeExpr* type)
     free(type->ref_type);
     break;
   case TYPE_FN: {
-    assert(type->fn_type.ret_type != NULL);
-    destroy_type_expr(type->fn_type.ret_type);
-    free(type->fn_type.ret_type);
+    if (type->fn_type.ret_type != NULL) {
+      destroy_type_expr(type->fn_type.ret_type);
+      free(type->fn_type.ret_type);
+    }
     
     da_foreach (TypeExpr, arg, &type->fn_type.arg_types) {
       destroy_type_expr(arg);
@@ -32,32 +42,13 @@ static void destroy_type_expr(TypeExpr* type)
   }
 }
 
-static void destroy_arg(Arg *arg)
-{
-  destroy_type_expr(&arg->type);
-  switch(arg->kind) {
-  case ARG_NONE: break;
-  case ARG_NAME: break;
-  case ARG_VAR_LOC: break;
-  case ARG_LIT_INT: break;
-  case ARG_LIT_STR: break;
-  default: UNREACHABLE("destroy arg");
-  }
-}
-
 static void destroy_op(Op *op)
 {
   switch (op->kind) {
   case OP_INVOKE:
-    destroy_arg(&op->invoke.fn);
-    da_foreach(Arg, arg, &op->invoke.args) {
-      destroy_arg(arg);
-    }
+    da_free(op->invoke.args);
     break;
-  case OP_RETURN: destroy_arg(&op->ret_val); break;
-  case OP_SET_VAR:
-    destroy_arg(&op->set_var.var);
-    destroy_arg(&op->set_var.val);
+  case OP_RETURN: case OP_SET_VAR:
     break;
   default: UNREACHABLE("destroy op");
   }
@@ -94,9 +85,6 @@ static void destroy_fn_list(FnList *fn_list)
   }
   da_free(*fn_list);
 }
-
-#define expect_ids(l, filename, ...)            \
-  expect_ids_(l, filename, __VA_ARGS__, NULL)
 
 static size_t compile_strlit(Program *prog, String_View str)
 {
@@ -215,43 +203,75 @@ static bool compile_arg(Lexer *l, Program *prog, Arg *arg)
   return true;
 }
 
+static bool compile_expr(Lexer *l, Program *prog, Fn *fn, Arg *exp_result);
+
+static bool compile_invoke_args(Lexer *l, Program *prog, Fn *fn, ArgList *args)
+{
+  Arg arg = {0};
+  if (!prefetch_not_none(l)) return false;
+
+  while (l->current.kind != ')') {
+    if (!compile_expr(l, prog, fn, &arg)) return false;
+    da_append(args, arg);
+        
+    if (l->current.kind != ',' && l->current.kind != ')') {
+      pcompile_info(l->current.start, "error: expected ',' or ')', but got ");
+      dump_token_kind(stderr, l->current.kind);
+      fprintf(stderr, "\n");
+      free(args->items);
+      return false;
+    }
+
+    if (l->current.kind == ',') {
+      if (!prefetch_not_none(l)) return false;
+    }
+  }
+  if (!prefetch_not_none(l)) return false;
+  return true;
+}
+
+static bool compile_expr(Lexer *l, Program *prog, Fn *fn, Arg *exp_result)
+{
+  Arg arg = {0};
+  
+  Cursor loc = l->current.start;
+  if (!compile_arg(l, prog, &arg)) return false;
+
+  if (!prefetch_not_none(l)) return false;
+  if (l->current.kind == '(') {
+    Op op = {
+      .kind = OP_INVOKE,
+      .loc = loc,
+      .invoke = {
+        .fn = arg,
+        .result_label = alloc_var(&fn->local),
+      },
+    };
+    if (!compile_invoke_args(l, prog, fn, &op.invoke.args)) return false;
+    da_append(&fn->fn_body, op);
+
+    *exp_result = (Arg) {
+      .kind = ARG_VAR_LOC,
+      .type = {.kind = TYPE_UNKNOWN},
+      .label = op.invoke.result_label,
+    };
+  } else {
+    *exp_result = arg;
+  }
+
+  return true;
+}
+
 static bool compile_statement(Lexer *l, Program *prog, Fn *fn)
 {
   Arg arg;
   Cursor loc = l->current.start;
-  if (!compile_arg(l, prog, &arg)) return false;
-  if (!prefetch_not_none(l)) return false;
+  if (!compile_expr(l, prog, fn, &arg)) return false;
 
-  if (l->current.kind == '(') {
-    Op invoke = {
-      .kind = OP_INVOKE,
-      .loc = loc,
-      .invoke = { .fn = arg },
-    };
-    
-    if (!prefetch_not_none(l)) return false;
-    while (l->current.kind != ')') {
-      if (!compile_arg(l, prog, &arg)) return false;
-      if (!prefetch_not_none(l)) return false;
-      da_append(&invoke.invoke.args, arg);
-          
-      if (l->current.kind != ',' && l->current.kind != ')') {
-        pcompile_info(l->current.start, "error: expected ',' or ')', but got ");
-        dump_token_kind(stderr, l->current.kind);
-        free(invoke.invoke.args.items);
-        return false;
-      }
-      
-      if (l->current.kind == ',') {
-        if (!prefetch_not_none(l)) return false;
-      }
-    }
-    
-    da_append(&fn->fn_body, invoke);
-  } else if (l->current.kind == '=') {
+  if (l->current.kind == '=') {
     Arg val;
     if (!prefetch_not_none(l)) return false;
-    if (!compile_arg(l, prog, &val)) return false;
+    if (!compile_expr(l, prog, fn, &val)) return false;
     
     Op set_var = {
       .kind = OP_SET_VAR,
@@ -262,8 +282,6 @@ static bool compile_statement(Lexer *l, Program *prog, Fn *fn)
       },
     };
     da_append(&fn->fn_body, set_var);
-  } else {
-    UNREACHABLE("");
   }
   
   return true;
@@ -383,6 +401,7 @@ static bool compile_type_fn(Lexer *l, TypeExpr *type)
 
   if (!prefetch_expect_token(l, ':')) return_defer(false);
   if (!prefetch_not_none(l)) return_defer(false);
+  
   type->fn_type.ret_type = calloc(1, sizeof(TypeExpr));
   if (!compile_type_expr(l, type->fn_type.ret_type)) return_defer(false);
 
@@ -431,7 +450,7 @@ static bool compile_local_var(Lexer *l, Program *prog, Fn *fn)
   Cursor loc = l->current.start;
   if (!prefetch_not_none(l)) return false;
   Arg val = {0};
-  if (!compile_arg(l, prog, &val)) return false;    
+  if (!compile_expr(l, prog, fn, &val)) return false;    
   Op set_var = {
     .kind = OP_SET_VAR,
     .loc = loc,
@@ -442,7 +461,7 @@ static bool compile_local_var(Lexer *l, Program *prog, Fn *fn)
   };
   da_append(&fn->fn_body, set_var);
 
-  return prefetch_not_none(l);
+  return true;
 }
 
 static bool compile_fn_body(Lexer *l, Program *prog, Fn *fn) {
@@ -459,15 +478,13 @@ static bool compile_fn_body(Lexer *l, Program *prog, Fn *fn) {
         .loc = l->current.start,
       };
       if (!prefetch_not_none(l)) return false;
-      if (!compile_arg(l, prog, &ret.ret_val)) return false;
+      if (!compile_expr(l, prog, fn, &ret.ret_val)) return false;
       da_append(&fn->fn_body, ret);
       returned = true;
-      if (!prefetch_not_none(l)) return false;
     } else if (l->current.kind == TOKEN_VAR) {
       if (!compile_local_var(l, prog, fn)) return false;
     } else {
       if (!compile_statement(l, prog, fn)) return false;
-      if (!prefetch_not_none(l)) return false;
     }
   }
 
@@ -560,26 +577,47 @@ static bool backpatch_name_arg_impl(Arg *arg, Program *prog, Fn *fn)
 {  
   if (arg->kind != ARG_NAME) return true;
 
-  size_t i = dct_geti(&fn->local, arg->name);
+  size_t i = dct_geti(&fn->args, arg->name);
+  if (i < fn->args.count) {
+    *arg = (Arg) {
+      .kind = ARG_VAR_ARG,
+      .label = i,
+    };
+    return true;
+  }
+  
+  i = dct_geti(&fn->local, arg->name);
   if (i < fn->local.count) {
+    Cursor use_loc = arg->loc;
+    Cursor def_loc = label_item(&fn->local, i).loc;
+    if (use_loc.row <= def_loc.row) {
+      pcompile_info(use_loc, "error: local variable `"SV_Fmt"` is used before its defination.\n", SV_Arg(arg->name));
+      pcompile_info(def_loc, "info: it is defined here.\n");
+      return false;
+    }
+    
     *arg = (Arg) {
       .kind = ARG_VAR_LOC,
       .label = i,
     };
     return true;
   }
-
-  i = dct_geti(&fn->local, arg->name);
-  if (i < fn->local.count) {
-    TODO("");
+  
+  i = dct_geti(&prog->externs, arg->name);
+  if (i < prog->externs.count) {
+    *arg = (Arg) {
+      .kind = ARG_EXTERN,
+      .label = i,
+    };
     return true;
   }
 
-  if (dct_contains(&prog->externs, arg->name)) {
-    return true;
-  }
-
-  if (dct_contains(&prog->fn_list, arg->name)) {
+  i = dct_geti(&prog->fn_list, arg->name);
+  if (i < prog->fn_list.count) {
+    *arg = (Arg) {
+      .kind = ARG_FN,
+      .label = i,
+    };
     return true;
   }
   
@@ -615,37 +653,59 @@ static bool backpatch_name_args(Program *prog)
   return success;
 }
 
-static bool detect_arg_type(Arg *arg, ExternList *externs, VarList *local) {
+static bool detect_arg_type(Arg *arg, Program *prog, Fn *fn) {
   if (arg->type.kind != TYPE_UNKNOWN) return true;
+  if (arg->kind == ARG_NONE) return true;
 
-  if (arg->kind == ARG_NAME) {
-    assert(dct_contains(externs, arg->name));
-    size_t loc = dct_geti(externs, arg->name);
-    arg->type = type_clone(externs->items[loc].type);
-  } else if (arg->kind == ARG_VAR_LOC) {
-    assert(arg->label < local->count);
-    TypeExpr *var_type = &local->items[arg->label].type;
-    assert(var_type->kind != TYPE_UNKNOWN);
-    arg->type = type_clone(*var_type);
-  } else {
+  assert(arg->kind != ARG_NAME);
+
+  ExternList *externs = &prog->externs;
+  FnList *fn_list = &prog->fn_list;
+  VarList *local = &fn->local;
+  VarList *args = &fn->args;
+
+  TypeExpr * type = NULL;
+  switch(arg->kind) {
+  case ARG_EXTERN:
+    type = &label_item(externs, arg->label).type;
+    break;
+  case ARG_FN:
+    type = &label_item(fn_list, arg->label).type;
+    break;
+  case ARG_VAR_LOC:
+    type = &label_item(local, arg->label).type;
+    break;
+  case ARG_VAR_ARG:
+    type = &label_item(args, arg->label).type;
+    break;
+  default:
     UNREACHABLE("detect_arg_type");
   }
+  
+  assert(type != NULL);
+  assert(type->kind != TYPE_UNKNOWN);
+  arg->type = type_clone(*type);
   return true;
 }
 
-static bool detect_var_type(Arg *var, Arg *val, ExternList *externs, VarList *local)
+static bool detect_var_type(Arg *var, Arg *val, Program *prog, Fn *fn)
 {
+  UNUSED(prog);
   assert(val->type.kind != TYPE_UNKNOWN);
   if (var->type.kind != TYPE_UNKNOWN) return true;
+
+  VarList *local = &fn->local;
+  VarList *args = &fn->args;
   
   TypeExpr *var_type = NULL;
   if (var->kind == ARG_VAR_LOC) {
     assert(var->label < local->count);
     var_type = &local->items[var->label].type;
+  } else if (var->kind == ARG_VAR_ARG) {
+    assert(var->label < args->count);
+    var_type = &args->items[var->label].type;
   } else if (var->kind == ARG_NAME) {
-    assert(dct_contains(externs, var->name));
-    size_t i = dct_geti(externs, var->name);
-    var_type = &externs->items[i].type;
+    TODO("");
   } else {
     UNREACHABLE("fix_type_var");
   }
@@ -655,30 +715,33 @@ static bool detect_var_type(Arg *var, Arg *val, ExternList *externs, VarList *lo
   }
 
   var->type = type_clone(val->type);
-
   return true;
 }
 
 static bool detect_all_unknown_type(Program *prog)
 {
-  ExternList *externs = &prog->externs;
   da_foreach (Fn, fn, &prog->fn_list) {
-    VarList *local = &fn->local;
     da_foreach (Op, op, &fn->fn_body) {
       switch (op->kind) {
       case OP_RETURN:
-        if (!detect_arg_type(&op->ret_val, externs, local)) return false;
+        if (!detect_arg_type(&op->ret_val, prog, fn)) return false;
         break;
       case OP_SET_VAR:
-        if (!detect_arg_type(&op->set_var.val, externs, local)) return false;
-        if (!detect_var_type(&op->set_var.var, &op->set_var.val, externs, local)) return false;
+        if (!detect_arg_type(&op->set_var.val, prog, fn)) return false;
+        if (!detect_var_type(&op->set_var.var, &op->set_var.val, prog, fn)) return false;
         break;
-      case OP_INVOKE:
-        if (!detect_arg_type(&op->invoke.fn, externs, local)) return false;
+      case OP_INVOKE: {
+        if (!detect_arg_type(&op->invoke.fn, prog, fn)) return false;
         da_foreach (Arg, arg, &op->invoke.args) {
-          if (!detect_arg_type(arg, externs, local)) return false;
+          if (!detect_arg_type(arg, prog, fn)) return false;
         }
-        break;
+        
+        Var *ret = &label_item(&fn->local, op->invoke.result_label);
+        TypeExpr *ret_type = fn->type.fn_type.ret_type;
+
+        assert(ret_type->kind != TYPE_UNKNOWN);
+        ret->type = type_clone(*ret_type);
+      } break;
       default: UNREACHABLE("op");
       }
     }
@@ -730,7 +793,7 @@ static bool type_matched(TypeExpr *required, TypeExpr *actual)
   return true;
 }
 
-static void dump_type_expr(TypeExpr *type, FILE *stream)
+void dump_type_expr(TypeExpr *type, FILE *stream)
 {
   UNUSED(stream);
   switch(type->kind) {
@@ -852,6 +915,7 @@ typedef struct {
     for (size_t i = 0; i < (list)->count; ++i) {                        \
       String_View name = (list)->items[i].name;                         \
       Cursor loc = (list)->items[i].loc;                                \
+      if (sv_eq(name, sv_from_cstr(""))) continue;                      \
       size_t j = dct_geti((defs), name);                                \
       if (j < (defs)->count) {                                          \
         Cursor first_loc = (defs)->items[j].loc;                        \

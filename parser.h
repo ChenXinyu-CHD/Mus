@@ -41,11 +41,15 @@ struct TypeExpr {
   };
 };
 
+void dump_type_expr(TypeExpr *type, FILE *stream);
+
 typedef enum {
   ARG_NONE,
   ARG_NAME,     // 暂时只能以名称的引用的参数，作为编译时的占位符
-  ARG_GLOBAL,
+  ARG_EXTERN,
+  ARG_FN,
   ARG_VAR_LOC,
+  ARG_VAR_ARG,
   ARG_LIT_INT,
   ARG_LIT_STR,
 } ArgKind;
@@ -63,6 +67,8 @@ typedef struct {
   };
 } Arg;
 
+#define label_item(table, label) (table)->items[(assert(label < (table)->count), (label))]
+
 typedef struct {
   Arg *items;
   size_t count;
@@ -78,6 +84,7 @@ typedef enum {
 typedef struct {
   Arg fn;
   ArgList args;
+  size_t result_label;
 } OpInvoke;
 
 typedef struct {
@@ -128,6 +135,8 @@ typedef struct {
   size_t count;
   size_t capacity;
 } VarList;
+
+size_t alloc_var(VarList *vars);
 
 typedef struct {
   String_View name;

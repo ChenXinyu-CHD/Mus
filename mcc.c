@@ -22,6 +22,15 @@ void gen_arg_ir(String_Builder *sb, Arg arg)
   case ARG_VAR_LOC:
     sb_appendf(sb, "%%local[%ld]", arg.label);
     break;
+  case ARG_VAR_ARG:
+    sb_appendf(sb, "%%var[%ld]", arg.label);
+    break;
+  case ARG_EXTERN:
+    sb_appendf(sb, "%%extern[%ld]", arg.label);
+    break;
+  case ARG_FN:
+    sb_appendf(sb, "%%fn[%ld]", arg.label);
+    break;
   case ARG_LIT_INT:
     sb_appendf(sb, "%d", arg.num_int);
     break;
@@ -156,6 +165,36 @@ static void loc_var2rax(String_Builder *sb, Var *var)
   }
 }
 
+static void arg2rax(String_Builder *sb, Arg *arg, const Program *prog, const Fn *fn)
+{
+  assert(arg->kind != ARG_NAME);
+  switch (arg->kind) {
+  case ARG_NONE:
+    sb_appendf(sb, "    mov %%rax, %%rax\n");
+    break;
+  case ARG_VAR_LOC:
+    loc_var2rax(sb, &label_item(&fn->local, arg->label));
+    break;
+  case ARG_VAR_ARG:
+    loc_var2rax(sb, &label_item(&fn->args, arg->label));
+    break;
+  case ARG_FN:
+    sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %%rax\n", SV_Arg(label_item(&prog->fn_list, arg->label).name));
+    break;
+  case ARG_EXTERN:
+    sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %%rax\n", SV_Arg(label_item(&prog->externs, arg->label).name));
+    break;
+  case ARG_LIT_INT:
+    sb_appendf(sb, "    movq $%d, %%rax\n", arg->num_int);
+    break;
+  case ARG_LIT_STR:
+    sb_appendf(sb, "    leaq .S_%ld(%%rip), %%rax\n", arg->label);
+    break;
+  default:
+    UNREACHABLE("");
+  }
+}
+
 String_Builder gen_code_x86_64_gas(const Program *prog)
 {
   String_Builder sb = {0};
@@ -188,73 +227,25 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
           static char *reg[] = {
             "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"
           };
-          switch(op->invoke.args.items[i].kind) {
-          case ARG_LIT_INT:
-            if ((size_t)i > ARRAY_LEN(reg)) {
-              sb_appendf(&sb, "    pushq $%d\n", op->invoke.args.items[i].num_int);
-            } else {
-              sb_appendf(&sb, "    movq $%d, %s\n", op->invoke.args.items[i].num_int, reg[i]);
-            }
-            break;
-          case ARG_LIT_STR:
-            if ((size_t)i > ARRAY_LEN(reg)) {
-              sb_appendf(&sb, "    leaq .S_%ld(%%rip), %%rax\n", op->invoke.args.items[i].label);
-              sb_appendf(&sb, "    pushq %%rax\n");
-            } else {
-              sb_appendf(&sb, "    leaq .S_%ld(%%rip), %s\n", op->invoke.args.items[i].label, reg[i]);
-            }
-            break;
-          case ARG_VAR_LOC: {
-            Var *var = &fn->local.items[op->invoke.args.items[i].label];
-            loc_var2rax(&sb, var);
-            if ((size_t)i > ARRAY_LEN(reg)) {
-              sb_appendf(&sb, "    pushq %%rax\n");
-            } else {
-              sb_appendf(&sb, "    movq %%rax, %s\n", reg[i]);
-            }
-          } break;
-          default: UNREACHABLE("arg");
+          arg2rax(&sb, &op->invoke.args.items[i], prog, fn);
+          if ((size_t)i > ARRAY_LEN(reg)) {
+            sb_appendf(&sb, "    pushq %%rax\n");
+          } else {
+            sb_appendf(&sb, "    movq %%rax, %s\n", reg[i]);            
           }
         }
-          
-        switch(op->invoke.fn.kind) {
-        case ARG_NAME:
-          sb_appendf(&sb, "    call "SV_Fmt"\n", SV_Arg(op->invoke.fn.name));
-          break;
-        default: UNREACHABLE("arg");
-        }
-
+        arg2rax(&sb, &op->invoke.fn, prog, fn);
+        sb_appendf(&sb, "    call *%%rax\n");
         break;
       case OP_RETURN:
-        switch(op->ret_val.kind) {
-        case ARG_NONE: break;
-        case ARG_LIT_INT:
-          sb_appendf(&sb, "    movq $%d, %%rax\n", op->ret_val.num_int);
-          break;
-        case ARG_VAR_LOC: {
-          Var *var = &fn->local.items[op->ret_val.label];
-          loc_var2rax(&sb, var);
-        } break;
-        default: UNREACHABLE("arg");
-        }
-        
+        arg2rax(&sb, &op->ret_val, prog, fn);
         sb_appendf(&sb, "    leave\n");
         sb_appendf(&sb, "    ret\n");
         break;
       case OP_SET_VAR: {
+        arg2rax(&sb, &op->set_var.val, prog, fn);
         assert(op->set_var.var.kind == ARG_VAR_LOC);
-        switch(op->set_var.val.kind) {
-        case ARG_LIT_INT:
-          sb_appendf(&sb, "    movq $%d, %%rax\n", op->set_var.val.num_int);
-          break;
-        case ARG_VAR_LOC: {
-          Var *val = &fn->local.items[op->set_var.val.label];
-          loc_var2rax(&sb, val);
-        } break;
-        default: UNREACHABLE("arg");
-        }
-        
-        Var *var = &fn->local.items[op->ret_val.label];
+        Var *var = &fn->local.items[op->set_var.var.label];
         rax2loc_var(&sb, var);
       } break;
       default:
