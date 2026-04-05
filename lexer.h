@@ -37,9 +37,20 @@ typedef enum {
   TOKEN_ERR,
   TOKEN_DOTS,
   TOKEN_EOF,
+
+  // internal types
+  TOKEN_U8,
+  TOKEN_U16,
+  TOKEN_U32,
+  TOKEN_U64,
+  TOKEN_I8,
+  TOKEN_I16,
+  TOKEN_I32,
+  TOKEN_I64,
+  TOKEN_VOID,
 } TokenKind;
 
-#define TOKEN_KIND_COUNT 10
+#define TOKEN_KIND_COUNT 19
 void dump_token_kind(FILE *stream, int kind);
 
 typedef struct {
@@ -157,7 +168,7 @@ String_View sv_between_cs(String_Builder sb, Cursor begin, Cursor end)
 
 void dump_token_kind(FILE *stream, int kind)
 {
-  static_assert(TOKEN_KIND_COUNT == 10, "introduced more token kind");
+  static_assert(TOKEN_KIND_COUNT == 19, "introduced more token kind");
   switch (kind) {
   case TOKEN_ID:
     fprintf(stream, "id"); break;
@@ -179,6 +190,24 @@ void dump_token_kind(FILE *stream, int kind)
     fprintf(stream, "..."); break;
   case TOKEN_EOF:
     fprintf(stream, "eof"); break;
+  case TOKEN_U8:
+    fprintf(stream, "u8"); break;
+  case TOKEN_U16:
+    fprintf(stream, "u16"); break;
+  case TOKEN_U32:
+    fprintf(stream, "u32"); break;
+  case TOKEN_U64:
+    fprintf(stream, "u64"); break;
+  case TOKEN_I8:
+    fprintf(stream, "i8"); break;
+  case TOKEN_I16:
+    fprintf(stream, "i16"); break;
+  case TOKEN_I32:
+    fprintf(stream, "i32"); break;
+  case TOKEN_I64:
+    fprintf(stream, "i64"); break;
+  case TOKEN_VOID:
+    fprintf(stream, "void"); break;
   default:
     assert(kind > 0 && kind <= 127 && "only ascii code can be a token");
     fputc(kind, stream);
@@ -244,7 +273,7 @@ static bool lexer_number(Lexer *l)
   return true;
 }
 
-static_assert(TOKEN_KIND_COUNT == 10);
+static_assert(TOKEN_KIND_COUNT == 19);
 
 static struct {
   char *token;
@@ -255,6 +284,7 @@ static struct {
   {.token = "return", .kind = TOKEN_RET},
   {.token = "var", .kind = TOKEN_VAR},
   {.token = "...", .kind = TOKEN_DOTS},
+  // ascii
   {.token = "(", .kind = '('},
   {.token = ")", .kind = ')'},
   {.token = ":", .kind = ':'},
@@ -265,6 +295,16 @@ static struct {
   {.token = "=", .kind = '='},
   {.token = "&", .kind = '&'},
   {.token = ".", .kind = '.'},
+  // internal types
+  {.token = "u8", .kind = TOKEN_U8},
+  {.token = "u16", .kind = TOKEN_U16},
+  {.token = "u32", .kind = TOKEN_U32},
+  {.token = "u64", .kind = TOKEN_U64},
+  {.token = "i8", .kind = TOKEN_I8},
+  {.token = "i16", .kind = TOKEN_I16},
+  {.token = "i32", .kind = TOKEN_I32},
+  {.token = "i64", .kind = TOKEN_I64},
+  {.token = "void", .kind = TOKEN_VOID},
 };
 
 static bool lexer_simple_token(Lexer *l)

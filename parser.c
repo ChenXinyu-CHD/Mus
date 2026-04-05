@@ -289,58 +289,54 @@ static bool compile_statement(Lexer *l, Program *prog, Fn *fn)
 
 static_assert(TYPE_KIND_COUNT == 6);
 static struct {
-  char *name;
+  int token;
   TypeExpr type;
 } internal_types[] = {
   {
-    .name = "void",
+    .token = TOKEN_VOID,
     .type = { .kind = TYPE_VOID, .size = 0, },
   },
   {
-    .name = "u8",
+    .token = TOKEN_U8,
     .type = { .kind = TYPE_UINT, .size = 1, },
   },
   {
-    .name = "u16",
+    .token = TOKEN_U16,
     .type = { .kind = TYPE_UINT, .size = 2, },
   },
   {
-    .name = "u32",
+    .token = TOKEN_U32,
     .type = { .kind = TYPE_UINT, .size = 4, },
   },
   {
-    .name = "u64",
+    .token = TOKEN_U64,
     .type = { .kind = TYPE_UINT, .size = 8, },
   },
   {
-    .name = "i8",
+    .token = TOKEN_I8,
     .type = { .kind = TYPE_INT, .size = 1, },
   },
   {
-    .name = "i16",
+    .token = TOKEN_I16,
     .type = { .kind = TYPE_INT, .size = 2, },
   },
   {
-    .name = "i32",
+    .token = TOKEN_I32,
     .type = { .kind = TYPE_INT, .size = 4, },
   },
   {
-    .name = "i64",
+    .token = TOKEN_I64,
     .type = { .kind = TYPE_INT, .size = 8, },
   }
 };
 
 static bool compile_internal_type(Lexer *l, TypeExpr *type) {
-  assert(l->current.kind == TOKEN_ID);
-  
   for (size_t i = 0; i < ARRAY_LEN(internal_types); ++i) {
-    String_View name = sv_from_cstr(internal_types[i].name);
-    if (sv_eq(name, l->current.token)) {
+    if (internal_types[i].token == l->current.kind) {
       *type = type_clone(internal_types[i].type);
       return true;
     }
   }
-  pcompile_info(l->current.start, "error: unknown type "SV_Fmt"\n", SV_Arg(l->current.token));
   return false;
 }
 
@@ -349,11 +345,11 @@ static bool compile_type_fn(Lexer *l, TypeExpr *type);
 static bool compile_type_expr(Lexer *l, TypeExpr *type)
 {
   assert(type != NULL);
+  if (compile_internal_type(l, type)) return true;
+  
   switch (l->current.kind) {
   case TOKEN_FN:
     return compile_type_fn(l, type);
-  case TOKEN_ID:
-    return compile_internal_type(l, type);
   case '&': {
     if (!prefetch_not_none(l)) return false;
     TypeExpr ref_type;
