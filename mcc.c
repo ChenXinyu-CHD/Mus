@@ -257,8 +257,10 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         arg2rax(&sb, &op->invoke.fn, prog, fn);
         sb_appendf(&sb, "    call *%%rax\n");
 
-        Var *ret = &label_item(&fn->local, op->invoke.result_label);
-        rax2rbp_offset(&sb, ret->type.size, ret->offset);        
+        if (!op->invoke.ret_ignore) {
+          Var *ret = &label_item(&fn->local, op->invoke.result_label);
+          rax2rbp_offset(&sb, ret->type.size, ret->offset);        
+        }
       } break;
       case OP_RETURN:
         arg2rax(&sb, &op->ret_val, prog, fn);

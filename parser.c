@@ -163,61 +163,72 @@ static Arg arg_local_var(Fn *fn, size_t i)
   };
 }
 
-static bool compile_arg(Lexer *l, Program *prog, Arg *arg)
-{
-  assert(l->current.kind != TOKEN_EOF);
-  
-  switch (l->current.kind) {
-  case TOKEN_ID:
-    arg->kind = ARG_NAME;
-    arg->name = l->current.token;
-    arg->loc = l->current.start;
-    arg->type = (TypeExpr){.kind = TYPE_UNKNOWN};
+typedef enum {
+  AST_ATOM = 0,
+  AST_INVOKE,
+  __ast_kind_count
+} AST_Kind;
 
-    break;
-  case TOKEN_STR:
-    arg->kind = ARG_LIT_STR;
-    arg->label = compile_strlit(prog, l->current.token);
-    arg->type = ptr_type((TypeExpr) {
-        .kind = TYPE_INT,
-        .size = 1,
-      });
-    break;
-  case TOKEN_INT:
-    arg->kind = ARG_LIT_INT;
-    arg->num_int = sv_to_int(l->current.token);
-    arg->type = (TypeExpr) {
-      .kind = TYPE_INT,
-      .size = 4,
-    };
-    break;
-  default:
-    size_t mark = temp_save(); {
-      pcompile_info(l->current.start, "error: invalid token ");
-      dump_token_kind(stderr, l->current.kind);
-      fprintf(stderr, " in an argument\n");
-    } temp_rewind(mark);
-    return false;
-  }
+typedef struct AST AST;
 
-  return true;
+typedef struct {
+  AST *items;
+  size_t count;
+  size_t capacity;
+} AST_List;
+
+struct AST {
+  AST_Kind kind;
+  union {
+    Token atom;
+    struct {
+      AST* fn;
+      AST_List args;
+    } invoke;
+  };
+};
+
+AST ast_atom(Token token) { return (AST) {.kind = AST_ATOM, .atom = token}; }
+AST ast_invoke(AST *fn, AST_List args) {
+  return (AST) {
+    .kind = AST_INVOKE,
+    .invoke =  {
+      .fn = fn,
+      .args = args,
+    }
+  };
 }
 
-static bool compile_expr(Lexer *l, Program *prog, Fn *fn, Arg *exp_result);
+void ast_del(AST *ast) {
+  static_assert(__ast_kind_count == 2);
+  switch(ast->kind) {
+  case AST_ATOM:
+    return;
+  case AST_INVOKE:
+    ast_del(ast->invoke.fn);
+    da_foreach (AST, arg, &ast->invoke.args) {
+      ast_del(arg);
+    }
+    da_free(ast->invoke.args);
+    return;
+  case __ast_kind_count: UNREACHABLE("");
+  }
+}
 
-static bool compile_invoke_args(Lexer *l, Program *prog, Fn *fn, ArgList *args)
+static bool compile_expr_ast(Lexer *l, AST *expr);
+
+// TODO: it leaks
+static bool compile_invoke_args_ast(Lexer *l, AST_List *args)
 {
-  Arg arg = {0};
+  assert(l->current.kind == '(');
   if (!prefetch_not_none(l)) return false;
 
   while (l->current.kind != ')') {
-    if (!compile_expr(l, prog, fn, &arg)) return false;
+    AST arg;
+    if (!compile_expr_ast(l, &arg)) return false;
     da_append(args, arg);
-        
-    if (l->current.kind != ',' && l->current.kind != ')') {
-      pcompile_info(l->current.start, "error: expected ',' or ')', but got ");
-      dump_token_kind(stderr, l->current.kind);
-      fprintf(stderr, "\n");
+
+    if (!expect_tokens(l, ',', ')')) {
       free(args->items);
       return false;
     }
@@ -230,58 +241,129 @@ static bool compile_invoke_args(Lexer *l, Program *prog, Fn *fn, ArgList *args)
   return true;
 }
 
-static bool compile_expr(Lexer *l, Program *prog, Fn *fn, Arg *exp_result)
+// TODO: it leaks
+static bool compile_expr_ast(Lexer *l, AST *expr)
 {
-  Arg arg = {0};
-  
-  Cursor loc = l->current.start;
-  if (!compile_arg(l, prog, &arg)) return false;
+  // EXPR :: ATOM
+  // ATOM :: STR | INT | ID
+  // INVOKE :: EXPR ( ARGS )
+  // ARGS :: EXPR | EXPR , ARGS
+  if (!expect_tokens(l, TOKEN_STR, TOKEN_INT, TOKEN_ID)) return false;
 
-  if (!prefetch_not_none(l)) return false;
-  if (l->current.kind == '(') {
-    Op op = {
-      .kind = OP_INVOKE,
-      .loc = loc,
-      .invoke = {
-        .fn = arg,
-        .result_label = alloc_var(&fn->local),
-      },
-    };
-    if (!compile_invoke_args(l, prog, fn, &op.invoke.args)) return false;
-    da_append(&fn->fn_body, op);
+  *expr = ast_atom(l->current);
 
-    *exp_result = (Arg) {
-      .kind = ARG_VAR_LOC,
-      .type = {.kind = TYPE_UNKNOWN},
-      .label = op.invoke.result_label,
-    };
-  } else {
-    *exp_result = arg;
+  if (!lexer_next(l)) return false;
+  while (l->current.kind == '(') {
+    AST_List args = {0};
+    if (!compile_invoke_args_ast(l, &args)) return false;
+    
+    AST *fn = malloc(sizeof(AST));
+    *fn = *expr;
+    *expr = ast_invoke(fn, args);
   }
 
   return true;
 }
 
+static void ast_to_ir(AST *ast, Program *prog, Fn *fn);
+
+static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Arg *exp_result)
+{
+  switch (ast->kind) {
+  case AST_ATOM: {
+    Token token = ast->atom;
+    switch (token.kind) {
+    case TOKEN_ID:
+      exp_result->kind = ARG_NAME;
+      exp_result->name = token.token;
+      exp_result->loc = token.start;
+      exp_result->type = (TypeExpr) {.kind = TYPE_UNKNOWN};
+
+      break;
+    case TOKEN_STR:
+      exp_result->kind = ARG_LIT_STR;
+      exp_result->label = compile_strlit(prog, token.token);
+      exp_result->type = ptr_type((TypeExpr) {
+          .kind = TYPE_INT,
+          .size = 1,
+        });
+      break;
+    case TOKEN_INT:
+      exp_result->kind = ARG_LIT_INT;
+      exp_result->num_int = sv_to_int(token.token);
+      exp_result->type = (TypeExpr) {
+        .kind = TYPE_INT,
+        .size = 4,
+      };
+      break;
+    default: UNREACHABLE("");
+    }
+  } break;
+  case AST_INVOKE: {
+    ast_to_ir(ast, prog, fn);
+
+    Op *op = &fn->fn_body.items[fn->fn_body.count-1];
+    assert(op->kind == OP_INVOKE);
+
+    op->invoke.result_label = alloc_var(&fn->local);
+    op->invoke.ret_ignore = false;
+    *exp_result = (Arg) {
+      .kind = ARG_VAR_LOC,
+      .type = {.kind = TYPE_UNKNOWN},
+      .label = op->invoke.result_label,
+    };
+  } break; // this doesn't need to generate an ir op currently.
+  case __ast_kind_count: UNREACHABLE("");
+  }
+}
+
+static void ast_to_ir(AST *ast, Program *prog, Fn *fn)
+{
+  switch (ast->kind) {
+  case AST_INVOKE: {
+    Op op = { .kind = OP_INVOKE };
+    ast_to_arg(ast->invoke.fn, prog, fn, &op.invoke.fn);
+
+    da_foreach(AST, ast_arg, &ast->invoke.args) {
+      Arg arg = {0};
+      ast_to_arg(ast_arg, prog, fn, &arg);
+      da_append(&op.invoke.args, arg);
+    }
+
+    op.invoke.ret_ignore = true;
+    da_append(&fn->fn_body, op);
+  } break;
+  case AST_ATOM: break; // this doesn't need to generate an ir op currently.
+  case __ast_kind_count: UNREACHABLE("");
+  }
+}
+
 static bool compile_statement(Lexer *l, Program *prog, Fn *fn)
 {
-  Arg arg;
-  Cursor loc = l->current.start;
-  if (!compile_expr(l, prog, fn, &arg)) return false;
+  Cursor loc = l->cursor;
+  AST expr = {0};
+  if (!compile_expr_ast(l, &expr)) return false;
 
   if (l->current.kind == '=') {
-    Arg val;
+    AST val_ast = {0};
     if (!prefetch_not_none(l)) return false;
-    if (!compile_expr(l, prog, fn, &val)) return false;
+    if (!compile_expr_ast(l, &val_ast)) return false;
+
+    Arg var, val;
+    ast_to_arg(&expr, prog, fn, &var);
+    ast_to_arg(&val_ast, prog, fn, &val);
     
     Op set_var = {
       .kind = OP_SET_VAR,
       .loc = loc,
       .set_var = {
-        .var = arg,
+        .var = var,
         .val = val,
       },
     };
     da_append(&fn->fn_body, set_var);
+  } else {
+    ast_to_ir(&expr, prog, fn);
   }
   
   return true;
@@ -414,7 +496,6 @@ static bool compile_local_var_singn(Lexer *l, Fn *fn)
 
   Var var = {0};
   if (!prefetch_expect_token(l, TOKEN_ID)) return_defer(false);
-
   var.name = l->current.token;
   var.loc = l->current.start;
   if (!prefetch_not_none(l)) return_defer(false);
@@ -445,8 +526,11 @@ static bool compile_local_var(Lexer *l, Program *prog, Fn *fn)
 
   Cursor loc = l->current.start;
   if (!prefetch_not_none(l)) return false;
+  AST expr = {0};
+  if (!compile_expr_ast(l, &expr)) return false;
   Arg val = {0};
-  if (!compile_expr(l, prog, fn, &val)) return false;    
+  ast_to_arg(&expr, prog, fn, &val);
+  
   Op set_var = {
     .kind = OP_SET_VAR,
     .loc = loc,
@@ -474,7 +558,11 @@ static bool compile_fn_body(Lexer *l, Program *prog, Fn *fn) {
         .loc = l->current.start,
       };
       if (!prefetch_not_none(l)) return false;
-      if (!compile_expr(l, prog, fn, &ret.ret_val)) return false;
+
+      AST expr = {0};
+      if (!compile_expr_ast(l, &expr)) return false;
+      ast_to_arg(&expr, prog, fn, &ret.ret_val);
+      
       da_append(&fn->fn_body, ret);
       returned = true;
     } else if (l->current.kind == TOKEN_VAR) {
@@ -731,12 +819,14 @@ static bool detect_all_unknown_type(Program *prog)
         da_foreach (Arg, arg, &op->invoke.args) {
           if (!detect_arg_type(arg, prog, fn)) return false;
         }
-        
-        Var *ret = &label_item(&fn->local, op->invoke.result_label);
-        TypeExpr *ret_type = fn->type.fn_type.ret_type;
 
-        assert(ret_type->kind != TYPE_UNKNOWN);
-        ret->type = type_clone(*ret_type);
+        if (!op->invoke.ret_ignore) {
+          Var *ret = &label_item(&fn->local, op->invoke.result_label);
+          TypeExpr *ret_type = fn->type.fn_type.ret_type;
+
+          assert(ret_type->kind != TYPE_UNKNOWN);
+          ret->type = type_clone(*ret_type);
+        }
       } break;
       default: UNREACHABLE("op");
       }

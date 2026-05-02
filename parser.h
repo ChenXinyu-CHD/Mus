@@ -84,6 +84,7 @@ typedef enum {
 typedef struct {
   Arg fn;
   ArgList args;
+  bool ret_ignore;
   size_t result_label;
 } OpInvoke;
 

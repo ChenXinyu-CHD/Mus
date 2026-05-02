@@ -68,10 +68,16 @@ typedef struct {
 
 bool lexer_init(Lexer *lexer, String_View filename);
 bool lexer_next(Lexer *lexer);
-bool expect_token(Lexer *l, int token);
-bool prefetch_not_none(Lexer *l);
-bool prefetch_expect_token(Lexer *l, int token);
 
+bool expect_token(Lexer *l, int token);
+bool vexpect_tokens_impl(Lexer *l, va_list expecteds);
+bool expect_tokens_impl(Lexer *l, ...);
+#define expect_tokens(l, ...)                          \
+  expect_tokens_impl(l, __VA_ARGS__, TOKEN_ERR)
+
+bool prefetch_not_none(Lexer *l);
+
+bool prefetch_expect_token(Lexer *l, int token);
 bool prefetch_expect_tokens_impl(Lexer *l, ...);
 #define prefetch_expect_tokens(l, ...)                          \
   prefetch_expect_tokens_impl(l, __VA_ARGS__, TOKEN_ERR)
@@ -438,12 +444,11 @@ bool prefetch_expect_token(Lexer *l, int token)
   return true;
 }
 
-bool prefetch_expect_tokens_impl(Lexer *l, ...)
+bool vexpect_tokens_impl(Lexer *l, va_list expecteds)
 {
-  lexer_next(l);
   bool found = false;
   
-  va_list ap; va_start(ap, l); {
+  va_list ap; va_copy(ap, expecteds); {
     int arg = va_arg(ap, int);
     while (arg != TOKEN_ERR) {
       if (arg == l->current.kind) {
@@ -456,7 +461,7 @@ bool prefetch_expect_tokens_impl(Lexer *l, ...)
 
   if (found) return true;
 
-  va_start(ap, l); {
+  va_copy(ap, expecteds); {
     pcompile_info(l->current.start, "error: expect token ");
     
     int arg = va_arg(ap, int);
@@ -471,6 +476,29 @@ bool prefetch_expect_tokens_impl(Lexer *l, ...)
   } va_end(ap);
   
   return false;
+}
+
+bool expect_tokens_impl(Lexer *l, ...)
+{
+  bool found = false;
+  
+  va_list ap; va_start(ap, l); {
+    found = vexpect_tokens_impl(l, ap);
+  } va_end(ap);
+  
+  return found;
+}
+
+bool prefetch_expect_tokens_impl(Lexer *l, ...)
+{
+  lexer_next(l);
+  bool found = false;
+  
+  va_list ap; va_start(ap, l); {
+    found = vexpect_tokens_impl(l, ap);
+  } va_end(ap);
+  
+  return found;
 }
 
 void lexer_terminate(Lexer *lexer)
