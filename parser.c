@@ -188,8 +188,9 @@ struct AST {
   };
 };
 
-AST ast_atom(Token token) { return (AST) {.kind = AST_ATOM, .atom = token}; }
-AST ast_invoke(AST *fn, AST_List args) {
+static AST ast_atom(Token token) { return (AST) {.kind = AST_ATOM, .atom = token}; }
+static AST ast_invoke(AST *fn, AST_List args)
+{
   return (AST) {
     .kind = AST_INVOKE,
     .invoke =  {
@@ -199,63 +200,72 @@ AST ast_invoke(AST *fn, AST_List args) {
   };
 }
 
-void ast_del(AST *ast) {
+static void ast_del(AST *ast);
+
+static void ast_list_del(AST_List *asts)
+{
+  da_foreach (AST, ast, asts) {
+    ast_del(ast);
+  }
+  da_free(*asts);
+}
+
+static void ast_del(AST *ast)
+{
   static_assert(__ast_kind_count == 2);
   switch(ast->kind) {
   case AST_ATOM:
     return;
   case AST_INVOKE:
     ast_del(ast->invoke.fn);
-    da_foreach (AST, arg, &ast->invoke.args) {
-      ast_del(arg);
-    }
-    da_free(ast->invoke.args);
+    ast_list_del(&ast->invoke.args);
     return;
   case __ast_kind_count: UNREACHABLE("");
   }
 }
 
-static bool compile_expr_ast(Lexer *l, AST *expr);
+static bool compile_expr(Lexer *l, AST *expr);
 
-// TODO: it leaks
-static bool compile_invoke_args_ast(Lexer *l, AST_List *args)
+static bool compile_invoke_args(Lexer *l, AST_List *args)
 {
   assert(l->current.kind == '(');
-  if (!prefetch_not_none(l)) return false;
+  bool result;
+  if (!prefetch_not_none(l)) return_defer(false);
 
   while (l->current.kind != ')') {
     AST arg;
-    if (!compile_expr_ast(l, &arg)) return false;
+    if (!compile_expr(l, &arg)) return_defer(false);
     da_append(args, arg);
 
-    if (!expect_tokens(l, ',', ')')) {
-      free(args->items);
-      return false;
-    }
+    if (!expect_tokens(l, ',', ')')) return_defer(false);
 
     if (l->current.kind == ',') {
-      if (!prefetch_not_none(l)) return false;
+      if (!prefetch_not_none(l)) return_defer(false);
     }
   }
-  if (!prefetch_not_none(l)) return false;
+  if (!prefetch_not_none(l)) return_defer(false);
+
   return true;
+ defer:
+  ast_list_del(args);
+  return result;
 }
 
-// TODO: it leaks
-static bool compile_expr_ast(Lexer *l, AST *expr)
+static bool compile_expr(Lexer *l, AST *expr)
 {
   // EXPR :: ATOM
   // ATOM :: STR | INT | ID
   // INVOKE :: EXPR ( ARGS )
   // ARGS :: EXPR | EXPR , ARGS
-  if (!expect_tokens(l, TOKEN_STR, TOKEN_INT, TOKEN_ID)) return false;
+  bool result;
+  if (!expect_tokens(l, TOKEN_STR, TOKEN_INT, TOKEN_ID)) return_defer(false);
 
   *expr = ast_atom(l->current);
 
-  if (!lexer_next(l)) return false;
+  if (!lexer_next(l)) return_defer(false);
   while (l->current.kind == '(') {
     AST_List args = {0};
-    if (!compile_invoke_args_ast(l, &args)) return false;
+    if (!compile_invoke_args(l, &args)) return_defer(false);
     
     AST *fn = malloc(sizeof(AST));
     *fn = *expr;
@@ -263,6 +273,9 @@ static bool compile_expr_ast(Lexer *l, AST *expr)
   }
 
   return true;
+ defer:
+  ast_del(expr);
+  return result;
 }
 
 static void ast_to_ir(AST *ast, Program *prog, Fn *fn);
@@ -342,12 +355,13 @@ static bool compile_statement(Lexer *l, Program *prog, Fn *fn)
 {
   Cursor loc = l->cursor;
   AST expr = {0};
-  if (!compile_expr_ast(l, &expr)) return false;
+  if (!compile_expr(l, &expr)) return false;
 
+  bool result;
   if (l->current.kind == '=') {
     AST val_ast = {0};
-    if (!prefetch_not_none(l)) return false;
-    if (!compile_expr_ast(l, &val_ast)) return false;
+    if (!prefetch_not_none(l)) return_defer(false);
+    if (!compile_expr(l, &val_ast)) return_defer(false);
 
     Arg var, val;
     ast_to_arg(&expr, prog, fn, &var);
@@ -362,11 +376,16 @@ static bool compile_statement(Lexer *l, Program *prog, Fn *fn)
       },
     };
     da_append(&fn->fn_body, set_var);
+
+    ast_del(&val_ast);
   } else {
     ast_to_ir(&expr, prog, fn);
   }
   
-  return true;
+  return_defer(true);
+ defer:
+  ast_del(&expr);
+  return result;
 }
 
 static_assert(TYPE_KIND_COUNT == 6);
@@ -527,9 +546,10 @@ static bool compile_local_var(Lexer *l, Program *prog, Fn *fn)
   Cursor loc = l->current.start;
   if (!prefetch_not_none(l)) return false;
   AST expr = {0};
-  if (!compile_expr_ast(l, &expr)) return false;
+  if (!compile_expr(l, &expr)) return false;
   Arg val = {0};
   ast_to_arg(&expr, prog, fn, &val);
+  ast_del(&expr);
   
   Op set_var = {
     .kind = OP_SET_VAR,
@@ -560,8 +580,9 @@ static bool compile_fn_body(Lexer *l, Program *prog, Fn *fn) {
       if (!prefetch_not_none(l)) return false;
 
       AST expr = {0};
-      if (!compile_expr_ast(l, &expr)) return false;
+      if (!compile_expr(l, &expr)) return false;
       ast_to_arg(&expr, prog, fn, &ret.ret_val);
+      ast_del(&expr);
       
       da_append(&fn->fn_body, ret);
       returned = true;
