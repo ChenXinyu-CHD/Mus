@@ -244,6 +244,7 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
     }
       
     da_foreach (Op, op, &fn->fn_body) {
+      static_assert(__op_kind_count == 4);
       switch(op->kind) {
       case OP_INVOKE: {
         for (int i = op->invoke.args.count - 1; i >= 0; --i) {
@@ -259,7 +260,7 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
 
         if (!op->invoke.ret_ignore) {
           Var *ret = &label_item(&fn->local, op->invoke.result_label);
-          rax2rbp_offset(&sb, ret->type.size, ret->offset);        
+          rax2rbp_offset(&sb, ret->type.size, ret->offset);
         }
       } break;
       case OP_RETURN:
@@ -267,6 +268,23 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         sb_appendf(&sb, "    leave\n");
         sb_appendf(&sb, "    ret\n");
         break;
+      case OP_BINOP: {
+        arg2rax(&sb, &op->binop.rhs, prog, fn);
+        sb_appendf(&sb, "    movq %%rax, %%rbx\n");
+        arg2rax(&sb, &op->binop.lhs, prog, fn);
+
+        static_assert(__binop_kind_count == 1);
+        switch (op->binop.kind) {
+        case BINOP_ADD:
+          sb_appendf(&sb, "    addq %%rbx, %%rax\n");
+          break;
+        default: UNREACHABLE("");
+        }
+
+        assert(op->binop.dst.kind == ARG_VAR_LOC);
+        Var *var = &fn->local.items[op->binop.dst.label];
+        rax2rbp_offset(&sb, var->type.size, var->offset);
+      }  break;
       case OP_SET_VAR: {
         arg2rax(&sb, &op->set_var.val, prog, fn);
         assert(op->set_var.var.kind == ARG_VAR_LOC);

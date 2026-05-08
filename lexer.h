@@ -48,9 +48,9 @@ typedef enum {
   TOKEN_I32,
   TOKEN_I64,
   TOKEN_VOID,
+  __token_kind_count,
 } TokenKind;
 
-#define TOKEN_KIND_COUNT 19
 void dump_token_kind(FILE *stream, int kind);
 
 typedef struct {
@@ -174,7 +174,7 @@ String_View sv_between_cs(String_Builder sb, Cursor begin, Cursor end)
 
 void dump_token_kind(FILE *stream, int kind)
 {
-  static_assert(TOKEN_KIND_COUNT == 19, "introduced more token kind");
+  static_assert(__token_kind_count == 128 + 19, "introduced more token kind");
   switch (kind) {
   case TOKEN_ID:
     fprintf(stream, "id"); break;
@@ -279,7 +279,7 @@ static bool lexer_number(Lexer *l)
   return true;
 }
 
-static_assert(TOKEN_KIND_COUNT == 19);
+static_assert(__token_kind_count == 128 + 19);
 
 static struct {
   char *token;
@@ -300,7 +300,10 @@ static struct {
   {.token = ",", .kind = ','},
   {.token = "=", .kind = '='},
   {.token = "&", .kind = '&'},
-  {.token = ".", .kind = '.'},
+  {.token = "+", .kind = '+'},
+  {.token = "-", .kind = '-'},
+  {.token = "*", .kind = '*'},
+  {.token = "/", .kind = '/'},
   // internal types
   {.token = "u8", .kind = TOKEN_U8},
   {.token = "u16", .kind = TOKEN_U16},
@@ -470,7 +473,7 @@ bool vexpect_tokens_impl(Lexer *l, va_list expecteds)
       fprintf(stderr, ", ");
       arg = va_arg(ap, int);
     }
-    fprintf(stderr, "but got");
+    fprintf(stderr, "but got ");
     dump_token_kind(stderr, l->current.kind);
     fprintf(stderr, "\n");
   } va_end(ap);

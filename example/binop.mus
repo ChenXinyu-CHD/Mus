@@ -1,0 +1,8 @@
+extern printf: fn(&i8, ...):i32;
+
+fn main(): i64
+{
+    var i = 34;
+    printf("%ld\n", i + 35 + 420);
+    return 0;
+}

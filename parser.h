@@ -7,15 +7,14 @@
 #include "lexer.h"
 
 typedef enum {
-  TYPE_UNKNOWN,
+  TYPE_UNKNOWN = 0,
   TYPE_VOID,
   TYPE_INT,
   TYPE_UINT,
   TYPE_FN,
   TYPE_PTR,
+  __type_kind_count,
 } TypeKind;
-
-#define TYPE_KIND_COUNT 6
 
 typedef struct TypeExpr TypeExpr;
 
@@ -42,9 +41,11 @@ struct TypeExpr {
 };
 
 void dump_type_expr(TypeExpr *type, FILE *stream);
+// return true if lhs is exactly equals to rhs.
+bool type_eq(const TypeExpr *lhs, TypeExpr *rhs);
 
 typedef enum {
-  ARG_NONE,
+  ARG_NONE = 0,
   ARG_NAME,     // 暂时只能以名称的引用的参数，作为编译时的占位符
   ARG_EXTERN,
   ARG_FN,
@@ -52,6 +53,7 @@ typedef enum {
   ARG_VAR_ARG,
   ARG_LIT_INT,
   ARG_LIT_STR,
+  __arg_kind_count,
 } ArgKind;
 
 typedef struct {
@@ -76,9 +78,11 @@ typedef struct {
 } ArgList;
 
 typedef enum {
-  OP_INVOKE,
+  OP_INVOKE = 0,
   OP_RETURN,
   OP_SET_VAR,
+  OP_BINOP,
+  __op_kind_count,
 } OpKind;
 
 typedef struct {
@@ -93,6 +97,20 @@ typedef struct {
   Arg val;
 } OpSetVar;
 
+typedef enum {
+  BINOP_ADD = 0,
+  __binop_kind_count,
+} BinopKind;
+
+typedef struct {
+  BinopKind kind;
+  Arg lhs;
+  Arg rhs;
+  Arg dst;
+} OpBinop;
+
+const char *binop_name(BinopKind kind);
+
 typedef struct {
   OpKind kind;
   Cursor loc;
@@ -100,6 +118,7 @@ typedef struct {
     OpInvoke invoke;
     Arg ret_val;
     OpSetVar set_var;
+    OpBinop binop;
   };
 } Op;
 

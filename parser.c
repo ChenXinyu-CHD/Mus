@@ -16,7 +16,8 @@ size_t alloc_var(VarList *vars)
 static void destroy_type_expr(TypeExpr* type)
 {
   if (type == NULL) return;
-  
+
+  static_assert(__type_kind_count == 6);
   switch(type->kind) {
   case TYPE_INT: break;
   case TYPE_UINT: break;
@@ -44,11 +45,14 @@ static void destroy_type_expr(TypeExpr* type)
 
 static void destroy_op(Op *op)
 {
+  static_assert(__op_kind_count == 4);
   switch (op->kind) {
   case OP_INVOKE:
     da_free(op->invoke.args);
     break;
-  case OP_RETURN: case OP_SET_VAR:
+  case OP_RETURN:
+  case OP_SET_VAR:
+  case OP_BINOP:
     break;
   default: UNREACHABLE("destroy op");
   }
@@ -166,6 +170,7 @@ static Arg arg_local_var(Fn *fn, size_t i)
 typedef enum {
   AST_ATOM = 0,
   AST_INVOKE,
+  AST_BINOP,
   __ast_kind_count
 } AST_Kind;
 
@@ -185,8 +190,22 @@ struct AST {
       AST* fn;
       AST_List args;
     } invoke;
+    struct {
+      BinopKind kind;
+      AST *lhs;
+      AST *rhs;
+    } binop;
   };
 };
+
+const char *binop_name(BinopKind kind)
+{
+  static_assert(__binop_kind_count == 1);
+  switch(kind) {
+  case BINOP_ADD: return "+";
+  default: UNREACHABLE("");
+  }
+}
 
 static AST ast_atom(Token token) { return (AST) {.kind = AST_ATOM, .atom = token}; }
 static AST ast_invoke(AST *fn, AST_List args)
@@ -196,6 +215,23 @@ static AST ast_invoke(AST *fn, AST_List args)
     .invoke =  {
       .fn = fn,
       .args = args,
+    }
+  };
+}
+static AST ast_binop(Token op, AST *lhs, AST *rhs)
+{
+  static_assert(__binop_kind_count == 1);
+  BinopKind kind;
+  switch (op.kind) {
+  case '+': kind = BINOP_ADD; break;
+  default: UNREACHABLE("");
+  };
+  return (AST) {
+    .kind = AST_BINOP,
+    .binop = {
+      .kind = kind,
+      .lhs = lhs,
+      .rhs = rhs,
     }
   };
 }
@@ -212,7 +248,7 @@ static void ast_list_del(AST_List *asts)
 
 static void ast_del(AST *ast)
 {
-  static_assert(__ast_kind_count == 2);
+  static_assert(__ast_kind_count == 3);
   switch(ast->kind) {
   case AST_ATOM:
     return;
@@ -220,7 +256,11 @@ static void ast_del(AST *ast)
     ast_del(ast->invoke.fn);
     ast_list_del(&ast->invoke.args);
     return;
-  case __ast_kind_count: UNREACHABLE("");
+  case AST_BINOP:
+    ast_del(ast->binop.lhs);
+    ast_del(ast->binop.rhs);
+    return;
+  default: UNREACHABLE("");
   }
 }
 
@@ -251,15 +291,11 @@ static bool compile_invoke_args(Lexer *l, AST_List *args)
   return result;
 }
 
-static bool compile_expr(Lexer *l, AST *expr)
+static bool compile_simple_expr(Lexer *l, AST *expr)
 {
-  // EXPR :: ATOM
-  // ATOM :: STR | INT | ID
-  // INVOKE :: EXPR ( ARGS )
-  // ARGS :: EXPR | EXPR , ARGS
-  bool result;
-  if (!expect_tokens(l, TOKEN_STR, TOKEN_INT, TOKEN_ID)) return_defer(false);
+  if (!expect_tokens(l, TOKEN_STR, TOKEN_INT, TOKEN_ID)) return false;
 
+  bool result;
   *expr = ast_atom(l->current);
 
   if (!lexer_next(l)) return_defer(false);
@@ -278,10 +314,44 @@ static bool compile_expr(Lexer *l, AST *expr)
   return result;
 }
 
+static bool compile_expr(Lexer *l, AST *expr)
+{
+  // EXPR :: ADD
+  // ADD :: SIMPLE | SIMPLE + ADD
+  // SIMPLE :: ATOM | INVOKE
+  // ATOM :: STR | INT | ID
+  // INVOKE :: EXPR ( ARGS )
+  // ARGS :: EXPR | EXPR , ARGS
+  if (!compile_simple_expr(l, expr)) return false;
+
+  bool result;
+  while (l->current.kind == '+') {
+    Token op = l->current;
+    if (!prefetch_not_none(l)) return_defer(false);
+    
+    AST rhs_ast = {0};
+    if (!compile_simple_expr(l, &rhs_ast)) return_defer(false);
+    
+    AST *lhs = malloc(sizeof(AST));
+    *lhs = *expr;
+    AST *rhs = malloc(sizeof(AST));
+    *rhs = rhs_ast;
+    
+    *expr = ast_binop(op, lhs, rhs);
+  }
+
+  return true;
+ defer:
+  ast_del(expr);
+  return result;
+}
+
 static void ast_to_ir(AST *ast, Program *prog, Fn *fn);
 
 static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Arg *exp_result)
 {
+
+  static_assert(__ast_kind_count == 3);
   switch (ast->kind) {
   case AST_ATOM: {
     Token token = ast->atom;
@@ -325,13 +395,22 @@ static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Arg *exp_result)
       .type = {.kind = TYPE_UNKNOWN},
       .label = op->invoke.result_label,
     };
-  } break; // this doesn't need to generate an ir op currently.
-  case __ast_kind_count: UNREACHABLE("");
+  } break;
+  case AST_BINOP: {
+    ast_to_ir(ast, prog, fn);
+    
+    Op *op = &fn->fn_body.items[fn->fn_body.count-1];
+    assert(op->kind == OP_BINOP);
+
+    *exp_result = op->binop.dst;
+  } break;
+  default: UNREACHABLE("");
   }
 }
 
 static void ast_to_ir(AST *ast, Program *prog, Fn *fn)
 {
+  static_assert(__ast_kind_count == 3);
   switch (ast->kind) {
   case AST_INVOKE: {
     Op op = { .kind = OP_INVOKE };
@@ -346,8 +425,27 @@ static void ast_to_ir(AST *ast, Program *prog, Fn *fn)
     op.invoke.ret_ignore = true;
     da_append(&fn->fn_body, op);
   } break;
+  case AST_BINOP: {
+    Op op = {
+      .kind = OP_BINOP,
+      .binop = {
+        .kind = ast->binop.kind,
+      },
+    };
+
+    ast_to_arg(ast->binop.lhs, prog, fn, &op.binop.lhs);
+    ast_to_arg(ast->binop.rhs, prog, fn, &op.binop.rhs);
+    
+    op.binop.dst = (Arg) {
+      .kind = ARG_VAR_LOC,
+      .type = {.kind = TYPE_UNKNOWN},
+      .label =  alloc_var(&fn->local),
+    };
+    
+    da_append(&fn->fn_body, op);
+  } break;
   case AST_ATOM: break; // this doesn't need to generate an ir op currently.
-  case __ast_kind_count: UNREACHABLE("");
+  default: UNREACHABLE("");
   }
 }
 
@@ -388,7 +486,7 @@ static bool compile_statement(Lexer *l, Program *prog, Fn *fn)
   return result;
 }
 
-static_assert(TYPE_KIND_COUNT == 6);
+static_assert(__type_kind_count == 6);
 static struct {
   int token;
   TypeExpr type;
@@ -736,6 +834,7 @@ static bool backpatch_name_args(Program *prog)
   bool success = true;
   da_foreach (Fn, fn, &prog->fn_list) {
     da_foreach (Op, op, &fn->fn_body) {
+      static_assert(__op_kind_count == 4);
       switch (op->kind) {
       case OP_RETURN:
         success = backpatch_name_arg_impl(&op->ret_val, prog, fn) && success;
@@ -750,7 +849,11 @@ static bool backpatch_name_args(Program *prog)
           success = backpatch_name_arg_impl(arg, prog, fn) && success;
         }
         break;
-      default: UNREACHABLE("op");
+      case OP_BINOP:
+        success = backpatch_name_arg_impl(&op->binop.lhs, prog, fn) && success;
+        success = backpatch_name_arg_impl(&op->binop.rhs, prog, fn) && success;
+        break;
+     default: UNREACHABLE("op");
       }
     }
   }
@@ -770,6 +873,8 @@ static bool detect_arg_type(Arg *arg, Program *prog, Fn *fn) {
   VarList *args = &fn->args;
 
   TypeExpr * type = NULL;
+
+  static_assert(__arg_kind_count == 8);
   switch(arg->kind) {
   case ARG_EXTERN:
     type = &label_item(externs, arg->label).type;
@@ -823,10 +928,61 @@ static bool detect_var_type(Arg *var, Arg *val, Program *prog, Fn *fn)
   return true;
 }
 
+static bool detect_binop_dst_type(VarList *vars, OpBinop *binop)
+{
+  Arg *lhs = &binop->lhs;
+  Arg *rhs = &binop->rhs;
+  Arg *dst = &binop->dst;
+
+  assert(lhs->type.kind != TYPE_UNKNOWN);
+  assert(rhs->type.kind != TYPE_UNKNOWN);
+  assert(dst->kind == ARG_VAR_LOC);
+
+  switch (binop->kind) {
+  case BINOP_ADD:
+    if (lhs->type.kind != TYPE_INT && lhs->type.kind != TYPE_UINT) {
+      pcompile_info(lhs->loc, "error: lhs of operator `%s` is expected to be a integer, but bot a ", binop_name(binop->kind));
+      dump_type_expr(&lhs->type, stderr);
+      fprintf(stderr, "\n");
+      return false;
+    }
+    
+    if (rhs->type.kind != TYPE_INT && rhs->type.kind != TYPE_UINT) {
+      pcompile_info(rhs->loc, "error: rhs of operator `%s` is expected to be a integer, but bot a ", binop_name(binop->kind));
+      dump_type_expr(&rhs->type, stderr);
+      fprintf(stderr, "\n");
+      return false;
+    }
+
+    if (!type_eq(&lhs->type, &rhs->type)) {
+      pcompile_info(lhs->loc, "error: lhs and rhs of operator `%s` is not same.\n", binop_name(binop->kind));
+      pcompile_info(lhs->loc, "info: lhs is in type");
+      dump_type_expr(&lhs->type, stderr);
+      fprintf(stderr, "\n");
+      
+      pcompile_info(lhs->loc, "info: rhs is in type");
+      dump_type_expr(&lhs->type, stderr);
+      fprintf(stderr, "\n");
+      return false;
+    }
+
+    dst->type = type_clone(lhs->type);
+    label_item(vars, dst->label).type = type_clone(lhs->type);
+    
+    return true;
+    break;
+  default:
+    UNREACHABLE("");
+  }
+
+  return true;
+}
+
 static bool detect_all_unknown_type(Program *prog)
 {
   da_foreach (Fn, fn, &prog->fn_list) {
     da_foreach (Op, op, &fn->fn_body) {
+      static_assert(__op_kind_count == 4);
       switch (op->kind) {
       case OP_RETURN:
         if (!detect_arg_type(&op->ret_val, prog, fn)) return false;
@@ -849,6 +1005,11 @@ static bool detect_all_unknown_type(Program *prog)
           ret->type = type_clone(*ret_type);
         }
       } break;
+      case OP_BINOP:
+        if (!detect_arg_type(&op->binop.lhs, prog, fn)) return false;
+        if (!detect_arg_type(&op->binop.rhs, prog, fn)) return false;
+        if (!detect_binop_dst_type(&fn->local, &op->binop)) return false;
+        break;
       default: UNREACHABLE("op");
       }
     }
@@ -900,9 +1061,39 @@ static bool type_matched(TypeExpr *required, TypeExpr *actual)
   return true;
 }
 
+bool type_eq(const TypeExpr *lhs, TypeExpr *rhs)
+{
+  static_assert(__type_kind_count == 6);
+  if (lhs->kind != rhs->kind || lhs->size != rhs->size) return false;
+  
+  switch (lhs->kind) {
+  case TYPE_INT:
+  case TYPE_UINT:
+  case TYPE_VOID:
+  case TYPE_UNKNOWN:
+    return true;
+  case TYPE_PTR:
+    return type_eq(lhs->ref_type, rhs->ref_type);
+  case TYPE_FN:
+    if (lhs->fn_type.va_args != rhs->fn_type.va_args) return false;
+    
+    if (lhs->fn_type.arg_types.count != rhs->fn_type.arg_types.count) return false;
+    for (size_t i = 0; i < lhs->fn_type.arg_types.count; ++i) {
+      TypeExpr *la = &lhs->fn_type.arg_types.items[i];
+      TypeExpr *ra = &rhs->fn_type.arg_types.items[i];
+      if (!type_eq(la, ra)) return false;
+    }
+    
+    if (!type_eq(lhs->fn_type.ret_type, rhs->fn_type.ret_type)) return false;
+
+    return true;
+  default: UNREACHABLE("");
+  }
+}
+
 void dump_type_expr(TypeExpr *type, FILE *stream)
 {
-  UNUSED(stream);
+  static_assert(__type_kind_count == 6);
   switch(type->kind) {
   case TYPE_UNKNOWN:
     fprintf(stream, "unknown type");
@@ -944,6 +1135,7 @@ static bool check_type(Program *prog)
     
     assert(fn_type->kind == TYPE_FN);
     da_foreach (Op, op, &fn->fn_body) {
+      static_assert(__op_kind_count == 4);
       switch (op->kind) {
       case OP_RETURN:
         TypeExpr *ret_type = &op->ret_val.type;
@@ -999,6 +1191,11 @@ static bool check_type(Program *prog)
             return false;
           }
         }
+        break;
+      case OP_BINOP:
+        // the type of dst is detected in detect_all_unknown_type
+        // and if it could be detected successfully, it must be available
+        // thus, it doesn't need additional checks.
         break;
       default: UNREACHABLE("op");
       }
