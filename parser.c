@@ -200,9 +200,13 @@ struct AST {
 
 const char *binop_name(BinopKind kind)
 {
-  static_assert(__binop_kind_count == 1);
+  static_assert(__binop_kind_count == 5);
   switch(kind) {
   case BINOP_ADD: return "+";
+  case BINOP_SUB: return "-";
+  case BINOP_MUL: return "*";
+  case BINOP_DIV: return "/";
+  case BINOP_MOD: return "%";
   default: UNREACHABLE("");
   }
 }
@@ -220,10 +224,14 @@ static AST ast_invoke(AST *fn, AST_List args)
 }
 static AST ast_binop(Token op, AST *lhs, AST *rhs)
 {
-  static_assert(__binop_kind_count == 1);
+  static_assert(__binop_kind_count == 5);
   BinopKind kind;
   switch (op.kind) {
   case '+': kind = BINOP_ADD; break;
+  case '-': kind = BINOP_SUB; break;
+  case '*': kind = BINOP_MUL; break;
+  case '/': kind = BINOP_DIV; break;
+  case '%': kind = BINOP_MOD; break;
   default: UNREACHABLE("");
   };
   return (AST) {
@@ -314,18 +322,12 @@ static bool compile_simple_expr(Lexer *l, AST *expr)
   return result;
 }
 
-static bool compile_expr(Lexer *l, AST *expr)
+static bool compile_mul(Lexer *l, AST *expr)
 {
-  // EXPR :: ADD
-  // ADD :: SIMPLE | SIMPLE + ADD
-  // SIMPLE :: ATOM | INVOKE
-  // ATOM :: STR | INT | ID
-  // INVOKE :: EXPR ( ARGS )
-  // ARGS :: EXPR | EXPR , ARGS
   if (!compile_simple_expr(l, expr)) return false;
 
   bool result;
-  while (l->current.kind == '+') {
+  while (l->current.kind == '*' || l->current.kind == '/' || l->current.kind == '%') {
     Token op = l->current;
     if (!prefetch_not_none(l)) return_defer(false);
     
@@ -344,6 +346,43 @@ static bool compile_expr(Lexer *l, AST *expr)
  defer:
   ast_del(expr);
   return result;
+}
+
+static bool compile_add(Lexer *l, AST *expr)
+{
+  if (!compile_mul(l, expr)) return false;
+
+  bool result;
+  while (l->current.kind == '+' || l->current.kind == '-') {
+    Token op = l->current;
+    if (!prefetch_not_none(l)) return_defer(false);
+    
+    AST rhs_ast = {0};
+    if (!compile_mul(l, &rhs_ast)) return_defer(false);
+    
+    AST *lhs = malloc(sizeof(AST));
+    *lhs = *expr;
+    AST *rhs = malloc(sizeof(AST));
+    *rhs = rhs_ast;
+    
+    *expr = ast_binop(op, lhs, rhs);
+  }
+
+  return true;
+ defer:
+  ast_del(expr);
+  return result;
+}
+
+static bool compile_expr(Lexer *l, AST *expr)
+{
+  // EXPR :: ADD
+  // ADD :: SIMPLE | SIMPLE + ADD
+  // SIMPLE :: ATOM | INVOKE
+  // ATOM :: STR | INT | ID
+  // INVOKE :: EXPR ( ARGS )
+  // ARGS :: EXPR | EXPR , ARGS
+  return compile_add(l, expr);
 }
 
 static void ast_to_ir(AST *ast, Program *prog, Fn *fn);
@@ -908,16 +947,20 @@ static bool detect_var_type(Arg *var, Arg *val, Program *prog, Fn *fn)
   VarList *args = &fn->args;
   
   TypeExpr *var_type = NULL;
-  if (var->kind == ARG_VAR_LOC) {
+  // not every arg type can occur in here
+  static_assert(__arg_kind_count == 8);
+  switch (var->kind) {
+  case ARG_VAR_LOC:
     assert(var->label < local->count);
     var_type = &local->items[var->label].type;
-  } else if (var->kind == ARG_VAR_ARG) {
+    break;
+  case ARG_VAR_ARG:
     assert(var->label < args->count);
     var_type = &args->items[var->label].type;
-  } else if (var->kind == ARG_NAME) {
+    break;
+  case ARG_NAME:
     TODO("");
-  } else {
-    UNREACHABLE("fix_type_var");
+  default: UNREACHABLE("fix_type_var");
   }
 
   if (var_type->kind == TYPE_UNKNOWN) {
@@ -938,8 +981,13 @@ static bool detect_binop_dst_type(VarList *vars, OpBinop *binop)
   assert(rhs->type.kind != TYPE_UNKNOWN);
   assert(dst->kind == ARG_VAR_LOC);
 
+  static_assert(__binop_kind_count == 5);
   switch (binop->kind) {
+  case BINOP_SUB:
   case BINOP_ADD:
+  case BINOP_MUL:
+  case BINOP_DIV:
+  case BINOP_MOD:
     if (lhs->type.kind != TYPE_INT && lhs->type.kind != TYPE_UINT) {
       pcompile_info(lhs->loc, "error: lhs of operator `%s` is expected to be a integer, but bot a ", binop_name(binop->kind));
       dump_type_expr(&lhs->type, stderr);

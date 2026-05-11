@@ -50,7 +50,7 @@ String_Builder gen_code_ir(const Program *prog)
     sb_appendf(&sb, " "SV_Fmt"", SV_Arg(ext->name));
   }
   sb_appendf(&sb, "\n\n");
-  
+
   sb_appendf(&sb, ".str_lits:\n");
   for (size_t i = 0; i < prog->str_lits.count; ++i) {
     sb_appendf(&sb, "    .%ld: ", i);
@@ -59,7 +59,7 @@ String_Builder gen_code_ir(const Program *prog)
   }
 
   sb_appendf(&sb, "\n");
-  
+
   da_foreach (Fn, fn, &prog->fn_list) {
     sb_appendf(&sb, SV_Fmt":\n", SV_Arg(fn->name));
     da_foreach (Op, op, &fn->fn_body) {
@@ -99,7 +99,7 @@ String_Builder gen_code_ir(const Program *prog)
 bool build_ir(const char *filename, const Program *prog)
 {
   size_t mark = temp_save();
-  
+
   String_Builder code = gen_code_ir(prog);
   filename = temp_sprintf("%s.ir", filename);
   bool success = write_entire_file(filename, code.items, code.count);
@@ -224,7 +224,7 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
     append_str_lit(&sb, prog->str_lits.items[i]);
     da_append(&sb, '\n');
   }
-  
+
   sb_appendf(&sb, "    .text\n");
   da_foreach (Fn, fn, &prog->fn_list) {
     sb_appendf(&sb, "    .globl  "SV_Fmt"\n", SV_Arg(fn->name));
@@ -242,7 +242,7 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
       Var *arg = &label_item(&fn->args, i);
       rax2rbp_offset(&sb, arg->type.size, arg->offset);
     }
-      
+
     da_foreach (Op, op, &fn->fn_body) {
       static_assert(__op_kind_count == 4);
       switch(op->kind) {
@@ -273,10 +273,23 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         sb_appendf(&sb, "    movq %%rax, %%rbx\n");
         arg2rax(&sb, &op->binop.lhs, prog, fn);
 
-        static_assert(__binop_kind_count == 1);
+        static_assert(__binop_kind_count == 5);
         switch (op->binop.kind) {
         case BINOP_ADD:
           sb_appendf(&sb, "    addq %%rbx, %%rax\n");
+          break;
+        case BINOP_SUB:
+          sb_appendf(&sb, "    subq %%rbx, %%rax\n");
+          break;
+        case BINOP_MUL:
+          sb_appendf(&sb, "    mulq %%rbx\n");
+          break;
+        case BINOP_DIV:
+          sb_appendf(&sb, "    divq %%rbx\n");
+          break;
+        case BINOP_MOD:
+          sb_appendf(&sb, "    divq %%rbx\n");
+          sb_appendf(&sb, "    movq %%rdx, %%rax\n");
           break;
         default: UNREACHABLE("");
         }
@@ -303,15 +316,15 @@ bool build_x86_64_native(const char *filename, const Program *prog)
 {
   bool result;
   size_t mark = temp_save();
-  
+
   String_Builder code = gen_code_x86_64_gas(prog);
   char *asm_file = temp_sprintf("%s.s", filename);
   if (!write_entire_file(asm_file, code.items, code.count)) return_defer(false);
-  
+
   Cmd cmd = {0};
   cmd_append(&cmd, "cc", "-o", filename, asm_file);
   if(!cmd_run(&cmd)) return_defer(false);
-  
+
   if (!write_entire_file(asm_file, code.items, code.count)) return_defer(false);
 
   return_defer(true);
@@ -420,7 +433,7 @@ bool dump_all_tokens(Lexer *l)
     dump_token_kind(stdout, t.kind);
     printf(": "SV_Fmt"\n", SV_Arg(t.token));
   }
-  
+
   Token t = l->current;
   printf(CS_Fmt, CS_Arg(t.start));
   dump_token_kind(stdout, t.kind);
@@ -434,8 +447,8 @@ int main(int argc, char **argv)
 {
   if (!parse_mcc_args(argc, argv)) {
     exit(1);
-  }  
-  
+  }
+
   int result        = 0;
   String_Builder sb = {0};
   Program prog      = {0};
@@ -443,14 +456,14 @@ int main(int argc, char **argv)
   if (mcc_args.files.count > 1) {
     TODO("support multiple files");
   }
-  
+
   Lexer lexer = {0};
   if (!lexer_init(&lexer, sv_from_cstr(mcc_args.files.items[0]))) return_defer(1);
-  
+
   if (mcc_args.only_lexer) {
     return_defer(dump_all_tokens(&lexer)? 0 : 1);
   }
-  
+
   if (!compile_program(&lexer, &prog)) {
     fprintf(stderr, "fatal error: failed to compile file %s\n", argv[1]);
     return_defer(1);
@@ -465,13 +478,13 @@ int main(int argc, char **argv)
     break;
   default: UNREACHABLE("target");
   }
-  
+
   return_defer(0);
 
  defer:
   if (sb.capacity > 0) da_free(sb);
   destroy_program(&prog);
   if (result) fprintf(stderr, "compilation terminated\n");
-  
+
   return result;
 }

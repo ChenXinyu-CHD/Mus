@@ -99,6 +99,10 @@ typedef struct {
 
 typedef enum {
   BINOP_ADD = 0,
+  BINOP_SUB,
+  BINOP_MUL,
+  BINOP_DIV,
+  BINOP_MOD,
   __binop_kind_count,
 } BinopKind;
 
@@ -113,7 +117,7 @@ const char *binop_name(BinopKind kind);
 
 typedef struct {
   OpKind kind;
-  Cursor loc;
+  Cursor loc ;
   union {
     OpInvoke invoke;
     Arg ret_val;

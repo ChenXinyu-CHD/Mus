@@ -304,6 +304,7 @@ static struct {
   {.token = "-", .kind = '-'},
   {.token = "*", .kind = '*'},
   {.token = "/", .kind = '/'},
+  {.token = "%", .kind = '%'},
   // internal types
   {.token = "u8", .kind = TOKEN_U8},
   {.token = "u16", .kind = TOKEN_U16},
