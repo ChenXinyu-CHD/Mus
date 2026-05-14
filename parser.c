@@ -45,7 +45,7 @@ static void destroy_type_expr(TypeExpr* type)
 
 static void destroy_op(Op *op)
 {
-  static_assert(__op_kind_count == 4);
+  static_assert(__op_kind_count == 7);
   switch (op->kind) {
   case OP_INVOKE:
     da_free(op->invoke.args);
@@ -53,6 +53,9 @@ static void destroy_op(Op *op)
   case OP_RETURN:
   case OP_SET_VAR:
   case OP_BINOP:
+  case OP_JMP_IF_NOT:
+  case OP_JMP:
+  case OP_LABEL:
     break;
   default: UNREACHABLE("destroy op");
   }
@@ -495,7 +498,7 @@ static void ast_to_ir(AST *ast, Program *prog, Fn *fn)
   }
 }
 
-static bool compile_statement(Lexer *l, Program *prog, Fn *fn)
+static bool compile_stat_simple(Lexer *l, Program *prog, Fn *fn)
 {
   Cursor loc = l->cursor;
   AST expr = {0};
@@ -708,45 +711,39 @@ static bool compile_local_var(Lexer *l, Program *prog, Fn *fn)
   return true;
 }
 
-static bool compile_fn_body(Lexer *l, Program *prog, Fn *fn) {
-  assert(l->current.kind == '{');
-
-  bool returned = false;
-  if (!prefetch_not_none(l)) return false;
-  while (l->current.kind != '}') {
-    if (l->current.kind == ';') {
-      if (!prefetch_not_none(l)) return false;
-    } else if (l->current.kind == TOKEN_RET) {
-      Op ret = {
-        .kind = OP_RETURN,
-        .loc = l->current.start,
-      };
-      if (!prefetch_not_none(l)) return false;
-
-      AST expr = {0};
-      if (!compile_expr(l, &expr)) return false;
-      ast_to_arg(&expr, prog, fn, &ret.ret_val);
-      ast_del(&expr);
-      
-      da_append(&fn->fn_body, ret);
-      returned = true;
-    } else if (l->current.kind == TOKEN_VAR) {
-      if (!compile_local_var(l, prog, fn)) return false;
-    } else {
-      if (!compile_statement(l, prog, fn)) return false;
-    }
-  }
-
-  if (!returned) {
+static bool compile_stat(Lexer *l, Program *prog, Fn *fn)
+{
+  if (l->current.kind == ';') {
+    if (!prefetch_not_none(l)) return false;
+  } else if (l->current.kind == TOKEN_RET) {
     Op ret = {
       .kind = OP_RETURN,
       .loc = l->current.start,
-      .ret_val = {
-        .kind = ARG_NONE,
-        .type = { .kind = TYPE_VOID },
-      },
     };
+    if (!prefetch_not_none(l)) return false;
+
+    AST expr = {0};
+    if (!compile_expr(l, &expr)) return false;
+    ast_to_arg(&expr, prog, fn, &ret.ret_val);
+    ast_del(&expr);
+      
     da_append(&fn->fn_body, ret);
+  } else if (l->current.kind == TOKEN_VAR) {
+    if (!compile_local_var(l, prog, fn)) return false;
+  } else if (l->current.kind == TOKEN_IF) {
+    TODO("");
+  } else {
+    if (!compile_stat_simple(l, prog, fn)) return false;
+  }
+  return true;
+}
+
+static bool compile_fn_body(Lexer *l, Program *prog, Fn *fn) {
+  assert(l->current.kind == '{');
+
+  if (!prefetch_not_none(l)) return false;
+  while (l->current.kind != '}') {
+    if (!compile_stat(l, prog, fn)) return false;
   }
 
   return true;
@@ -840,7 +837,10 @@ static bool backpatch_name_arg_impl(Arg *arg, Program *prog, Fn *fn)
     Cursor use_loc = arg->loc;
     Cursor def_loc = label_item(&fn->local, i).loc;
     if (use_loc.row <= def_loc.row) {
-      pcompile_info(use_loc, "error: local variable `"SV_Fmt"` is used before its defination.\n", SV_Arg(arg->name));
+      pcompile_info(use_loc,
+                    "error: local variable `"SV_Fmt"` "
+                    "is used before its defination.\n",
+                    SV_Arg(arg->name));
       pcompile_info(def_loc, "info: it is defined here.\n");
       return false;
     }
@@ -871,7 +871,8 @@ static bool backpatch_name_arg_impl(Arg *arg, Program *prog, Fn *fn)
   }
   
   pcompile_info(arg->loc,
-                "error: refered symbol \""SV_Fmt"\" is not defined\n", SV_Arg(arg->name));
+                "error: refered symbol \""SV_Fmt"\" is not defined\n",
+                SV_Arg(arg->name));
   return false;
 }
 
@@ -880,7 +881,7 @@ static bool backpatch_name_args(Program *prog)
   bool success = true;
   da_foreach (Fn, fn, &prog->fn_list) {
     da_foreach (Op, op, &fn->fn_body) {
-      static_assert(__op_kind_count == 4);
+      static_assert(__op_kind_count == 7);
       switch (op->kind) {
       case OP_RETURN:
         success = backpatch_name_arg_impl(&op->ret_val, prog, fn) && success;
@@ -898,6 +899,11 @@ static bool backpatch_name_args(Program *prog)
       case OP_BINOP:
         success = backpatch_name_arg_impl(&op->binop.lhs, prog, fn) && success;
         success = backpatch_name_arg_impl(&op->binop.rhs, prog, fn) && success;
+        break;
+      case OP_LABEL:
+      case OP_JMP_IF_NOT:
+      case OP_JMP:
+        TODO("");
         break;
      default: UNREACHABLE("op");
       }
@@ -966,7 +972,7 @@ static bool detect_var_type(Arg *var, Arg *val, Program *prog, Fn *fn)
     var_type = &args->items[var->label].type;
     break;
   case ARG_NAME:
-    TODO("");
+    UNREACHABLE("currently this is imposible");
   default: UNREACHABLE("fix_type_var");
   }
 
@@ -996,21 +1002,30 @@ static bool detect_binop_dst_type(VarList *vars, OpBinop *binop)
   case BINOP_DIV:
   case BINOP_MOD:
     if (lhs->type.kind != TYPE_INT && lhs->type.kind != TYPE_UINT) {
-      pcompile_info(lhs->loc, "error: lhs of operator `%s` is expected to be a integer, but bot a ", binop_name(binop->kind));
+      pcompile_info(lhs->loc,
+                    "error: lhs of operator `%s` "
+                    "is expected to be a integer, but bot a ",
+                    binop_name(binop->kind));
       dump_type_expr(&lhs->type, stderr);
       fprintf(stderr, "\n");
       return false;
     }
     
     if (rhs->type.kind != TYPE_INT && rhs->type.kind != TYPE_UINT) {
-      pcompile_info(rhs->loc, "error: rhs of operator `%s` is expected to be a integer, but bot a ", binop_name(binop->kind));
+      pcompile_info(rhs->loc,
+                    "error: rhs of operator `%s` "
+                    "is expected to be a integer, but bot a ",
+                    binop_name(binop->kind));
       dump_type_expr(&rhs->type, stderr);
       fprintf(stderr, "\n");
       return false;
     }
 
     if (!type_eq(&lhs->type, &rhs->type)) {
-      pcompile_info(lhs->loc, "error: lhs and rhs of operator `%s` is not same.\n", binop_name(binop->kind));
+      pcompile_info(lhs->loc,
+                    "error: lhs and rhs of operator `%s` "
+                    "is not same.\n",
+                    binop_name(binop->kind));
       pcompile_info(lhs->loc, "info: lhs is in type");
       dump_type_expr(&lhs->type, stderr);
       fprintf(stderr, "\n");
@@ -1037,7 +1052,7 @@ static bool detect_all_unknown_type(Program *prog)
 {
   da_foreach (Fn, fn, &prog->fn_list) {
     da_foreach (Op, op, &fn->fn_body) {
-      static_assert(__op_kind_count == 4);
+      static_assert(__op_kind_count == 7);
       switch (op->kind) {
       case OP_RETURN:
         if (!detect_arg_type(&op->ret_val, prog, fn)) return false;
@@ -1064,6 +1079,11 @@ static bool detect_all_unknown_type(Program *prog)
         if (!detect_arg_type(&op->binop.lhs, prog, fn)) return false;
         if (!detect_arg_type(&op->binop.rhs, prog, fn)) return false;
         if (!detect_binop_dst_type(&fn->local, &op->binop)) return false;
+        break;
+      case OP_JMP_IF_NOT:
+      case OP_JMP:
+      case OP_LABEL:
+        TODO("");
         break;
       default: UNREACHABLE("op");
       }
@@ -1187,15 +1207,18 @@ static bool check_type(Program *prog)
 {
   da_foreach (Fn, fn, &prog->fn_list) {
     TypeExpr *fn_type = &fn->type;
-    
+
     assert(fn_type->kind == TYPE_FN);
     da_foreach (Op, op, &fn->fn_body) {
-      static_assert(__op_kind_count == 4);
+      static_assert(__op_kind_count == 7);
       switch (op->kind) {
       case OP_RETURN:
         TypeExpr *ret_type = &op->ret_val.type;
         if (!type_matched(fn_type->fn_type.ret_type, ret_type)) {
-          pcompile_info(op->loc, "error: the return type of "SV_Fmt" is required to be ", SV_Arg(fn->name));
+          pcompile_info(op->loc,
+                        "error: the return type of "SV_Fmt" "
+                        "is required to be ",
+                        SV_Arg(fn->name));
           dump_type_expr(fn_type->fn_type.ret_type, stderr);
           fprintf(stderr, ", but got ");
           dump_type_expr(ret_type, stderr);
@@ -1247,10 +1270,15 @@ static bool check_type(Program *prog)
           }
         }
         break;
+      case OP_JMP_IF_NOT:
+        TODO("");
+        break;
       case OP_BINOP:
         // the type of dst is detected in detect_all_unknown_type
         // and if it could be detected successfully, it must be available
         // thus, it doesn't need additional checks.
+      case OP_LABEL:
+      case OP_JMP:
         break;
       default: UNREACHABLE("op");
       }
@@ -1306,6 +1334,37 @@ static bool check_symbol_redefined(Program *prog)
   return result;
 }
 
+static bool check_fn_returned(Program *prog)
+{
+  da_foreach(Fn, fn, &prog->fn_list) {
+    bool returned = false;
+    da_foreach(Op, op, &fn->fn_body) {
+      static_assert(__op_kind_count == 7);
+      switch(op->kind) {
+      case OP_RETURN:
+        returned = true;
+        break;
+      default: break;
+      }
+    }
+
+    if (!returned) {
+      assert(fn->type.kind == TYPE_FN);
+      if (fn->type.fn_type.ret_type->kind != TYPE_VOID) {
+        pcompile_info(fn->loc, "error: function "SV_Fmt" is never returned\n",
+                      SV_Arg(fn->name));
+        return false;
+      } else {
+        Op op = {
+          .kind = OP_RETURN,
+        };
+        da_append(&fn->fn_body, op);
+      }
+    }
+  }
+  return true;
+}
+
 bool compile_program(Lexer *l, Program *prog)
 {
   if (!compile_file(l, prog)) return false;
@@ -1313,6 +1372,7 @@ bool compile_program(Lexer *l, Program *prog)
   if (!backpatch_name_args(prog)) return false;
   if (!detect_all_unknown_type(prog)) return false;
   if (!check_type(prog)) return false;
+  if (!check_fn_returned(prog)) return false;
   
   return true;
 }

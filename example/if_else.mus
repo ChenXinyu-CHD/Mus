@@ -1,0 +1,15 @@
+fn main(): i32
+{
+    var x = 10
+    printf("%d! = %d", x, foo(x))
+    return 0
+}
+
+fn foo(n: i32): i32
+{
+    if n == 0 return 1
+    else return n * foo(n - 1)
+}
+
+extern printf: fn(&i8, ...):i32
+

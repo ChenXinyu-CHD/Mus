@@ -10,10 +10,10 @@ parser.o: parser.c parser.h
 	cc -c parser.c $(CFLAGS)
 
 lexer.o: lexer.h
-	cc -c -x c -DMCC_LEXER_IMPLEMENTATION lexer.h
+	cc -c -x c -DMCC_LEXER_IMPLEMENTATION $(CFLAFS) lexer.h
 
 nob.o: nob.h
-	cc -c -x c -DNOB_IMPLEMENTATION nob.h
+	cc -c -x c -DNOB_IMPLEMENTATION $(CFLAFS) nob.h
 
 utils.o: utils.h
-	cc -c -x c -DMCC_UTILS_IMPLEMENTATION utils.h
+	cc -c -x c -DMCC_UTILS_IMPLEMENTATION $(CFLAFS) utils.h

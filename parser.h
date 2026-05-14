@@ -82,6 +82,9 @@ typedef enum {
   OP_RETURN,
   OP_SET_VAR,
   OP_BINOP,
+  OP_JMP,
+  OP_JMP_IF_NOT,
+  OP_LABEL,
   __op_kind_count,
 } OpKind;
 
@@ -113,6 +116,11 @@ typedef struct {
   Arg dst;
 } OpBinop;
 
+typedef struct {
+  size_t label;
+  Arg cond;
+} OpJmp;
+
 const char *binop_name(BinopKind kind);
 
 typedef struct {
@@ -123,6 +131,7 @@ typedef struct {
     Arg ret_val;
     OpSetVar set_var;
     OpBinop binop;
+    OpJmp jmp;
   };
 } Op;
 

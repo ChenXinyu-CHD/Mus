@@ -244,7 +244,7 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
     }
 
     da_foreach (Op, op, &fn->fn_body) {
-      static_assert(__op_kind_count == 4);
+      static_assert(__op_kind_count == 7);
       switch(op->kind) {
       case OP_INVOKE: {
         for (int i = op->invoke.args.count - 1; i >= 0; --i) {
@@ -304,6 +304,11 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         Var *var = &fn->local.items[op->set_var.var.label];
         rax2rbp_offset(&sb, var->type.size, var->offset);
       } break;
+      case OP_JMP:
+      case OP_JMP_IF_NOT:
+      case OP_LABEL:
+        TODO("");
+        break;
       default:
         UNREACHABLE("op");
       }
