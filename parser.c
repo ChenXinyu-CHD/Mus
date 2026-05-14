@@ -301,10 +301,16 @@ static bool compile_invoke_args(Lexer *l, AST_List *args)
 
 static bool compile_simple_expr(Lexer *l, AST *expr)
 {
-  if (!expect_tokens(l, TOKEN_STR, TOKEN_INT, TOKEN_ID)) return false;
-
   bool result;
-  *expr = ast_atom(l->current);
+  if (!expect_tokens(l, TOKEN_STR, TOKEN_INT, TOKEN_ID, '(')) return false;
+
+  if (l->current.kind == '(') {
+    if (!prefetch_not_none(l))  return_defer(false);
+    if (!compile_expr(l, expr)) return_defer(false);
+    if (!expect_token(l, ')'))  return_defer(false);
+  } else {
+    *expr = ast_atom(l->current);
+  }
 
   if (!lexer_next(l)) return_defer(false);
   while (l->current.kind == '(') {
@@ -376,12 +382,13 @@ static bool compile_add(Lexer *l, AST *expr)
 
 static bool compile_expr(Lexer *l, AST *expr)
 {
-  // EXPR :: ADD
-  // ADD :: SIMPLE | SIMPLE + ADD
-  // SIMPLE :: ATOM | INVOKE
-  // ATOM :: STR | INT | ID
+  // EXPR   :: ADD
+  // ADD    :: MUL | MUL + ADD
+  // MUL    :: SIMPLE | SIMPLE + ADD
+  // SIMPLE :: ATOM | INVOKE | ( EXPR )
+  // ATOM   :: STR | INT | ID
   // INVOKE :: EXPR ( ARGS )
-  // ARGS :: EXPR | EXPR , ARGS
+  // ARGS   :: EXPR | EXPR , ARGS
   return compile_add(l, expr);
 }
 

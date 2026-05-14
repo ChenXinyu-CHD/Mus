@@ -3,10 +3,10 @@ extern printf: fn(&i8, ...):i32;
 fn main(): i64
 {
     var i = 34;
-    var j = 1 + 2 * 3
-    printf("%ld\n", i + 35 + 420);
-    printf("%ld\n", j);
-    printf("%ld\n", j % 2);
-    printf("%ld\n", j / 2);
+    printf("%ld\n", 35 - i + 420);
+    printf("%ld\n", 1 + 2 * 3);
+    printf("%ld\n", (1 + 2) * 3);
+    printf("%ld\n", 5 % 2);
+    printf("%ld\n", 5 / 2);
     return 0;
 }

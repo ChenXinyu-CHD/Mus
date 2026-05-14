@@ -181,7 +181,7 @@ void dump_token_kind(FILE *stream, int kind)
   case TOKEN_STR:
     fprintf(stream, "string literal"); break;
   case TOKEN_INT:
-    fprintf(stream, "int"); break;
+    fprintf(stream, "int literal"); break;
   case TOKEN_VAR:
     fprintf(stream, "var"); break;
   case TOKEN_FN:
@@ -216,7 +216,7 @@ void dump_token_kind(FILE *stream, int kind)
     fprintf(stream, "void"); break;
   default:
     assert(kind > 0 && kind <= 127 && "only ascii code can be a token");
-    fputc(kind, stream);
+    fprintf(stream, "'%c'", kind);
   }
 }
 
