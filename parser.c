@@ -17,10 +17,11 @@ static void destroy_type_expr(TypeExpr* type)
 {
   if (type == NULL) return;
 
-  static_assert(__type_kind_count == 6);
+  static_assert(__type_kind_count == 7);
   switch(type->kind) {
   case TYPE_INT: break;
   case TYPE_UINT: break;
+  case TYPE_BOOL: break;
   case TYPE_VOID: break;
   case TYPE_UNKNOWN: break;
   case TYPE_PTR:
@@ -33,7 +34,7 @@ static void destroy_type_expr(TypeExpr* type)
       destroy_type_expr(type->fn_type.ret_type);
       free(type->fn_type.ret_type);
     }
-    
+
     da_foreach (TypeExpr, arg, &type->fn_type.arg_types) {
       destroy_type_expr(arg);
     }
@@ -53,7 +54,7 @@ static void destroy_op(Op *op)
   case OP_RETURN:
   case OP_SET_VAR:
   case OP_BINOP:
-  case OP_JMP_IF_NOT:
+  case OP_JMP_ELSE:
   case OP_JMP:
   case OP_LABEL:
     break;
@@ -101,7 +102,7 @@ static size_t compile_strlit(Program *prog, String_View str)
       return i;
     }
   }
-  
+
   da_append(&prog->str_lits, str);
   return str_count;
 }
@@ -114,7 +115,7 @@ static TypeExpr ptr_type(TypeExpr inner)
     .ref_type = malloc(sizeof(TypeExpr))
   };
   *type.ref_type = inner;
-  
+
   return type;
 }
 
@@ -130,7 +131,7 @@ static TypeExpr fn_type(TypeExpr ret_type, TypeList arg_types, bool va_args)
     },
   };
   *type.ref_type = ret_type;
-  
+
   return type;
 }
 
@@ -305,7 +306,14 @@ static bool compile_invoke_args(Lexer *l, AST_List *args)
 static bool compile_simple_expr(Lexer *l, AST *expr)
 {
   bool result;
-  if (!expect_tokens(l, TOKEN_STR, TOKEN_INT, TOKEN_ID, '(')) return false;
+  if (!expect_tokens(l,
+                     TOKEN_STR,
+                     TOKEN_INT,
+                     TOKEN_ID,
+                     TOKEN_TRUE,
+                     TOKEN_FALSE,
+                     '('))
+    return false;
 
   if (l->current.kind == '(') {
     if (!prefetch_not_none(l))  return_defer(false);
@@ -319,7 +327,7 @@ static bool compile_simple_expr(Lexer *l, AST *expr)
   while (l->current.kind == '(') {
     AST_List args = {0};
     if (!compile_invoke_args(l, &args)) return_defer(false);
-    
+
     AST *fn = malloc(sizeof(AST));
     *fn = *expr;
     *expr = ast_invoke(fn, args);
@@ -339,15 +347,15 @@ static bool compile_mul(Lexer *l, AST *expr)
   while (l->current.kind == '*' || l->current.kind == '/' || l->current.kind == '%') {
     Token op = l->current;
     if (!prefetch_not_none(l)) return_defer(false);
-    
+
     AST rhs_ast = {0};
     if (!compile_simple_expr(l, &rhs_ast)) return_defer(false);
-    
+
     AST *lhs = malloc(sizeof(AST));
     *lhs = *expr;
     AST *rhs = malloc(sizeof(AST));
     *rhs = rhs_ast;
-    
+
     *expr = ast_binop(op, lhs, rhs);
   }
 
@@ -365,15 +373,15 @@ static bool compile_add(Lexer *l, AST *expr)
   while (l->current.kind == '+' || l->current.kind == '-') {
     Token op = l->current;
     if (!prefetch_not_none(l)) return_defer(false);
-    
+
     AST rhs_ast = {0};
     if (!compile_mul(l, &rhs_ast)) return_defer(false);
-    
+
     AST *lhs = malloc(sizeof(AST));
     *lhs = *expr;
     AST *rhs = malloc(sizeof(AST));
     *rhs = rhs_ast;
-    
+
     *expr = ast_binop(op, lhs, rhs);
   }
 
@@ -428,6 +436,22 @@ static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Arg *exp_result)
         .size = 4,
       };
       break;
+    case TOKEN_TRUE:
+      exp_result->kind = ARG_LIT_INT;
+      exp_result->num_int = 1;
+      exp_result->type = (TypeExpr) {
+        .kind = TYPE_BOOL,
+        .size = 1,
+      };
+      break;
+    case TOKEN_FALSE:
+      exp_result->kind = ARG_LIT_INT;
+      exp_result->num_int = 0;
+      exp_result->type = (TypeExpr) {
+        .kind = TYPE_BOOL,
+        .size = 1,
+      };
+      break;
     default: UNREACHABLE("");
     }
   } break;
@@ -447,7 +471,7 @@ static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Arg *exp_result)
   } break;
   case AST_BINOP: {
     ast_to_ir(ast, prog, fn);
-    
+
     Op *op = &fn->fn_body.items[fn->fn_body.count-1];
     assert(op->kind == OP_BINOP);
 
@@ -484,13 +508,13 @@ static void ast_to_ir(AST *ast, Program *prog, Fn *fn)
 
     ast_to_arg(ast->binop.lhs, prog, fn, &op.binop.lhs);
     ast_to_arg(ast->binop.rhs, prog, fn, &op.binop.rhs);
-    
+
     op.binop.dst = (Arg) {
       .kind = ARG_VAR_LOC,
       .type = {.kind = TYPE_UNKNOWN},
       .label =  alloc_var(&fn->local),
     };
-    
+
     da_append(&fn->fn_body, op);
   } break;
   case AST_ATOM: break; // this doesn't need to generate an ir op currently.
@@ -513,7 +537,7 @@ static bool compile_stat_simple(Lexer *l, Program *prog, Fn *fn)
     Arg var, val;
     ast_to_arg(&expr, prog, fn, &var);
     ast_to_arg(&val_ast, prog, fn, &val);
-    
+
     Op set_var = {
       .kind = OP_SET_VAR,
       .loc = loc,
@@ -528,14 +552,14 @@ static bool compile_stat_simple(Lexer *l, Program *prog, Fn *fn)
   } else {
     ast_to_ir(&expr, prog, fn);
   }
-  
+
   return_defer(true);
  defer:
   ast_del(&expr);
   return result;
 }
 
-static_assert(__type_kind_count == 6);
+static_assert(__type_kind_count == 7);
 static struct {
   int token;
   TypeExpr type;
@@ -543,6 +567,10 @@ static struct {
   {
     .token = TOKEN_VOID,
     .type = { .kind = TYPE_VOID, .size = 0, },
+  },
+  {
+    .token = TOKEN_BOOL,
+    .type = { .kind = TYPE_BOOL, .size = 1, },
   },
   {
     .token = TOKEN_U8,
@@ -594,7 +622,7 @@ static bool compile_type_expr(Lexer *l, TypeExpr *type)
 {
   assert(type != NULL);
   if (compile_internal_type(l, type)) return true;
-  
+
   switch (l->current.kind) {
   case TOKEN_FN:
     return compile_type_fn(l, type);
@@ -645,7 +673,7 @@ static bool compile_type_fn(Lexer *l, TypeExpr *type)
 
   if (!prefetch_expect_token(l, ':')) return_defer(false);
   if (!prefetch_not_none(l)) return_defer(false);
-  
+
   type->fn_type.ret_type = calloc(1, sizeof(TypeExpr));
   if (!compile_type_expr(l, type->fn_type.ret_type)) return_defer(false);
 
@@ -675,7 +703,7 @@ static bool compile_local_var_singn(Lexer *l, Fn *fn)
     }
     if (!prefetch_not_none(l)) return_defer(false);
   }
-  
+
   da_append(&fn->local, var);
   return_defer(true);
  defer:
@@ -687,7 +715,7 @@ static bool compile_local_var(Lexer *l, Program *prog, Fn *fn)
 {
   if (!compile_local_var_singn(l, fn)) return false;
   size_t pos = fn->local.count - 1;
-  
+
   if (l->current.kind != '=') return true;
 
   Cursor loc = l->current.start;
@@ -697,7 +725,7 @@ static bool compile_local_var(Lexer *l, Program *prog, Fn *fn)
   Arg val = {0};
   ast_to_arg(&expr, prog, fn, &val);
   ast_del(&expr);
-  
+
   Op set_var = {
     .kind = OP_SET_VAR,
     .loc = loc,
@@ -713,9 +741,7 @@ static bool compile_local_var(Lexer *l, Program *prog, Fn *fn)
 
 static bool compile_stat(Lexer *l, Program *prog, Fn *fn)
 {
-  if (l->current.kind == ';') {
-    if (!prefetch_not_none(l)) return false;
-  } else if (l->current.kind == TOKEN_RET) {
+  if (l->current.kind == TOKEN_RET) {
     Op ret = {
       .kind = OP_RETURN,
       .loc = l->current.start,
@@ -726,15 +752,55 @@ static bool compile_stat(Lexer *l, Program *prog, Fn *fn)
     if (!compile_expr(l, &expr)) return false;
     ast_to_arg(&expr, prog, fn, &ret.ret_val);
     ast_del(&expr);
-      
+
     da_append(&fn->fn_body, ret);
   } else if (l->current.kind == TOKEN_VAR) {
     if (!compile_local_var(l, prog, fn)) return false;
   } else if (l->current.kind == TOKEN_IF) {
-    TODO("");
+    if (!prefetch_not_none(l)) return false;
+
+    { // parse cond, and jump to else branch
+      Op op = {
+        .kind = OP_JMP_ELSE,
+      };
+      AST cond = {0};
+      if (!compile_expr(l, &cond)) return false;
+      ast_to_arg(&cond, prog, fn, &op.jmp.cond);
+      ast_del(&cond);
+      da_append(&fn->fn_body, op);
+    }
+    size_t jmp_else = fn->fn_body.count - 1;
+    // if branch
+    if (!compile_stat(l, prog, fn)) return false;
+
+    if (l->current.kind == TOKEN_ELSE) {
+      da_append(&fn->fn_body, (Op) { .kind = OP_JMP });
+      size_t jmp_end = fn->fn_body.count - 1;
+
+      da_append(&fn->fn_body, (Op) { .kind = OP_LABEL });
+      size_t else_label = fn->fn_body.count - 1;
+      fn->fn_body.items[jmp_else].jmp.label = else_label;
+
+      // else branch
+      if (!prefetch_not_none(l)) return false;
+      if (!compile_stat(l, prog, fn)) return false;
+
+      da_append(&fn->fn_body, (Op) { .kind = OP_LABEL });
+      size_t end_label = fn->fn_body.count - 1;
+      fn->fn_body.items[jmp_end].jmp.label = end_label;
+    } else {
+      da_append(&fn->fn_body, (Op) { .kind = OP_LABEL });
+      size_t end_label = fn->fn_body.count - 1;
+      fn->fn_body.items[jmp_else].jmp.label = end_label;
+    }
   } else {
     if (!compile_stat_simple(l, prog, fn)) return false;
   }
+
+  if (l->current.kind == ';') {
+    if (!prefetch_not_none(l)) return false;
+  }
+
   return true;
 }
 
@@ -763,21 +829,21 @@ static bool compile_fn_sign(Lexer *l, Fn *fn)
 
   if (!prefetch_expect_token(l, '(')) return false;
   if (!prefetch_expect_tokens(l, ')', TOKEN_ID)) return false;
-  
+
   bool result;
   while (l->current.kind != ')') {
     Var var = {0};
     assert(l->current.kind == TOKEN_ID);
     var.name = l->current.token;
     var.loc = l->current.start;
-    
+
     if (!prefetch_expect_token(l, ':')) return_defer(false);
     if (!lexer_next(l)) return_defer(false);
     if (!compile_type_expr(l, &var.type)) return_defer(false);
-    
+
     da_append(&fn->args, var);
     da_append(&fn->type.fn_type.arg_types, (type_clone(var.type)));
-    
+
     if (!prefetch_expect_tokens(l, ',', ')')) return_defer(false);
 
     if (l->current.kind == ',') {
@@ -785,17 +851,17 @@ static bool compile_fn_sign(Lexer *l, Fn *fn)
     }
   }
   assert(l->current.kind == ')');
-  
+
   if (!prefetch_expect_token(l, ':')) return false;
   if (!prefetch_not_none(l)) return false;
-  
+
   TypeExpr ret_type = {0};
   if (!compile_type_expr(l, &ret_type)) return false;
   fn->type.fn_type.ret_type = malloc(sizeof(TypeExpr));
   *fn->type.fn_type.ret_type = ret_type;
-  
+
   return true;
-  
+
  defer:
   destroy_fn(fn);
   return result;
@@ -804,7 +870,7 @@ static bool compile_fn_sign(Lexer *l, Fn *fn)
 static bool compile_function(Lexer *l, Program *prog)
 {
   bool result;
-  
+
   Fn fn = {0};
   if (!compile_fn_sign(l, &fn)) return_defer(false);
 
@@ -820,7 +886,7 @@ static bool compile_function(Lexer *l, Program *prog)
 }
 
 static bool backpatch_name_arg_impl(Arg *arg, Program *prog, Fn *fn)
-{  
+{
   if (arg->kind != ARG_NAME) return true;
 
   size_t i = dct_geti(&fn->args, arg->name);
@@ -831,7 +897,7 @@ static bool backpatch_name_arg_impl(Arg *arg, Program *prog, Fn *fn)
     };
     return true;
   }
-  
+
   i = dct_geti(&fn->local, arg->name);
   if (i < fn->local.count) {
     Cursor use_loc = arg->loc;
@@ -844,14 +910,14 @@ static bool backpatch_name_arg_impl(Arg *arg, Program *prog, Fn *fn)
       pcompile_info(def_loc, "info: it is defined here.\n");
       return false;
     }
-    
+
     *arg = (Arg) {
       .kind = ARG_VAR_LOC,
       .label = i,
     };
     return true;
   }
-  
+
   i = dct_geti(&prog->externs, arg->name);
   if (i < prog->externs.count) {
     *arg = (Arg) {
@@ -869,7 +935,7 @@ static bool backpatch_name_arg_impl(Arg *arg, Program *prog, Fn *fn)
     };
     return true;
   }
-  
+
   pcompile_info(arg->loc,
                 "error: refered symbol \""SV_Fmt"\" is not defined\n",
                 SV_Arg(arg->name));
@@ -900,10 +966,12 @@ static bool backpatch_name_args(Program *prog)
         success = backpatch_name_arg_impl(&op->binop.lhs, prog, fn) && success;
         success = backpatch_name_arg_impl(&op->binop.rhs, prog, fn) && success;
         break;
+      case OP_JMP_ELSE:
+        success = backpatch_name_arg_impl(&op->jmp.cond, prog, fn) && success;
+        break;
       case OP_LABEL:
-      case OP_JMP_IF_NOT:
       case OP_JMP:
-        TODO("");
+        // nothing to do because these op has no argument.
         break;
      default: UNREACHABLE("op");
       }
@@ -943,7 +1011,7 @@ static bool detect_arg_type(Arg *arg, Program *prog, Fn *fn) {
   default:
     UNREACHABLE("detect_arg_type");
   }
-  
+
   assert(type != NULL);
   assert(type->kind != TYPE_UNKNOWN);
   arg->type = type_clone(*type);
@@ -958,7 +1026,7 @@ static bool detect_var_type(Arg *var, Arg *val, Program *prog, Fn *fn)
 
   VarList *local = &fn->local;
   VarList *args = &fn->args;
-  
+
   TypeExpr *var_type = NULL;
   // not every arg type can occur in here
   static_assert(__arg_kind_count == 8);
@@ -1010,7 +1078,7 @@ static bool detect_binop_dst_type(VarList *vars, OpBinop *binop)
       fprintf(stderr, "\n");
       return false;
     }
-    
+
     if (rhs->type.kind != TYPE_INT && rhs->type.kind != TYPE_UINT) {
       pcompile_info(rhs->loc,
                     "error: rhs of operator `%s` "
@@ -1029,7 +1097,7 @@ static bool detect_binop_dst_type(VarList *vars, OpBinop *binop)
       pcompile_info(lhs->loc, "info: lhs is in type");
       dump_type_expr(&lhs->type, stderr);
       fprintf(stderr, "\n");
-      
+
       pcompile_info(lhs->loc, "info: rhs is in type");
       dump_type_expr(&lhs->type, stderr);
       fprintf(stderr, "\n");
@@ -1038,7 +1106,7 @@ static bool detect_binop_dst_type(VarList *vars, OpBinop *binop)
 
     dst->type = type_clone(lhs->type);
     label_item(vars, dst->label).type = type_clone(lhs->type);
-    
+
     return true;
     break;
   default:
@@ -1080,10 +1148,12 @@ static bool detect_all_unknown_type(Program *prog)
         if (!detect_arg_type(&op->binop.rhs, prog, fn)) return false;
         if (!detect_binop_dst_type(&fn->local, &op->binop)) return false;
         break;
-      case OP_JMP_IF_NOT:
+      case OP_JMP_ELSE:
+        if (!detect_arg_type(&op->jmp.cond, prog, fn)) return false;
+        break;
       case OP_JMP:
       case OP_LABEL:
-        TODO("");
+        // nothing to do because these op have no arguments.
         break;
       default: UNREACHABLE("op");
       }
@@ -1098,17 +1168,17 @@ static bool compile_file(Lexer *l, Program *prog)
     if (l->current.kind == ';') {
       continue;
     }
-    
+
     if (l->current.kind == TOKEN_FN) {
       if (!compile_function(l, prog)) return false;
     } else if (l->current.kind == TOKEN_EXT) {
       if (!prefetch_expect_token(l, TOKEN_ID)) return false;
-      
+
       Extern ext = {
         .name = l->current.token,
         .loc = l->current.start,
       };
-      
+
       if (!prefetch_expect_token(l, ':')) return false;
       if (!prefetch_not_none(l)) return false;
       if (!compile_type_expr(l, &ext.type)) return false;
@@ -1138,27 +1208,28 @@ static bool type_matched(TypeExpr *required, TypeExpr *actual)
 
 bool type_eq(const TypeExpr *lhs, TypeExpr *rhs)
 {
-  static_assert(__type_kind_count == 6);
+  static_assert(__type_kind_count == 7);
   if (lhs->kind != rhs->kind || lhs->size != rhs->size) return false;
-  
+
   switch (lhs->kind) {
   case TYPE_INT:
   case TYPE_UINT:
   case TYPE_VOID:
+  case TYPE_BOOL:
   case TYPE_UNKNOWN:
     return true;
   case TYPE_PTR:
     return type_eq(lhs->ref_type, rhs->ref_type);
   case TYPE_FN:
     if (lhs->fn_type.va_args != rhs->fn_type.va_args) return false;
-    
+
     if (lhs->fn_type.arg_types.count != rhs->fn_type.arg_types.count) return false;
     for (size_t i = 0; i < lhs->fn_type.arg_types.count; ++i) {
       TypeExpr *la = &lhs->fn_type.arg_types.items[i];
       TypeExpr *ra = &rhs->fn_type.arg_types.items[i];
       if (!type_eq(la, ra)) return false;
     }
-    
+
     if (!type_eq(lhs->fn_type.ret_type, rhs->fn_type.ret_type)) return false;
 
     return true;
@@ -1168,7 +1239,7 @@ bool type_eq(const TypeExpr *lhs, TypeExpr *rhs)
 
 void dump_type_expr(TypeExpr *type, FILE *stream)
 {
-  static_assert(__type_kind_count == 6);
+  static_assert(__type_kind_count == 7);
   switch(type->kind) {
   case TYPE_UNKNOWN:
     fprintf(stream, "unknown type");
@@ -1176,13 +1247,16 @@ void dump_type_expr(TypeExpr *type, FILE *stream)
   case TYPE_VOID:
     fprintf(stream, "void");
     break;
+  case TYPE_BOOL:
+    fprintf(stream, "bool");
+    break;
   case TYPE_INT:
     fprintf(stream, "i%ld", type->size * 8);
     break;
   case TYPE_UINT:
     fprintf(stream, "u%ld", type->size * 8);
     break;
-  case TYPE_FN: 
+  case TYPE_FN:
     fprintf(stream, "fn(");
     for (size_t i = 0; i < type->fn_type.arg_types.count; ++i) {
       dump_type_expr(&type->fn_type.arg_types.items[i], stream);
@@ -1212,7 +1286,7 @@ static bool check_type(Program *prog)
     da_foreach (Op, op, &fn->fn_body) {
       static_assert(__op_kind_count == 7);
       switch (op->kind) {
-      case OP_RETURN:
+      case OP_RETURN: {
         TypeExpr *ret_type = &op->ret_val.type;
         if (!type_matched(fn_type->fn_type.ret_type, ret_type)) {
           pcompile_info(op->loc,
@@ -1225,7 +1299,7 @@ static bool check_type(Program *prog)
           fputc('\n', stderr);
           return false;
         }
-        break;
+      } break;
       case OP_SET_VAR:
         if (!type_matched(&op->set_var.var.type, &op->set_var.val.type)) {
           pcompile_info(op->loc, "error: incompatible types when assigning to type \"");
@@ -1235,9 +1309,9 @@ static bool check_type(Program *prog)
           fprintf(stderr, "\"\n");
           return false;
         }
-        
+
         break;
-      case OP_INVOKE:
+      case OP_INVOKE: {
         // TODO: report a better error message.
         if (op->invoke.fn.type.kind != TYPE_FN) {
           pcompile_info(op->loc, "error: try to invoke an uncallable value\n");
@@ -1269,16 +1343,26 @@ static bool check_type(Program *prog)
             return false;
           }
         }
-        break;
-      case OP_JMP_IF_NOT:
-        TODO("");
-        break;
+      } break;
+      case OP_JMP_ELSE: {
+        TypeExpr *cond_type = &op->jmp.cond.type;
+        if (cond_type->kind != TYPE_BOOL) {
+          pcompile_info(op->loc,
+                        "error: the condition of 'if' statement "
+                        "is required to be 'bool'");
+          fprintf(stderr, ", but got ");
+          dump_type_expr(cond_type, stderr);
+          fputc('\n', stderr);
+          return false;
+        }
+      } break;
       case OP_BINOP:
         // the type of dst is detected in detect_all_unknown_type
         // and if it could be detected successfully, it must be available
         // thus, it doesn't need additional checks.
       case OP_LABEL:
       case OP_JMP:
+        // These op has no args
         break;
       default: UNREACHABLE("op");
       }
@@ -1318,7 +1402,7 @@ typedef struct {
 static bool check_symbol_redefined(Program *prog)
 {
   bool result = true;
-  
+
   DefList defs = {0};
   check_redefined(&prog->externs, &defs);
   check_redefined(&prog->fn_list, &defs);
@@ -1330,7 +1414,7 @@ static bool check_symbol_redefined(Program *prog)
   }
 
   da_free(defs);
-  
+
   return result;
 }
 
@@ -1373,7 +1457,7 @@ bool compile_program(Lexer *l, Program *prog)
   if (!detect_all_unknown_type(prog)) return false;
   if (!check_type(prog)) return false;
   if (!check_fn_returned(prog)) return false;
-  
+
   return true;
 }
 
@@ -1389,4 +1473,3 @@ void destroy_program(Program *prog)
     da_free(prog->str_lits);
   }
 }
-

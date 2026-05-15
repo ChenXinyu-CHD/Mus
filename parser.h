@@ -11,6 +11,7 @@ typedef enum {
   TYPE_VOID,
   TYPE_INT,
   TYPE_UINT,
+  TYPE_BOOL,
   TYPE_FN,
   TYPE_PTR,
   __type_kind_count,
@@ -83,7 +84,7 @@ typedef enum {
   OP_SET_VAR,
   OP_BINOP,
   OP_JMP,
-  OP_JMP_IF_NOT,
+  OP_JMP_ELSE,
   OP_LABEL,
   __op_kind_count,
 } OpKind;

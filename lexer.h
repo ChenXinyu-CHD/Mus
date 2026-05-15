@@ -36,6 +36,9 @@ typedef enum {
   TOKEN_EXT,
   TOKEN_ERR,
   TOKEN_DOTS,
+  TOKEN_BOOL,
+  TOKEN_TRUE,
+  TOKEN_FALSE,
   TOKEN_IF,
   TOKEN_ELSE,
   TOKEN_EOF,
@@ -176,7 +179,7 @@ String_View sv_between_cs(String_Builder sb, Cursor begin, Cursor end)
 
 void dump_token_kind(FILE *stream, int kind)
 {
-  static_assert(__token_kind_count == 128 + 21, "introduced more token kind");
+  static_assert(__token_kind_count == 128 + 24, "introduced more token kind");
   switch (kind) {
   case TOKEN_ID:
     fprintf(stream, "id"); break;
@@ -193,13 +196,19 @@ void dump_token_kind(FILE *stream, int kind)
   case TOKEN_EXT:
     fprintf(stream, "extern"); break;
   case TOKEN_ERR:
-    fprintf(stream, "err"); break;
+    fprintf(stream, "err token"); break;
   case TOKEN_DOTS:
     fprintf(stream, "..."); break;
   case TOKEN_IF:
     fprintf(stream, "if"); break;
   case TOKEN_ELSE:
     fprintf(stream, "else"); break;
+  case TOKEN_BOOL:
+    fprintf(stream, "bool"); break;
+  case TOKEN_TRUE:
+    fprintf(stream, "true"); break;
+  case TOKEN_FALSE:
+    fprintf(stream, "false"); break;
   case TOKEN_EOF:
     fprintf(stream, "eof"); break;
   case TOKEN_U8:
@@ -285,7 +294,7 @@ static bool lexer_number(Lexer *l)
   return true;
 }
 
-static_assert(__token_kind_count == 128 + 21);
+static_assert(__token_kind_count == 128 + 24);
 
 static struct {
   char *token;
@@ -297,6 +306,8 @@ static struct {
   {.token = "var", .kind = TOKEN_VAR},
   {.token = "if", .kind = TOKEN_IF},
   {.token = "else", .kind = TOKEN_ELSE},
+  {.token = "true", .kind = TOKEN_TRUE},
+  {.token = "false", .kind = TOKEN_FALSE},
   {.token = "...", .kind = TOKEN_DOTS},
   // ascii
   {.token = "(", .kind = '('},
@@ -314,6 +325,7 @@ static struct {
   {.token = "/", .kind = '/'},
   {.token = "%", .kind = '%'},
   // internal types
+  {.token = "bool", .kind = TOKEN_BOOL},
   {.token = "u8", .kind = TOKEN_U8},
   {.token = "u16", .kind = TOKEN_U16},
   {.token = "u32", .kind = TOKEN_U32},

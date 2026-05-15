@@ -243,7 +243,8 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
       rax2rbp_offset(&sb, arg->type.size, arg->offset);
     }
 
-    da_foreach (Op, op, &fn->fn_body) {
+    for (size_t op_idx = 0; op_idx < fn->fn_body.count; ++op_idx) {
+      Op *op = &fn->fn_body.items[op_idx];
       static_assert(__op_kind_count == 7);
       switch(op->kind) {
       case OP_INVOKE: {
@@ -305,9 +306,15 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         rax2rbp_offset(&sb, var->type.size, var->offset);
       } break;
       case OP_JMP:
-      case OP_JMP_IF_NOT:
+        sb_appendf(&sb, "    jmp .label_%ld\n", op->jmp.label);
+        break;
+      case OP_JMP_ELSE:
+        arg2rax(&sb, &op->jmp.cond, prog, fn);
+        sb_appendf(&sb, "    cmp $0, %%rax\n");
+        sb_appendf(&sb, "    je .label_%ld\n", op->jmp.label);
+        break;
       case OP_LABEL:
-        TODO("");
+        sb_appendf(&sb, ".label_%ld:\n", op_idx);
         break;
       default:
         UNREACHABLE("op");
