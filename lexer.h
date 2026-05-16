@@ -43,6 +43,10 @@ typedef enum {
   TOKEN_ELSE,
   TOKEN_EOF,
 
+  // operators
+  TOKEN_EQ,
+  TOKEN_NEQ,
+
   // internal types
   TOKEN_U8,
   TOKEN_U16,
@@ -177,9 +181,61 @@ String_View sv_between_cs(String_Builder sb, Cursor begin, Cursor end)
   };
 }
 
+static_assert(__token_kind_count == 128 + 26);
+static struct {
+  char *token;
+  int kind;
+} simple_tokens[] = {
+  {.token = "extern", .kind = TOKEN_EXT},
+  {.token = "fn", .kind = TOKEN_FN},
+  {.token = "return", .kind = TOKEN_RET},
+  {.token = "var", .kind = TOKEN_VAR},
+  {.token = "if", .kind = TOKEN_IF},
+  {.token = "else", .kind = TOKEN_ELSE},
+  {.token = "true", .kind = TOKEN_TRUE},
+  {.token = "false", .kind = TOKEN_FALSE},
+  // multi-charactor operators
+  {.token = "==", .kind = TOKEN_EQ},
+  {.token = "!=", .kind = TOKEN_NEQ},
+  {.token = "...", .kind = TOKEN_DOTS},
+  // ascii
+  {.token = "(", .kind = '('},
+  {.token = ")", .kind = ')'},
+  {.token = ":", .kind = ':'},
+  {.token = "{", .kind = '{'},
+  {.token = "}", .kind = '}'},
+  {.token = ";", .kind = ';'},
+  {.token = ",", .kind = ','},
+  {.token = "=", .kind = '='},
+  {.token = "&", .kind = '&'},
+  {.token = "+", .kind = '+'},
+  {.token = "-", .kind = '-'},
+  {.token = "*", .kind = '*'},
+  {.token = "/", .kind = '/'},
+  {.token = "%", .kind = '%'},
+  // internal types
+  {.token = "bool", .kind = TOKEN_BOOL},
+  {.token = "u8", .kind = TOKEN_U8},
+  {.token = "u16", .kind = TOKEN_U16},
+  {.token = "u32", .kind = TOKEN_U32},
+  {.token = "u64", .kind = TOKEN_U64},
+  {.token = "i8", .kind = TOKEN_I8},
+  {.token = "i16", .kind = TOKEN_I16},
+  {.token = "i32", .kind = TOKEN_I32},
+  {.token = "i64", .kind = TOKEN_I64},
+  {.token = "void", .kind = TOKEN_VOID},
+};
+
 void dump_token_kind(FILE *stream, int kind)
 {
-  static_assert(__token_kind_count == 128 + 24, "introduced more token kind");
+  for (size_t i = 0; i < ARRAY_LEN(simple_tokens); ++i) {
+    if (simple_tokens[i].kind == kind) {
+      fprintf(stream, simple_tokens[i].token);
+      return;
+    }
+  }
+  
+  static_assert(__token_kind_count == 128 + 26, "introduced more token kind");
   switch (kind) {
   case TOKEN_ID:
     fprintf(stream, "id"); break;
@@ -187,51 +243,8 @@ void dump_token_kind(FILE *stream, int kind)
     fprintf(stream, "string literal"); break;
   case TOKEN_INT:
     fprintf(stream, "int literal"); break;
-  case TOKEN_VAR:
-    fprintf(stream, "var"); break;
-  case TOKEN_FN:
-    fprintf(stream, "fn"); break;
-  case TOKEN_RET:
-    fprintf(stream, "return"); break;
-  case TOKEN_EXT:
-    fprintf(stream, "extern"); break;
-  case TOKEN_ERR:
-    fprintf(stream, "err token"); break;
-  case TOKEN_DOTS:
-    fprintf(stream, "..."); break;
-  case TOKEN_IF:
-    fprintf(stream, "if"); break;
-  case TOKEN_ELSE:
-    fprintf(stream, "else"); break;
-  case TOKEN_BOOL:
-    fprintf(stream, "bool"); break;
-  case TOKEN_TRUE:
-    fprintf(stream, "true"); break;
-  case TOKEN_FALSE:
-    fprintf(stream, "false"); break;
-  case TOKEN_EOF:
-    fprintf(stream, "eof"); break;
-  case TOKEN_U8:
-    fprintf(stream, "u8"); break;
-  case TOKEN_U16:
-    fprintf(stream, "u16"); break;
-  case TOKEN_U32:
-    fprintf(stream, "u32"); break;
-  case TOKEN_U64:
-    fprintf(stream, "u64"); break;
-  case TOKEN_I8:
-    fprintf(stream, "i8"); break;
-  case TOKEN_I16:
-    fprintf(stream, "i16"); break;
-  case TOKEN_I32:
-    fprintf(stream, "i32"); break;
-  case TOKEN_I64:
-    fprintf(stream, "i64"); break;
-  case TOKEN_VOID:
-    fprintf(stream, "void"); break;
   default:
-    assert(kind > 0 && kind <= 127 && "only ascii code can be a token");
-    fprintf(stream, "'%c'", kind);
+    UNREACHABLE("");
   }
 }
 
@@ -293,49 +306,6 @@ static bool lexer_number(Lexer *l)
   l->cursor = end;
   return true;
 }
-
-static_assert(__token_kind_count == 128 + 24);
-
-static struct {
-  char *token;
-  int kind;
-} simple_tokens[] = {
-  {.token = "extern", .kind = TOKEN_EXT},
-  {.token = "fn", .kind = TOKEN_FN},
-  {.token = "return", .kind = TOKEN_RET},
-  {.token = "var", .kind = TOKEN_VAR},
-  {.token = "if", .kind = TOKEN_IF},
-  {.token = "else", .kind = TOKEN_ELSE},
-  {.token = "true", .kind = TOKEN_TRUE},
-  {.token = "false", .kind = TOKEN_FALSE},
-  {.token = "...", .kind = TOKEN_DOTS},
-  // ascii
-  {.token = "(", .kind = '('},
-  {.token = ")", .kind = ')'},
-  {.token = ":", .kind = ':'},
-  {.token = "{", .kind = '{'},
-  {.token = "}", .kind = '}'},
-  {.token = ";", .kind = ';'},
-  {.token = ",", .kind = ','},
-  {.token = "=", .kind = '='},
-  {.token = "&", .kind = '&'},
-  {.token = "+", .kind = '+'},
-  {.token = "-", .kind = '-'},
-  {.token = "*", .kind = '*'},
-  {.token = "/", .kind = '/'},
-  {.token = "%", .kind = '%'},
-  // internal types
-  {.token = "bool", .kind = TOKEN_BOOL},
-  {.token = "u8", .kind = TOKEN_U8},
-  {.token = "u16", .kind = TOKEN_U16},
-  {.token = "u32", .kind = TOKEN_U32},
-  {.token = "u64", .kind = TOKEN_U64},
-  {.token = "i8", .kind = TOKEN_I8},
-  {.token = "i16", .kind = TOKEN_I16},
-  {.token = "i32", .kind = TOKEN_I32},
-  {.token = "i64", .kind = TOKEN_I64},
-  {.token = "void", .kind = TOKEN_VOID},
-};
 
 static bool lexer_simple_token(Lexer *l)
 {

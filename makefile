@@ -3,10 +3,10 @@ CFLAGS=-Wall -Wextra -Werror -ggdb -O0
 mcc: nob.o mcc.o parser.o lexer.o utils.o
 	cc -o mcc nob.o mcc.o parser.o lexer.o utils.o $(CFLAGS)
 
-mcc.o: mcc.c parser.h
+mcc.o: mcc.c parser.h lexer.h
 	cc -c mcc.c $(CFLAGS)
 
-parser.o: parser.c parser.h
+parser.o: parser.c parser.h lexer.h
 	cc -c parser.c $(CFLAGS)
 
 lexer.o: lexer.h

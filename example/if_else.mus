@@ -5,7 +5,25 @@ fn main(): i32
     else     printf("on false\n");
     if false printf("skiped\n")
     printf("always\n")
+
+    var n = 5;
+    printf("%d! = %d\n", n, fact(n));
+
+    loop(0, n);
+
     return 0
+}
+
+fn fact(n: i32): i32
+{
+    if n == 0 return 1;
+    else      return n * fact(n - 1);
+}
+
+fn loop(i: i32, n: i32): void
+{
+    if i != n loop(i + 1, n);
+    printf("i = %d\n", i);
 }
 
 extern printf: fn(&i8, ...):i32

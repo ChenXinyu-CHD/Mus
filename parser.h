@@ -41,6 +41,7 @@ struct TypeExpr {
   };
 };
 
+TypeExpr type_bool();
 void dump_type_expr(TypeExpr *type, FILE *stream);
 // return true if lhs is exactly equals to rhs.
 bool type_eq(const TypeExpr *lhs, TypeExpr *rhs);
@@ -107,6 +108,8 @@ typedef enum {
   BINOP_MUL,
   BINOP_DIV,
   BINOP_MOD,
+  BINOP_EQ,
+  BINOP_NEQ,
   __binop_kind_count,
 } BinopKind;
 

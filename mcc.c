@@ -196,10 +196,12 @@ static void arg2rax(String_Builder *sb, Arg *arg, const Program *prog, const Fn 
     rbp_offset2rax(sb, var->type.size, var->offset);
   } break;
   case ARG_FN:
-    sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %%rax\n", SV_Arg(label_item(&prog->fn_list, arg->label).name));
+    sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %%rax\n",
+               SV_Arg(label_item(&prog->fn_list, arg->label).name));
     break;
   case ARG_EXTERN:
-    sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %%rax\n", SV_Arg(label_item(&prog->externs, arg->label).name));
+    sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %%rax\n",
+               SV_Arg(label_item(&prog->externs, arg->label).name));
     break;
   case ARG_LIT_INT:
     sb_appendf(sb, "    movq $%d, %%rax\n", arg->num_int);
@@ -274,7 +276,7 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         sb_appendf(&sb, "    movq %%rax, %%rbx\n");
         arg2rax(&sb, &op->binop.lhs, prog, fn);
 
-        static_assert(__binop_kind_count == 5);
+        static_assert(__binop_kind_count == 7);
         switch (op->binop.kind) {
         case BINOP_ADD:
           sb_appendf(&sb, "    addq %%rbx, %%rax\n");
@@ -292,6 +294,18 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
           sb_appendf(&sb, "    divq %%rbx\n");
           sb_appendf(&sb, "    movq %%rdx, %%rax\n");
           break;
+        case BINOP_EQ:
+          sb_appendf(&sb, "    cmp %%rax, %%rbx\n");
+          sb_appendf(&sb, "    movq $0, %%rax\n");
+          sb_appendf(&sb, "    movq $1, %%rbx\n");
+          sb_appendf(&sb, "    cmoveq %%rbx, %%rax\n");
+          break;
+        case BINOP_NEQ:
+          sb_appendf(&sb, "    cmp %%rax, %%rbx\n");
+          sb_appendf(&sb, "    movq $1, %%rax\n");
+          sb_appendf(&sb, "    movq $0, %%rbx\n");
+          sb_appendf(&sb, "    cmoveq %%rbx, %%rax\n");
+          break;
         default: UNREACHABLE("");
         }
 
@@ -306,15 +320,15 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         rax2rbp_offset(&sb, var->type.size, var->offset);
       } break;
       case OP_JMP:
-        sb_appendf(&sb, "    jmp .label_%ld\n", op->jmp.label);
+        sb_appendf(&sb, "    jmp ."SV_Fmt".label_%ld\n", SV_Arg(fn->name), op->jmp.label);
         break;
       case OP_JMP_ELSE:
         arg2rax(&sb, &op->jmp.cond, prog, fn);
         sb_appendf(&sb, "    cmp $0, %%rax\n");
-        sb_appendf(&sb, "    je .label_%ld\n", op->jmp.label);
+        sb_appendf(&sb, "    je ."SV_Fmt".label_%ld\n", SV_Arg(fn->name), op->jmp.label);
         break;
       case OP_LABEL:
-        sb_appendf(&sb, ".label_%ld:\n", op_idx);
+        sb_appendf(&sb, "."SV_Fmt".label_%ld:\n", SV_Arg(fn->name), op_idx);
         break;
       default:
         UNREACHABLE("op");

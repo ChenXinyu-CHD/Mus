@@ -107,6 +107,11 @@ static size_t compile_strlit(Program *prog, String_View str)
   return str_count;
 }
 
+TypeExpr type_bool()
+{
+  return (TypeExpr) {.kind = TYPE_BOOL, .size = 1};
+}
+
 static TypeExpr ptr_type(TypeExpr inner)
 {
   TypeExpr type = {
@@ -138,8 +143,10 @@ static TypeExpr fn_type(TypeExpr ret_type, TypeList arg_types, bool va_args)
 static TypeExpr type_clone(TypeExpr t)
 {
   TypeExpr result = {0};
+  static_assert(__type_kind_count == 7);
   switch (t.kind) {
   case TYPE_UNKNOWN:
+  case TYPE_BOOL:
   case TYPE_VOID:
   case TYPE_INT:
   case TYPE_UINT:
@@ -204,13 +211,15 @@ struct AST {
 
 const char *binop_name(BinopKind kind)
 {
-  static_assert(__binop_kind_count == 5);
+  static_assert(__binop_kind_count == 7);
   switch(kind) {
   case BINOP_ADD: return "+";
   case BINOP_SUB: return "-";
   case BINOP_MUL: return "*";
   case BINOP_DIV: return "/";
   case BINOP_MOD: return "%";
+  case BINOP_EQ:  return "==";
+  case BINOP_NEQ: return "!=";
   default: UNREACHABLE("");
   }
 }
@@ -228,7 +237,7 @@ static AST ast_invoke(AST *fn, AST_List args)
 }
 static AST ast_binop(Token op, AST *lhs, AST *rhs)
 {
-  static_assert(__binop_kind_count == 5);
+  static_assert(__binop_kind_count == 7);
   BinopKind kind;
   switch (op.kind) {
   case '+': kind = BINOP_ADD; break;
@@ -236,6 +245,8 @@ static AST ast_binop(Token op, AST *lhs, AST *rhs)
   case '*': kind = BINOP_MUL; break;
   case '/': kind = BINOP_DIV; break;
   case '%': kind = BINOP_MOD; break;
+  case TOKEN_EQ: kind = BINOP_EQ; break;
+  case TOKEN_NEQ: kind = BINOP_NEQ; break;
   default: UNREACHABLE("");
   };
   return (AST) {
@@ -391,16 +402,43 @@ static bool compile_add(Lexer *l, AST *expr)
   return result;
 }
 
+static bool compile_cmp(Lexer *l, AST *expr)
+{
+  if (!compile_add(l, expr)) return false;
+
+  bool result;
+  while (l->current.kind == TOKEN_EQ || l->current.kind == TOKEN_NEQ) {
+    Token op = l->current;
+    if (!prefetch_not_none(l)) return_defer(false);
+
+    AST rhs_ast = {0};
+    if (!compile_add(l, &rhs_ast)) return_defer(false);
+
+    AST *lhs = malloc(sizeof(AST));
+    *lhs = *expr;
+    AST *rhs = malloc(sizeof(AST));
+    *rhs = rhs_ast;
+
+    *expr = ast_binop(op, lhs, rhs);
+  }
+
+  return true;
+ defer:
+  ast_del(expr);
+  return result;
+}
+
 static bool compile_expr(Lexer *l, AST *expr)
 {
-  // EXPR   :: ADD
-  // ADD    :: MUL | MUL + ADD
-  // MUL    :: SIMPLE | SIMPLE + ADD
+  // EXPR   :: CMP
+  // CMP    :: ADD | ADD == CMP | ADD != CMP
+  // ADD    :: MUL | MUL + ADD | MUL - ADD
+  // MUL    :: SIMPLE | SIMPLE * MUL | SIMPLE / MUL | SIMPLE % MUL
   // SIMPLE :: ATOM | INVOKE | ( EXPR )
   // ATOM   :: STR | INT | ID
   // INVOKE :: EXPR ( ARGS )
   // ARGS   :: EXPR | EXPR , ARGS
-  return compile_add(l, expr);
+  return compile_cmp(l, expr);
 }
 
 static void ast_to_ir(AST *ast, Program *prog, Fn *fn);
@@ -439,18 +477,12 @@ static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Arg *exp_result)
     case TOKEN_TRUE:
       exp_result->kind = ARG_LIT_INT;
       exp_result->num_int = 1;
-      exp_result->type = (TypeExpr) {
-        .kind = TYPE_BOOL,
-        .size = 1,
-      };
+      exp_result->type = type_bool();
       break;
     case TOKEN_FALSE:
       exp_result->kind = ARG_LIT_INT;
       exp_result->num_int = 0;
-      exp_result->type = (TypeExpr) {
-        .kind = TYPE_BOOL,
-        .size = 1,
-      };
+      exp_result->type = type_bool();
       break;
     default: UNREACHABLE("");
     }
@@ -1062,8 +1094,28 @@ static bool detect_binop_dst_type(VarList *vars, OpBinop *binop)
   assert(rhs->type.kind != TYPE_UNKNOWN);
   assert(dst->kind == ARG_VAR_LOC);
 
-  static_assert(__binop_kind_count == 5);
+  static_assert(__binop_kind_count == 7);
   switch (binop->kind) {
+  case BINOP_EQ:
+  case BINOP_NEQ:
+    if (!type_eq(&lhs->type, &rhs->type)) {
+      pcompile_info(lhs->loc,
+                    "error: lhs and rhs of operator `%s` "
+                    "is not same.\n",
+                    binop_name(binop->kind));
+      pcompile_info(lhs->loc, "info: lhs is in type ");
+      dump_type_expr(&lhs->type, stderr);
+      fprintf(stderr, "\n");
+
+      pcompile_info(lhs->loc, "info: rhs is in type ");
+      dump_type_expr(&lhs->type, stderr);
+      fprintf(stderr, "\n");
+      return false;
+    }
+
+    label_item(vars, dst->label).type = type_bool();
+    
+    break;
   case BINOP_SUB:
   case BINOP_ADD:
   case BINOP_MUL:
@@ -1094,11 +1146,11 @@ static bool detect_binop_dst_type(VarList *vars, OpBinop *binop)
                     "error: lhs and rhs of operator `%s` "
                     "is not same.\n",
                     binop_name(binop->kind));
-      pcompile_info(lhs->loc, "info: lhs is in type");
+      pcompile_info(lhs->loc, "info: lhs is in type ");
       dump_type_expr(&lhs->type, stderr);
       fprintf(stderr, "\n");
 
-      pcompile_info(lhs->loc, "info: rhs is in type");
+      pcompile_info(lhs->loc, "info: rhs is in type ");
       dump_type_expr(&lhs->type, stderr);
       fprintf(stderr, "\n");
       return false;
