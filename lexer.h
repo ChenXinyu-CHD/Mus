@@ -46,6 +46,8 @@ typedef enum {
   // operators
   TOKEN_EQ,
   TOKEN_NEQ,
+  TOKEN_LE,
+  TOKEN_GE,
 
   // internal types
   TOKEN_U8,
@@ -181,7 +183,7 @@ String_View sv_between_cs(String_Builder sb, Cursor begin, Cursor end)
   };
 }
 
-static_assert(__token_kind_count == 128 + 26);
+static_assert(__token_kind_count == 128 + 28);
 static struct {
   char *token;
   int kind;
@@ -197,6 +199,8 @@ static struct {
   // multi-charactor operators
   {.token = "==", .kind = TOKEN_EQ},
   {.token = "!=", .kind = TOKEN_NEQ},
+  {.token = "<=", .kind = TOKEN_LE},
+  {.token = ">=", .kind = TOKEN_GE},
   {.token = "...", .kind = TOKEN_DOTS},
   // ascii
   {.token = "(", .kind = '('},
@@ -213,6 +217,8 @@ static struct {
   {.token = "*", .kind = '*'},
   {.token = "/", .kind = '/'},
   {.token = "%", .kind = '%'},
+  {.token = "<", .kind = '<'},
+  {.token = ">", .kind = '>'},
   // internal types
   {.token = "bool", .kind = TOKEN_BOOL},
   {.token = "u8", .kind = TOKEN_U8},
@@ -235,7 +241,7 @@ void dump_token_kind(FILE *stream, int kind)
     }
   }
   
-  static_assert(__token_kind_count == 128 + 26, "introduced more token kind");
+  static_assert(__token_kind_count == 128 + 28, "introduced more token kind");
   switch (kind) {
   case TOKEN_ID:
     fprintf(stream, "id"); break;

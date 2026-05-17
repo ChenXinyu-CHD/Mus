@@ -276,7 +276,7 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         sb_appendf(&sb, "    movq %%rax, %%rbx\n");
         arg2rax(&sb, &op->binop.lhs, prog, fn);
 
-        static_assert(__binop_kind_count == 7);
+        static_assert(__binop_kind_count == 11);
         switch (op->binop.kind) {
         case BINOP_ADD:
           sb_appendf(&sb, "    addq %%rbx, %%rax\n");
@@ -295,16 +295,40 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
           sb_appendf(&sb, "    movq %%rdx, %%rax\n");
           break;
         case BINOP_EQ:
-          sb_appendf(&sb, "    cmp %%rax, %%rbx\n");
+          sb_appendf(&sb, "    cmp %%rbx, %%rax\n");
           sb_appendf(&sb, "    movq $0, %%rax\n");
           sb_appendf(&sb, "    movq $1, %%rbx\n");
           sb_appendf(&sb, "    cmoveq %%rbx, %%rax\n");
           break;
         case BINOP_NEQ:
-          sb_appendf(&sb, "    cmp %%rax, %%rbx\n");
-          sb_appendf(&sb, "    movq $1, %%rax\n");
-          sb_appendf(&sb, "    movq $0, %%rbx\n");
-          sb_appendf(&sb, "    cmoveq %%rbx, %%rax\n");
+          sb_appendf(&sb, "    cmp %%rbx, %%rax\n");
+          sb_appendf(&sb, "    movq $0, %%rax\n");
+          sb_appendf(&sb, "    movq $1, %%rbx\n");
+          sb_appendf(&sb, "    cmovneq %%rbx, %%rax\n");
+          break;
+        case BINOP_LS:
+          sb_appendf(&sb, "    cmp %%rbx, %%rax\n");
+          sb_appendf(&sb, "    movq $0, %%rax\n");
+          sb_appendf(&sb, "    movq $1, %%rbx\n");
+          sb_appendf(&sb, "    cmovlq %%rbx, %%rax\n");
+          break;
+        case BINOP_GT:
+          sb_appendf(&sb, "    cmp %%rbx, %%rax\n");
+          sb_appendf(&sb, "    movq $0, %%rax\n");
+          sb_appendf(&sb, "    movq $1, %%rbx\n");
+          sb_appendf(&sb, "    cmovgq %%rbx, %%rax\n");
+          break;
+        case BINOP_LE:
+          sb_appendf(&sb, "    cmp %%rbx, %%rax\n");
+          sb_appendf(&sb, "    movq $0, %%rax\n");
+          sb_appendf(&sb, "    movq $1, %%rbx\n");
+          sb_appendf(&sb, "    cmovleq %%rbx, %%rax\n");
+          break;
+        case BINOP_GE:
+          sb_appendf(&sb, "    cmp %%rbx, %%rax\n");
+          sb_appendf(&sb, "    movq $0, %%rax\n");
+          sb_appendf(&sb, "    movq $1, %%rbx\n");
+          sb_appendf(&sb, "    cmovgeq %%rbx, %%rax\n");
           break;
         default: UNREACHABLE("");
         }

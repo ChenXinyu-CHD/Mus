@@ -211,7 +211,7 @@ struct AST {
 
 const char *binop_name(BinopKind kind)
 {
-  static_assert(__binop_kind_count == 7);
+  static_assert(__binop_kind_count == 11);
   switch(kind) {
   case BINOP_ADD: return "+";
   case BINOP_SUB: return "-";
@@ -220,6 +220,10 @@ const char *binop_name(BinopKind kind)
   case BINOP_MOD: return "%";
   case BINOP_EQ:  return "==";
   case BINOP_NEQ: return "!=";
+  case BINOP_GT:  return ">";
+  case BINOP_LS:  return "<";
+  case BINOP_GE:  return ">=";
+  case BINOP_LE:  return "<=";
   default: UNREACHABLE("");
   }
 }
@@ -237,7 +241,7 @@ static AST ast_invoke(AST *fn, AST_List args)
 }
 static AST ast_binop(Token op, AST *lhs, AST *rhs)
 {
-  static_assert(__binop_kind_count == 7);
+  static_assert(__binop_kind_count == 11);
   BinopKind kind;
   switch (op.kind) {
   case '+': kind = BINOP_ADD; break;
@@ -245,8 +249,12 @@ static AST ast_binop(Token op, AST *lhs, AST *rhs)
   case '*': kind = BINOP_MUL; break;
   case '/': kind = BINOP_DIV; break;
   case '%': kind = BINOP_MOD; break;
+  case '<': kind = BINOP_LS; break;
+  case '>': kind = BINOP_GT; break;
   case TOKEN_EQ: kind = BINOP_EQ; break;
   case TOKEN_NEQ: kind = BINOP_NEQ; break;
+  case TOKEN_LE: kind = BINOP_LE; break;
+  case TOKEN_GE: kind = BINOP_GE; break;
   default: UNREACHABLE("");
   };
   return (AST) {
@@ -407,7 +415,12 @@ static bool compile_cmp(Lexer *l, AST *expr)
   if (!compile_add(l, expr)) return false;
 
   bool result;
-  while (l->current.kind == TOKEN_EQ || l->current.kind == TOKEN_NEQ) {
+  while (l->current.kind == TOKEN_EQ ||
+         l->current.kind == TOKEN_LE ||
+         l->current.kind == TOKEN_GE ||
+         l->current.kind == '<' ||
+         l->current.kind == '>' ||
+         l->current.kind == TOKEN_NEQ) {
     Token op = l->current;
     if (!prefetch_not_none(l)) return_defer(false);
 
@@ -431,7 +444,7 @@ static bool compile_cmp(Lexer *l, AST *expr)
 static bool compile_expr(Lexer *l, AST *expr)
 {
   // EXPR   :: CMP
-  // CMP    :: ADD | ADD == CMP | ADD != CMP
+  // CMP    :: ADD | ADD == CMP | ADD != CMP | ADD < CMP | ADD > CMP | ADD <= CMP | ADD >= CMP
   // ADD    :: MUL | MUL + ADD | MUL - ADD
   // MUL    :: SIMPLE | SIMPLE * MUL | SIMPLE / MUL | SIMPLE % MUL
   // SIMPLE :: ATOM | INVOKE | ( EXPR )
@@ -1094,10 +1107,14 @@ static bool detect_binop_dst_type(VarList *vars, OpBinop *binop)
   assert(rhs->type.kind != TYPE_UNKNOWN);
   assert(dst->kind == ARG_VAR_LOC);
 
-  static_assert(__binop_kind_count == 7);
+  static_assert(__binop_kind_count == 11);
   switch (binop->kind) {
   case BINOP_EQ:
   case BINOP_NEQ:
+  case BINOP_LS:
+  case BINOP_GT:
+  case BINOP_LE:
+  case BINOP_GE:
     if (!type_eq(&lhs->type, &rhs->type)) {
       pcompile_info(lhs->loc,
                     "error: lhs and rhs of operator `%s` "

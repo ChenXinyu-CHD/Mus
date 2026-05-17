@@ -1,10 +1,31 @@
 fn main(): i32
 {
-    if true  printf("on true\n");
-    if false printf("skiped\n");
-    else     printf("on false\n");
-    if false printf("skiped\n")
-    printf("always\n")
+    printf("on true, without else: ");
+    if true  printf("ok\n");
+    
+    printf("on false, with else: ");
+    if false printf("error\n");
+    else     printf("ok\n");
+
+    printf("on false, without else: ");
+    if false printf("error\n")
+    printf("ok\n")
+
+    printf("> : ");
+    if 1 > 2 printf("error\n")
+    else     printf("ok\n")
+
+    printf(">= : ");
+    if 1 >= 2 printf("error\n")
+    else      printf("ok\n")
+
+    printf("<= : ");
+    if 1 <= 2 printf("ok\n")
+    else      printf("error\n")
+
+    printf("< : ");
+    if 1 < 2 printf("ok\n")
+    else     printf("error\n")
 
     var n = 5;
     printf("%d! = %d\n", n, fact(n));

@@ -110,6 +110,10 @@ typedef enum {
   BINOP_MOD,
   BINOP_EQ,
   BINOP_NEQ,
+  BINOP_LS,
+  BINOP_GT,
+  BINOP_LE,
+  BINOP_GE,
   __binop_kind_count,
 } BinopKind;
 
