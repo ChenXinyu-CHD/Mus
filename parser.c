@@ -786,6 +786,24 @@ static bool compile_local_var(Lexer *l, Program *prog, Fn *fn)
 
 static bool compile_stat(Lexer *l, Program *prog, Fn *fn)
 {
+  // block
+  if (l->current.kind == '{') {
+    if (!prefetch_not_none(l)) return false;
+    while (l->current.kind != '}') {
+      if (!compile_stat(l, prog, fn)) return false;
+    }
+    if (!prefetch_not_none(l)) return false;
+    
+    return true;
+  }
+
+  // empty statement;
+  if (l->current.kind == ';') {
+    if (!prefetch_not_none(l)) return false;
+    return true;
+  }
+
+  // simple statement
   if (l->current.kind == TOKEN_RET) {
     Op ret = {
       .kind = OP_RETURN,
@@ -842,6 +860,13 @@ static bool compile_stat(Lexer *l, Program *prog, Fn *fn)
     if (!compile_stat_simple(l, prog, fn)) return false;
   }
 
+  // a simple statment can be followed with an optional ';'
+  // This makes "if true foo(); else bar();" acceptable
+  // because 'foo();' is a single statement
+  // insteed of a function call followed by a empty statement.
+  // "if true ;; else foo()" is not acceptable
+  // because both ';' are two empty statement
+  // because they are not followed by a simple statement
   if (l->current.kind == ';') {
     if (!prefetch_not_none(l)) return false;
   }

@@ -27,6 +27,33 @@ fn main(): i32
     if 1 < 2 printf("ok\n")
     else     printf("error\n")
 
+    printf("block on true, without else:");
+    if true {
+       printf("o");
+       printf("k");
+       printf("\n");
+    }
+    
+    printf("block on true, with else:");
+    if true {
+       printf("o");
+       printf("k");
+       printf("\n");
+    } else {
+       printf("e");
+       printf("rr");
+       printf("\n");
+    }
+    
+    printf("block on false, with else:");
+    if false
+       printf("error");
+    else {
+       printf("o");
+       printf("k");
+       printf("\n");
+    }
+    
     var n = 5;
     printf("%d! = %d\n", n, fact(n));
 

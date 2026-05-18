@@ -306,6 +306,7 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
           sb_appendf(&sb, "    movq $1, %%rbx\n");
           sb_appendf(&sb, "    cmovneq %%rbx, %%rax\n");
           break;
+          // TODO: add support for unsigned integers
         case BINOP_LS:
           sb_appendf(&sb, "    cmp %%rbx, %%rax\n");
           sb_appendf(&sb, "    movq $0, %%rax\n");
