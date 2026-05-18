@@ -480,15 +480,11 @@ bool dump_all_tokens(Lexer *l)
 {
   while (lexer_next(l)) {
     Token t = l->current;
-    printf(CS_Fmt, CS_Arg(t.start));
-    dump_token_kind(stdout, t.kind);
-    printf(": "SV_Fmt"\n", SV_Arg(t.token));
+    printf(CS_Fmt "%s: "SV_Fmt"\n", CS_Arg(t.start), token_name(t.kind), SV_Arg(t.str));
   }
 
   Token t = l->current;
-  printf(CS_Fmt, CS_Arg(t.start));
-  dump_token_kind(stdout, t.kind);
-  printf(": "SV_Fmt"\n", SV_Arg(t.token));
+  printf(CS_Fmt "%s: "SV_Fmt"\n", CS_Arg(t.start), token_name(t.kind), SV_Arg(t.str));
   if (t.kind == TOKEN_ERR) return false;
 
   return true;

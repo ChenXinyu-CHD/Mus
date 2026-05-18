@@ -466,14 +466,14 @@ static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Arg *exp_result)
     switch (token.kind) {
     case TOKEN_ID:
       exp_result->kind = ARG_NAME;
-      exp_result->name = token.token;
+      exp_result->name = token.str;
       exp_result->loc = token.start;
       exp_result->type = (TypeExpr) {.kind = TYPE_UNKNOWN};
 
       break;
     case TOKEN_STR:
       exp_result->kind = ARG_LIT_STR;
-      exp_result->label = compile_strlit(prog, token.token);
+      exp_result->label = compile_strlit(prog, token.str);
       exp_result->type = ptr_type((TypeExpr) {
           .kind = TYPE_INT,
           .size = 1,
@@ -481,7 +481,7 @@ static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Arg *exp_result)
       break;
     case TOKEN_INT:
       exp_result->kind = ARG_LIT_INT;
-      exp_result->num_int = sv_to_int(token.token);
+      exp_result->num_int = sv_to_int(token.str);
       exp_result->type = (TypeExpr) {
         .kind = TYPE_INT,
         .size = 4,
@@ -679,9 +679,9 @@ static bool compile_type_expr(Lexer *l, TypeExpr *type)
     return true;
   }
   default:
-    pcompile_info(l->current.start, "error: expected a type but got ");
-    dump_token_kind(stderr, l->current.kind);
-    fprintf(stderr, "\n");
+    pcompile_info(l->current.start,
+                  "error: expected a type but got %s\n",
+                  token_name(l->current.kind));
     return false;
   }
 }
@@ -735,7 +735,7 @@ static bool compile_local_var_singn(Lexer *l, Fn *fn)
 
   Var var = {0};
   if (!prefetch_expect_token(l, TOKEN_ID)) return_defer(false);
-  var.name = l->current.token;
+  var.name = l->current.str;
   var.loc = l->current.start;
   if (!prefetch_not_none(l)) return_defer(false);
 
@@ -892,7 +892,7 @@ static bool compile_fn_sign(Lexer *l, Fn *fn)
   if (!prefetch_expect_token(l, TOKEN_ID)) return false;
 
   *fn = (Fn) {
-    .name = l->current.token,
+    .name = l->current.str,
     .loc = l->current.start,
     .type = {.kind = TYPE_FN},
   };
@@ -904,7 +904,7 @@ static bool compile_fn_sign(Lexer *l, Fn *fn)
   while (l->current.kind != ')') {
     Var var = {0};
     assert(l->current.kind == TOKEN_ID);
-    var.name = l->current.token;
+    var.name = l->current.str;
     var.loc = l->current.start;
 
     if (!prefetch_expect_token(l, ':')) return_defer(false);
@@ -1269,7 +1269,7 @@ static bool compile_file(Lexer *l, Program *prog)
       if (!prefetch_expect_token(l, TOKEN_ID)) return false;
 
       Extern ext = {
-        .name = l->current.token,
+        .name = l->current.str,
         .loc = l->current.start,
       };
 

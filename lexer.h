@@ -62,13 +62,13 @@ typedef enum {
   __token_kind_count,
 } TokenKind;
 
-void dump_token_kind(FILE *stream, int kind);
-
 typedef struct {
   int kind;
-  String_View token;
+  String_View str;
   Cursor start;
 } Token;
+
+const char *token_name(int kind);
 
 typedef struct {
   String_Builder src;
@@ -185,73 +185,69 @@ String_View sv_between_cs(String_Builder sb, Cursor begin, Cursor end)
 
 static_assert(__token_kind_count == 128 + 28);
 static struct {
-  char *token;
   int kind;
-} simple_tokens[] = {
-  {.token = "extern", .kind = TOKEN_EXT},
-  {.token = "fn", .kind = TOKEN_FN},
-  {.token = "return", .kind = TOKEN_RET},
-  {.token = "var", .kind = TOKEN_VAR},
-  {.token = "if", .kind = TOKEN_IF},
-  {.token = "else", .kind = TOKEN_ELSE},
-  {.token = "true", .kind = TOKEN_TRUE},
-  {.token = "false", .kind = TOKEN_FALSE},
+  char *str;
+  char *print_name;
+} token_list[] = {
+  {.str = "extern", .print_name = "extern", .kind = TOKEN_EXT},
+  {.str = "fn",     .print_name = "fn",     .kind = TOKEN_FN},
+  {.str = "return", .print_name = "return", .kind = TOKEN_RET},
+  {.str = "var",    .print_name = "var",    .kind = TOKEN_VAR},
+  {.str = "if",     .print_name = "if",     .kind = TOKEN_IF},
+  {.str = "else",   .print_name = "else",   .kind = TOKEN_ELSE},
+  {.str = "true",   .print_name = "true",   .kind = TOKEN_TRUE},
+  {.str = "false",  .print_name = "false",  .kind = TOKEN_FALSE},
   // multi-charactor operators
-  {.token = "==", .kind = TOKEN_EQ},
-  {.token = "!=", .kind = TOKEN_NEQ},
-  {.token = "<=", .kind = TOKEN_LE},
-  {.token = ">=", .kind = TOKEN_GE},
-  {.token = "...", .kind = TOKEN_DOTS},
+  {.str = "==",  .print_name = "==",  .kind = TOKEN_EQ},
+  {.str = "!=",  .print_name = "!=",  .kind = TOKEN_NEQ},
+  {.str = "<=",  .print_name = "<=",  .kind = TOKEN_LE},
+  {.str = ">=",  .print_name = ">=",  .kind = TOKEN_GE},
+  {.str = "...", .print_name = "...", .kind = TOKEN_DOTS},
   // ascii
-  {.token = "(", .kind = '('},
-  {.token = ")", .kind = ')'},
-  {.token = ":", .kind = ':'},
-  {.token = "{", .kind = '{'},
-  {.token = "}", .kind = '}'},
-  {.token = ";", .kind = ';'},
-  {.token = ",", .kind = ','},
-  {.token = "=", .kind = '='},
-  {.token = "&", .kind = '&'},
-  {.token = "+", .kind = '+'},
-  {.token = "-", .kind = '-'},
-  {.token = "*", .kind = '*'},
-  {.token = "/", .kind = '/'},
-  {.token = "%", .kind = '%'},
-  {.token = "<", .kind = '<'},
-  {.token = ">", .kind = '>'},
+  {.str = "(", .print_name = "(", .kind = '('},
+  {.str = ")", .print_name = ")", .kind = ')'},
+  {.str = ":", .print_name = ":", .kind = ':'},
+  {.str = "{", .print_name = "{", .kind = '{'},
+  {.str = "}", .print_name = "}", .kind = '}'},
+  {.str = ";", .print_name = ";", .kind = ';'},
+  {.str = ",", .print_name = ",", .kind = ','},
+  {.str = "=", .print_name = "=", .kind = '='},
+  {.str = "&", .print_name = "&", .kind = '&'},
+  {.str = "+", .print_name = "+", .kind = '+'},
+  {.str = "-", .print_name = "-", .kind = '-'},
+  {.str = "*", .print_name = "*", .kind = '*'},
+  {.str = "/", .print_name = "/", .kind = '/'},
+  {.str = "%", .print_name = "%", .kind = '%'},
+  {.str = "<", .print_name = "<", .kind = '<'},
+  {.str = ">", .print_name = ">", .kind = '>'},
   // internal types
-  {.token = "bool", .kind = TOKEN_BOOL},
-  {.token = "u8", .kind = TOKEN_U8},
-  {.token = "u16", .kind = TOKEN_U16},
-  {.token = "u32", .kind = TOKEN_U32},
-  {.token = "u64", .kind = TOKEN_U64},
-  {.token = "i8", .kind = TOKEN_I8},
-  {.token = "i16", .kind = TOKEN_I16},
-  {.token = "i32", .kind = TOKEN_I32},
-  {.token = "i64", .kind = TOKEN_I64},
-  {.token = "void", .kind = TOKEN_VOID},
+  {.str = "bool", .print_name = "bool", .kind = TOKEN_BOOL},
+  {.str = "u8",   .print_name = "u8",   .kind = TOKEN_U8},
+  {.str = "u16",  .print_name = "u16",  .kind = TOKEN_U16},
+  {.str = "u32",  .print_name = "u32",  .kind = TOKEN_U32},
+  {.str = "u64",  .print_name = "u64",  .kind = TOKEN_U64},
+  {.str = "i8",   .print_name = "i8",   .kind = TOKEN_I8},
+  {.str = "i16",  .print_name = "i16",  .kind = TOKEN_I16},
+  {.str = "i32",  .print_name = "i32",  .kind = TOKEN_I32},
+  {.str = "i64",  .print_name = "i64",  .kind = TOKEN_I64},
+  {.str = "void", .print_name = "void", .kind = TOKEN_VOID},
+  // complex tokens, their str is uncertain
+  {.print_name = "string literal", .kind = TOKEN_STR},
+  {.print_name = "integer literal", .kind = TOKEN_INT},
+  // special token, they have no str part
+  {.print_name = "EOF", .kind = TOKEN_EOF},
+  {.print_name = "Err token", .kind = TOKEN_ERR},
 };
 
-void dump_token_kind(FILE *stream, int kind)
+const char *token_name(int kind)
 {
-  for (size_t i = 0; i < ARRAY_LEN(simple_tokens); ++i) {
-    if (simple_tokens[i].kind == kind) {
-      fprintf(stream, simple_tokens[i].token);
-      return;
+  for (size_t i = 0; i < ARRAY_LEN(token_list); ++i) {
+    if (token_list[i].kind == kind) {
+      return token_list[i].print_name;
     }
   }
   
-  static_assert(__token_kind_count == 128 + 28, "introduced more token kind");
-  switch (kind) {
-  case TOKEN_ID:
-    fprintf(stream, "id"); break;
-  case TOKEN_STR:
-    fprintf(stream, "string literal"); break;
-  case TOKEN_INT:
-    fprintf(stream, "int literal"); break;
-  default:
-    UNREACHABLE("");
-  }
+  UNREACHABLE("");
 }
 
 bool lexer_init(Lexer *lexer, String_View filename)
@@ -303,10 +299,10 @@ static bool lexer_number(Lexer *l)
     cs_nextc(sb, &end);
   }
 
-  String_View token = sv_between_cs(sb, start, end);
+  String_View str = sv_between_cs(sb, start, end);
   l->current = (Token) {
     .kind = TOKEN_INT,
-    .token = token,
+    .str = str,
     .start = start,
   };
   l->cursor = end;
@@ -318,12 +314,14 @@ static bool lexer_simple_token(Lexer *l)
   String_Builder sb = l->src;
   Cursor start = l->cursor;
 
-  for (size_t i = 0; i < ARRAY_LEN(simple_tokens); ++i) {
-    String_View token = sv_from_cstr(simple_tokens[i].token);
-    if (cs_move_after_prefix(sb, &l->cursor, token)) {
+  for (size_t i = 0; i < ARRAY_LEN(token_list); ++i) {
+    if (token_list[i].str == NULL) continue;
+    
+    String_View str = sv_from_cstr(token_list[i].str);
+    if (cs_move_after_prefix(sb, &l->cursor, str)) {
       l->current = (Token) {
-        .kind = simple_tokens[i].kind,
-        .token = token,
+        .kind = token_list[i].kind,
+        .str = str,
         .start = start,
       };
       return true;
@@ -342,10 +340,10 @@ static bool lexer_id_keyword(Lexer *l)
   while (isalnum(cs_getc(sb, end)) || cs_getc(sb, end) == '_') {
     cs_nextc(sb, &end);
   }
-  String_View token = sv_between_cs(sb, start, end);
+  String_View str = sv_between_cs(sb, start, end);
   l->current = (Token) {
     .kind = TOKEN_ID,
-    .token = token,
+    .str = str,
     .start = start,
   };
   l->cursor = end;
@@ -369,16 +367,16 @@ static bool lexer_str_literal(Lexer *l)
     cs_nextc(sb, &end);
   }
 
-  String_View token = sv_between_cs(sb, start, end);
+  String_View str = sv_between_cs(sb, start, end);
   if (cs_getc(sb, end) != '"') {
     l->current.kind = TOKEN_ERR;
-    l->current.token = token;
+    l->current.str = str;
   } else {
     cs_nextc(sb, &end);
-    sv_chop_prefix(&token, sv_from_cstr("\""));
+    sv_chop_prefix(&str, sv_from_cstr("\""));
 
     l->current.kind = TOKEN_STR;
-    l->current.token = token;
+    l->current.str = str;
   }
   l->cursor = end;
 
@@ -428,12 +426,10 @@ bool expect_token(Lexer *l, int token)
 {
   if (l->current.kind == token) return true;
   
-  pcompile_info(l->current.start, "error: expect token ");
-  dump_token_kind(stderr, token);
-  fprintf(stderr, ", but got ");
-  dump_token_kind(stderr, l->current.kind);
-  fprintf(stderr, "\n");
-  
+  pcompile_info(l->current.start,
+                "error: expect token %s, but got %s\n",
+                token_name(token),
+                token_name(l->current.kind));
   return false;
 }
 
@@ -466,13 +462,10 @@ bool vexpect_tokens_impl(Lexer *l, va_list expecteds)
     
     int arg = va_arg(ap, int);
     while (arg != TOKEN_ERR) {
-      dump_token_kind(stderr, arg);
-      fprintf(stderr, ", ");
+      fprintf(stderr, "%s, ", token_name(arg));
       arg = va_arg(ap, int);
     }
-    fprintf(stderr, "but got ");
-    dump_token_kind(stderr, l->current.kind);
-    fprintf(stderr, "\n");
+    fprintf(stderr, "but got %s\n", token_name(l->current.kind));
   } va_end(ap);
   
   return false;
