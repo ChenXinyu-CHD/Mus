@@ -209,23 +209,32 @@ struct AST {
   };
 };
 
+static const struct {
+  int token_kind;
+  BinopKind binop_kind;
+} binop_list[] = {
+  {.token_kind =  '+',       .binop_kind = BINOP_ADD,},
+  {.token_kind =  '-',       .binop_kind = BINOP_SUB,},
+  {.token_kind =  '*',       .binop_kind = BINOP_MUL,},
+  {.token_kind =  '/',       .binop_kind = BINOP_DIV,},
+  {.token_kind =  '%',       .binop_kind = BINOP_MOD,},
+  {.token_kind =  '<',       .binop_kind = BINOP_LS,},
+  {.token_kind =  '>',       .binop_kind = BINOP_GT,},
+  {.token_kind =  TOKEN_EQ,  .binop_kind = BINOP_EQ,},
+  {.token_kind =  TOKEN_NEQ, .binop_kind = BINOP_NEQ,},
+  {.token_kind =  TOKEN_LE,  .binop_kind = BINOP_LE,},
+  {.token_kind =  TOKEN_GE,  .binop_kind = BINOP_GE,},
+};
+static_assert(__binop_kind_count == ARRAY_LEN(binop_list));
+
 const char *binop_name(BinopKind kind)
 {
-  static_assert(__binop_kind_count == 11);
-  switch(kind) {
-  case BINOP_ADD: return "+";
-  case BINOP_SUB: return "-";
-  case BINOP_MUL: return "*";
-  case BINOP_DIV: return "/";
-  case BINOP_MOD: return "%";
-  case BINOP_EQ:  return "==";
-  case BINOP_NEQ: return "!=";
-  case BINOP_GT:  return ">";
-  case BINOP_LS:  return "<";
-  case BINOP_GE:  return ">=";
-  case BINOP_LE:  return "<=";
-  default: UNREACHABLE("");
+  for (size_t i = 0; i < ARRAY_LEN(binop_list); ++i) {
+    if (binop_list[i].binop_kind == kind) {
+      return token_name(binop_list[i].token_kind);
+    }
   }
+  UNREACHABLE("");
 }
 
 static AST ast_atom(Token token) { return (AST) {.kind = AST_ATOM, .atom = token}; }
@@ -241,30 +250,19 @@ static AST ast_invoke(AST *fn, AST_List args)
 }
 static AST ast_binop(Token op, AST *lhs, AST *rhs)
 {
-  static_assert(__binop_kind_count == 11);
-  BinopKind kind;
-  switch (op.kind) {
-  case '+': kind = BINOP_ADD; break;
-  case '-': kind = BINOP_SUB; break;
-  case '*': kind = BINOP_MUL; break;
-  case '/': kind = BINOP_DIV; break;
-  case '%': kind = BINOP_MOD; break;
-  case '<': kind = BINOP_LS; break;
-  case '>': kind = BINOP_GT; break;
-  case TOKEN_EQ: kind = BINOP_EQ; break;
-  case TOKEN_NEQ: kind = BINOP_NEQ; break;
-  case TOKEN_LE: kind = BINOP_LE; break;
-  case TOKEN_GE: kind = BINOP_GE; break;
-  default: UNREACHABLE("");
-  };
-  return (AST) {
-    .kind = AST_BINOP,
-    .binop = {
-      .kind = kind,
-      .lhs = lhs,
-      .rhs = rhs,
+  for (size_t i = 0; i < ARRAY_LEN(binop_list); ++i) {
+    if (binop_list[i].token_kind == op.kind) {
+      return (AST) {
+        .kind = AST_BINOP,
+        .binop = {
+          .kind = binop_list[i].binop_kind,
+          .lhs = lhs,
+          .rhs = rhs,
+        }
+      };
     }
-  };
+  }
+  UNREACHABLE("");
 }
 
 static void ast_del(AST *ast);
