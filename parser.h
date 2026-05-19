@@ -5,46 +5,7 @@
 
 #include "nob.h"
 #include "lexer.h"
-
-typedef enum {
-  TYPE_UNKNOWN = 0,
-  TYPE_VOID,
-  TYPE_INT,
-  TYPE_UINT,
-  TYPE_BOOL,
-  TYPE_FN,
-  TYPE_PTR,
-  __type_kind_count,
-} TypeKind;
-
-typedef struct TypeExpr TypeExpr;
-
-typedef struct {
-  TypeExpr *items;
-  size_t count;
-  size_t capacity;
-} TypeList;
-
-typedef struct {
-  TypeExpr *ret_type;
-  TypeList arg_types;
-  bool va_args;
-} FnType;
-
-struct TypeExpr {
-  TypeKind kind;
-  size_t size;
-
-  union {
-    TypeExpr *ref_type;
-    FnType fn_type;
-  };
-};
-
-TypeExpr type_bool();
-void dump_type_expr(TypeExpr *type, FILE *stream);
-// return true if lhs is exactly equals to rhs.
-bool type_eq(const TypeExpr *lhs, TypeExpr *rhs);
+#include "type.h"
 
 typedef enum {
   ARG_NONE = 0,
