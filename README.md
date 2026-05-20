@@ -15,6 +15,7 @@ $ make && ./mcc ./example/hello_world.mus -t x64_linux && ./hello_world
 ## 3rd lib used
 
 - https://github.com/tsoding/nob.h
+- https://github.com/tsoding/ht.h
 
 ### The following is no longer used, thanks for their contributions to the community
 

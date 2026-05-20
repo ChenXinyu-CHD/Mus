@@ -1,15 +1,86 @@
 #include "parser.h"
 #include "lexer.h"
 
-#include "nob.h"
+#include "3rd/nob.h"
 #include "utils.h"
 
 #define MCC_TYPE_IMPLEMENTATION
 #include "type.h"
 
+#define HT_IMPLEMENTATION
+#include "3rd/ht.h"
+
+bool insert_sym(Scoop *sp, Token name, SymbolKind kind, void *ptr)
+{
+  Symbol *sym = ht_find(&sp->symbols, name.str);
+  if (sym != NULL) {
+    pcompile_info(name.start,
+                  "error: symbol "SV_Fmt" redefined in this scoop\n",
+                  SV_Arg(name.str));
+    // TODO: report where the symbol is first defined;
+    return false;
+  } else {
+    *ht_put(&sp->symbols, name.str) = (Symbol) {
+      .kind = kind,
+      .ptr = ptr,
+    };
+    return true;
+  }
+}
+
+String_View sym_name(Scoop* sp, void *sym)
+{
+  ht_foreach(value, &sp->symbols) {
+    if (value->ptr == sym) {
+      return ht_key(&sp->symbols, value);
+    }
+  }
+  return sv_from_cstr("");
+}
+
+SymSearchResult sym_search(Scoop *sp, String_View name)
+{
+  for (Scoop *s = sp; s != NULL; s = s->upper) {
+    Symbol *sym = ht_find(&s->symbols, name);
+    if (sym != NULL) {
+      return (SymSearchResult) {
+        .scoop = s,
+        .sym = sym,
+      };
+    }
+  }
+
+  return (SymSearchResult) {NULL, NULL};
+}
+
+Scoop *alloc_scoop(SymbolTable *st, Scoop *upper)
+{
+  Scoop *result = malloc(sizeof(Scoop));
+  assert(result && "buy more memory");
+
+  *result = (Scoop) {
+    .upper = upper,
+    .symbols = {
+      .hasheq = ht_sv_hasheq,
+    },
+  };
+  da_append(st, result);
+  return result;
+}
+
+void free_all_symbol(SymbolTable *st)
+{
+  da_foreach (Scoop*, sp, st) {
+    ht_free(sp);
+    free(*sp);
+  }
+  da_free(*st);
+}
+
 size_t alloc_var(VarList *vars)
 {
-  Var var = (Var) {
+  Var *var = malloc(sizeof(Var));
+  *var = (Var) {
     .type = {.kind = TYPE_UNKNOWN}
   };
   da_append(vars, var);
@@ -42,16 +113,20 @@ static void destroy_fn(Fn *fn)
     da_free(fn->fn_body);
   }
 
-  if (fn->local.count != 0) {
-    da_foreach (Var, var, &fn->local) {
+  if (fn->vars.count != 0) {
+    for (size_t i = 0; i < fn->vars.count; ++i) {
+      Var *var = fn->vars.items[i];
       destroy_type_expr(&var->type);
+      free(var);
     }
-    da_free(fn->local);
+    da_free(fn->vars);
   }
 
   if (fn->args.count != 0) {
-    da_foreach (Var, var, &fn->args) {
-      destroy_type_expr(&var->type);
+    for (size_t i = 0; i < fn->args.count; ++i) {
+      Var *arg = fn->args.items[i];
+      destroy_type_expr(&arg->type);
+      free(arg);
     }
     da_free(fn->args);
   }
@@ -59,8 +134,10 @@ static void destroy_fn(Fn *fn)
 
 static void destroy_fn_list(FnList *fn_list)
 {
-  da_foreach (Fn, fn, fn_list) {
+  for (size_t i = 0; i < fn_list->count; ++i) {
+    Fn *fn = fn_list->items[i];
     destroy_fn(fn);
+    free(fn);
   }
   da_free(*fn_list);
 }
@@ -80,10 +157,10 @@ static size_t compile_strlit(Program *prog, String_View str)
 
 static Arg arg_local_var(Fn *fn, size_t i)
 {
-  assert(i < fn->local.count);
+  assert(i < fn->vars.count);
   return (Arg) {
     .kind = ARG_VAR_LOC,
-    .type = type_clone(fn->local.items[i].type),
+    .type = type_clone(fn->vars.items[i]->type),
     .label = i,
   };
 }
@@ -362,9 +439,9 @@ static bool compile_expr(Lexer *l, AST *expr)
   return compile_cmp(l, expr);
 }
 
-static void ast_to_ir(AST *ast, Program *prog, Fn *fn);
+static void ast_to_ir(AST *ast, Program *prog, Fn *fn, Scoop *sp);
 
-static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Arg *exp_result)
+static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Scoop *sp, Arg *exp_result)
 {
 
   static_assert(__ast_kind_count == 3);
@@ -375,6 +452,7 @@ static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Arg *exp_result)
     case TOKEN_ID:
       exp_result->kind = ARG_NAME;
       exp_result->name = token.str;
+      exp_result->scoop = sp;
       exp_result->loc = token.start;
       exp_result->type = (TypeExpr) {.kind = TYPE_UNKNOWN};
 
@@ -409,12 +487,12 @@ static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Arg *exp_result)
     }
   } break;
   case AST_INVOKE: {
-    ast_to_ir(ast, prog, fn);
+    ast_to_ir(ast, prog, fn, sp);
 
     Op *op = &fn->fn_body.items[fn->fn_body.count-1];
     assert(op->kind == OP_INVOKE);
 
-    op->invoke.result_label = alloc_var(&fn->local);
+    op->invoke.result_label = alloc_var(&fn->vars);
     op->invoke.ret_ignore = false;
     *exp_result = (Arg) {
       .kind = ARG_VAR_LOC,
@@ -423,7 +501,7 @@ static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Arg *exp_result)
     };
   } break;
   case AST_BINOP: {
-    ast_to_ir(ast, prog, fn);
+    ast_to_ir(ast, prog, fn, sp);
 
     Op *op = &fn->fn_body.items[fn->fn_body.count-1];
     assert(op->kind == OP_BINOP);
@@ -434,17 +512,17 @@ static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Arg *exp_result)
   }
 }
 
-static void ast_to_ir(AST *ast, Program *prog, Fn *fn)
+static void ast_to_ir(AST *ast, Program *prog, Fn *fn, Scoop *sp)
 {
   static_assert(__ast_kind_count == 3);
   switch (ast->kind) {
   case AST_INVOKE: {
     Op op = { .kind = OP_INVOKE };
-    ast_to_arg(ast->invoke.fn, prog, fn, &op.invoke.fn);
+    ast_to_arg(ast->invoke.fn, prog, fn, sp, &op.invoke.fn);
 
     da_foreach(AST, ast_arg, &ast->invoke.args) {
       Arg arg = {0};
-      ast_to_arg(ast_arg, prog, fn, &arg);
+      ast_to_arg(ast_arg, prog, fn, sp, &arg);
       da_append(&op.invoke.args, arg);
     }
 
@@ -459,13 +537,13 @@ static void ast_to_ir(AST *ast, Program *prog, Fn *fn)
       },
     };
 
-    ast_to_arg(ast->binop.lhs, prog, fn, &op.binop.lhs);
-    ast_to_arg(ast->binop.rhs, prog, fn, &op.binop.rhs);
+    ast_to_arg(ast->binop.lhs, prog, fn, sp, &op.binop.lhs);
+    ast_to_arg(ast->binop.rhs, prog, fn, sp, &op.binop.rhs);
 
     op.binop.dst = (Arg) {
       .kind = ARG_VAR_LOC,
       .type = {.kind = TYPE_UNKNOWN},
-      .label =  alloc_var(&fn->local),
+      .label = alloc_var(&fn->vars),
     };
 
     da_append(&fn->fn_body, op);
@@ -475,7 +553,7 @@ static void ast_to_ir(AST *ast, Program *prog, Fn *fn)
   }
 }
 
-static bool compile_stat_simple(Lexer *l, Program *prog, Fn *fn)
+static bool compile_stat_simple(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
 {
   Cursor loc = l->cursor;
   AST expr = {0};
@@ -488,8 +566,8 @@ static bool compile_stat_simple(Lexer *l, Program *prog, Fn *fn)
     if (!compile_expr(l, &val_ast)) return_defer(false);
 
     Arg var, val;
-    ast_to_arg(&expr, prog, fn, &var);
-    ast_to_arg(&val_ast, prog, fn, &val);
+    ast_to_arg(&expr, prog, fn, sp, &var);
+    ast_to_arg(&val_ast, prog, fn, sp, &val);
 
     Op set_var = {
       .kind = OP_SET_VAR,
@@ -503,7 +581,7 @@ static bool compile_stat_simple(Lexer *l, Program *prog, Fn *fn)
 
     ast_del(&val_ast);
   } else {
-    ast_to_ir(&expr, prog, fn);
+    ast_to_ir(&expr, prog, fn, sp);
   }
 
   return_defer(true);
@@ -628,6 +706,7 @@ static bool compile_type_fn(Lexer *l, TypeExpr *type)
   if (!prefetch_not_none(l)) return_defer(false);
 
   type->fn_type.ret_type = calloc(1, sizeof(TypeExpr));
+  assert(type->fn_type.ret_type);
   if (!compile_type_expr(l, type->fn_type.ret_type)) return_defer(false);
 
   return_defer(true);
@@ -637,37 +716,35 @@ static bool compile_type_fn(Lexer *l, TypeExpr *type)
   return result;
 }
 
-static bool compile_local_var_singn(Lexer *l, Fn *fn)
+static bool compile_local_var_singn(Lexer *l, Fn *fn, Scoop *sp)
 {
-  bool result;
+  if (!prefetch_expect_token(l, TOKEN_ID)) return false;
+  
+  Var *var = calloc(1, sizeof(Var));
+  assert(var);
+  var->loc = l->current.start;
+  da_append(&fn->vars, var);
+  if (!insert_sym(sp, l->current, SYMBOL_VAR, var)) return false;
 
-  Var var = {0};
-  if (!prefetch_expect_token(l, TOKEN_ID)) return_defer(false);
-  var.name = l->current.str;
-  var.loc = l->current.start;
-  if (!prefetch_not_none(l)) return_defer(false);
+  if (!prefetch_not_none(l)) return false;
 
   if (l->current.kind == ':') {
-    if (!prefetch_not_none(l)) return_defer(false);
-    if (!compile_type_expr(l, &var.type)) return_defer(false);
-    if (var.type.kind == TYPE_VOID) {
+    if (!prefetch_not_none(l)) return false;
+    if (!compile_type_expr(l, &var->type)) return false;
+    if (var->type.kind == TYPE_VOID) {
       pcompile_info(l->current.start, "error: the type of a local variable cannot be \"void\"");
-      return_defer(false);
+      return false;
     }
-    if (!prefetch_not_none(l)) return_defer(false);
+    if (!prefetch_not_none(l)) return false;
   }
-
-  da_append(&fn->local, var);
-  return_defer(true);
- defer:
-  if (!result) destroy_type_expr(&var.type);
-  return result;
+  
+  return true;
 }
 
-static bool compile_local_var(Lexer *l, Program *prog, Fn *fn)
+static bool compile_local_var(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
 {
-  if (!compile_local_var_singn(l, fn)) return false;
-  size_t pos = fn->local.count - 1;
+  if (!compile_local_var_singn(l, fn, sp)) return false;
+  size_t pos = fn->vars.count - 1;
 
   if (l->current.kind != '=') return true;
 
@@ -676,7 +753,7 @@ static bool compile_local_var(Lexer *l, Program *prog, Fn *fn)
   AST expr = {0};
   if (!compile_expr(l, &expr)) return false;
   Arg val = {0};
-  ast_to_arg(&expr, prog, fn, &val);
+  ast_to_arg(&expr, prog, fn, sp, &val);
   ast_del(&expr);
 
   Op set_var = {
@@ -692,13 +769,14 @@ static bool compile_local_var(Lexer *l, Program *prog, Fn *fn)
   return true;
 }
 
-static bool compile_stat(Lexer *l, Program *prog, Fn *fn)
+static bool compile_stat(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
 {
   // block
   if (l->current.kind == '{') {
+    Scoop *block = alloc_scoop(&prog->symbols, sp);
     if (!prefetch_not_none(l)) return false;
     while (l->current.kind != '}') {
-      if (!compile_stat(l, prog, fn)) return false;
+      if (!compile_stat(l, prog, fn, block)) return false;
     }
     if (!prefetch_not_none(l)) return false;
     
@@ -721,12 +799,12 @@ static bool compile_stat(Lexer *l, Program *prog, Fn *fn)
 
     AST expr = {0};
     if (!compile_expr(l, &expr)) return false;
-    ast_to_arg(&expr, prog, fn, &ret.ret_val);
+    ast_to_arg(&expr, prog, fn, sp, &ret.ret_val);
     ast_del(&expr);
 
     da_append(&fn->fn_body, ret);
   } else if (l->current.kind == TOKEN_VAR) {
-    if (!compile_local_var(l, prog, fn)) return false;
+    if (!compile_local_var(l, prog, fn, sp)) return false;
   } else if (l->current.kind == TOKEN_IF) {
     if (!prefetch_not_none(l)) return false;
 
@@ -736,13 +814,13 @@ static bool compile_stat(Lexer *l, Program *prog, Fn *fn)
       };
       AST cond = {0};
       if (!compile_expr(l, &cond)) return false;
-      ast_to_arg(&cond, prog, fn, &op.jmp.cond);
+      ast_to_arg(&cond, prog, fn, sp, &op.jmp.cond);
       ast_del(&cond);
       da_append(&fn->fn_body, op);
     }
     size_t jmp_else = fn->fn_body.count - 1;
     // if branch
-    if (!compile_stat(l, prog, fn)) return false;
+    if (!compile_stat(l, prog, fn, sp)) return false;
 
     if (l->current.kind == TOKEN_ELSE) {
       da_append(&fn->fn_body, (Op) { .kind = OP_JMP });
@@ -754,7 +832,7 @@ static bool compile_stat(Lexer *l, Program *prog, Fn *fn)
 
       // else branch
       if (!prefetch_not_none(l)) return false;
-      if (!compile_stat(l, prog, fn)) return false;
+      if (!compile_stat(l, prog, fn, sp)) return false;
 
       da_append(&fn->fn_body, (Op) { .kind = OP_LABEL });
       size_t end_label = fn->fn_body.count - 1;
@@ -765,7 +843,7 @@ static bool compile_stat(Lexer *l, Program *prog, Fn *fn)
       fn->fn_body.items[jmp_else].jmp.label = end_label;
     }
   } else {
-    if (!compile_stat_simple(l, prog, fn)) return false;
+    if (!compile_stat_simple(l, prog, fn, sp)) return false;
   }
 
   // a simple statment can be followed with an optional ';'
@@ -787,45 +865,47 @@ static bool compile_fn_body(Lexer *l, Program *prog, Fn *fn) {
 
   if (!prefetch_not_none(l)) return false;
   while (l->current.kind != '}') {
-    if (!compile_stat(l, prog, fn)) return false;
+    if (!compile_stat(l, prog, fn, fn->local)) return false;
   }
 
   return true;
 }
 
-static bool compile_fn_sign(Lexer *l, Fn *fn)
+static bool compile_fn_sign(Lexer *l, Fn *fn, Program *prog, Scoop *sp)
 {
   assert(l->current.kind == TOKEN_FN);
 
   if (!prefetch_expect_token(l, TOKEN_ID)) return false;
+  if (!insert_sym(sp, l->current, SYMBOL_FN, fn)) return false;
 
   *fn = (Fn) {
-    .name = l->current.str,
     .loc = l->current.start,
     .type = {.kind = TYPE_FN},
+    .local = alloc_scoop(&prog->symbols, prog->global),
   };
 
   if (!prefetch_expect_token(l, '(')) return false;
   if (!prefetch_expect_tokens(l, ')', TOKEN_ID)) return false;
 
-  bool result;
   while (l->current.kind != ')') {
-    Var var = {0};
+    // TODO: it leaks;
     assert(l->current.kind == TOKEN_ID);
-    var.name = l->current.str;
-    var.loc = l->current.start;
-
-    if (!prefetch_expect_token(l, ':')) return_defer(false);
-    if (!lexer_next(l)) return_defer(false);
-    if (!compile_type_expr(l, &var.type)) return_defer(false);
-
+    
+    Var *var = calloc(1, sizeof(Var));
     da_append(&fn->args, var);
-    da_append(&fn->type.fn_type.arg_types, (type_clone(var.type)));
+    var->loc = l->current.start;
+    if (!insert_sym(fn->local, l->current, SYMBOL_VAR, var)) return false;
+    
+    if (!prefetch_expect_token(l, ':')) return false;
+    if (!lexer_next(l)) return false;
+    if (!compile_type_expr(l, &var->type)) return false;
 
-    if (!prefetch_expect_tokens(l, ',', ')')) return_defer(false);
+    da_append(&fn->type.fn_type.arg_types, (type_clone(var->type)));
+
+    if (!prefetch_expect_tokens(l, ',', ')')) return false;
 
     if (l->current.kind == ',') {
-      if (!prefetch_expect_token(l, TOKEN_ID)) return_defer(false);
+      if (!prefetch_expect_token(l, TOKEN_ID)) return false;
     }
   }
   assert(l->current.kind == ')');
@@ -839,91 +919,100 @@ static bool compile_fn_sign(Lexer *l, Fn *fn)
   *fn->type.fn_type.ret_type = ret_type;
 
   return true;
-
- defer:
-  destroy_fn(fn);
-  return result;
 }
 
-static bool compile_function(Lexer *l, Program *prog)
+static bool compile_function(Lexer *l, Program *prog, Scoop *sp)
 {
-  bool result;
-
-  Fn fn = {0};
-  if (!compile_fn_sign(l, &fn)) return_defer(false);
-
-  if (!prefetch_expect_token(l, '{')) return_defer(false);
-  if (!compile_fn_body(l, prog, &fn)) return_defer(false);
-  if (!expect_token(l, '}')) return_defer(false);
-
+  Fn *fn = calloc(1, sizeof(Fn));
   da_append(&prog->fn_list, fn);
+
+  if (!compile_fn_sign(l, fn, prog, sp)) return false;
+
+  if (!prefetch_expect_token(l, '{')) return false;
+  if (!compile_fn_body(l, prog, fn)) return false;
+  if (!expect_token(l, '}')) return false;
+  
   return true;
- defer:
-  destroy_fn(&fn);
-  return result;
+}
+
+static size_t search_ptr(void *arr, size_t n, void *val)
+{
+  void **p = arr;
+  for (size_t i = 0; i < n; ++i) {
+    if (val == p[i]) return i;
+  }
+  return n;
 }
 
 static bool backpatch_name_arg_impl(Arg *arg, Program *prog, Fn *fn)
 {
   if (arg->kind != ARG_NAME) return true;
 
-  size_t i = dct_geti(&fn->args, arg->name);
-  if (i < fn->args.count) {
-    *arg = (Arg) {
-      .kind = ARG_VAR_ARG,
-      .label = i,
-    };
-    return true;
+  SymSearchResult r = sym_search(arg->scoop, arg->name);
+  if (r.scoop == NULL) {
+    pcompile_info(arg->loc,
+                  "error: symbol `"SV_Fmt"` refered but never defined\n",
+                  SV_Arg(arg->name));
+    return false;
   }
-
-  i = dct_geti(&fn->local, arg->name);
-  if (i < fn->local.count) {
-    Cursor use_loc = arg->loc;
-    Cursor def_loc = label_item(&fn->local, i).loc;
-    if (use_loc.row <= def_loc.row) {
-      pcompile_info(use_loc,
-                    "error: local variable `"SV_Fmt"` "
-                    "is used before its defination.\n",
+  
+  static_assert(__symbol_kind_count == 3);
+  switch (r.sym->kind) {
+  case SYMBOL_FN:
+    arg->label = search_ptr(prog->fn_list.items, prog->fn_list.count, r.sym->ptr);
+    arg->kind = ARG_FN;
+    assert(arg->label < prog->fn_list.count);
+    arg->type = type_clone(prog->fn_list.items[arg->label]->type);
+    return true;
+  break;
+  case SYMBOL_VAR: {
+    Var *var = r.sym->ptr;
+    Scoop *s = r.scoop;
+    while (s != NULL && s != prog->global && var->loc.row >= arg->loc.row) {
+      SymSearchResult r = sym_search(s->upper, arg->name);
+      var = r.sym->ptr;
+      s = r.scoop;
+    }
+    if (r.scoop == NULL) {
+      pcompile_info(arg->loc,
+                    "error: local variable `"SV_Fmt"` refered before it is defined\n",
                     SV_Arg(arg->name));
-      pcompile_info(def_loc, "info: it is defined here.\n");
+      pcompile_info(r.sym->var->loc,
+                    "info: it is defined here\n");
       return false;
     }
+    
+    if (s == prog->global) {
+      TODO("support global variables.");
+    }
 
-    *arg = (Arg) {
-      .kind = ARG_VAR_LOC,
-      .label = i,
-    };
+    arg->label = search_ptr(fn->vars.items, fn->vars.count, var);
+    if (arg->label < fn->vars.count) {
+      arg->kind = ARG_VAR_LOC;
+      arg->type = type_clone(fn->vars.items[arg->label]->type);
+    } else {
+      arg->label = search_ptr(fn->args.items, fn->args.count, var);
+      arg->kind = ARG_VAR_ARG;
+      assert(arg->label < fn->args.count);
+      arg->type = type_clone(fn->args.items[arg->label]->type);
+    }
     return true;
   }
-
-  i = dct_geti(&prog->externs, arg->name);
-  if (i < prog->externs.count) {
-    *arg = (Arg) {
-      .kind = ARG_EXTERN,
-      .label = i,
-    };
+  case SYMBOL_EXTERN:
+    arg->label = search_ptr(prog->externs.items, prog->externs.count, r.sym->ptr);
+    arg->kind = ARG_EXTERN;
+    assert(arg->label < prog->externs.count);
+    arg->type = type_clone(prog->externs.items[arg->label]->type);
     return true;
+  default: UNREACHABLE("");
   }
-
-  i = dct_geti(&prog->fn_list, arg->name);
-  if (i < prog->fn_list.count) {
-    *arg = (Arg) {
-      .kind = ARG_FN,
-      .label = i,
-    };
-    return true;
-  }
-
-  pcompile_info(arg->loc,
-                "error: refered symbol \""SV_Fmt"\" is not defined\n",
-                SV_Arg(arg->name));
-  return false;
 }
 
 static bool backpatch_name_args(Program *prog)
 {
   bool success = true;
-  da_foreach (Fn, fn, &prog->fn_list) {
+  da_foreach (Fn*, fn_ptr, &prog->fn_list) {
+    Fn *fn = *fn_ptr;
     da_foreach (Op, op, &fn->fn_body) {
       static_assert(__op_kind_count == 7);
       switch (op->kind) {
@@ -967,24 +1056,24 @@ static bool detect_arg_type(Arg *arg, Program *prog, Fn *fn) {
 
   ExternList *externs = &prog->externs;
   FnList *fn_list = &prog->fn_list;
-  VarList *local = &fn->local;
+  VarList *vars = &fn->vars;
   VarList *args = &fn->args;
 
-  TypeExpr * type = NULL;
+  TypeExpr *type = NULL;
 
   static_assert(__arg_kind_count == 8);
   switch(arg->kind) {
   case ARG_EXTERN:
-    type = &label_item(externs, arg->label).type;
+    type = &externs->items[arg->label]->type;
     break;
   case ARG_FN:
-    type = &label_item(fn_list, arg->label).type;
+    type = &fn_list->items[arg->label]->type;
     break;
   case ARG_VAR_LOC:
-    type = &label_item(local, arg->label).type;
+    type = &vars->items[arg->label]->type;
     break;
   case ARG_VAR_ARG:
-    type = &label_item(args, arg->label).type;
+    type = &args->items[arg->label]->type;
     break;
   default:
     UNREACHABLE("detect_arg_type");
@@ -1002,7 +1091,7 @@ static bool detect_var_type(Arg *var, Arg *val, Program *prog, Fn *fn)
   assert(val->type.kind != TYPE_UNKNOWN);
   if (var->type.kind != TYPE_UNKNOWN) return true;
 
-  VarList *local = &fn->local;
+  VarList *vars = &fn->vars;
   VarList *args = &fn->args;
 
   TypeExpr *var_type = NULL;
@@ -1010,12 +1099,12 @@ static bool detect_var_type(Arg *var, Arg *val, Program *prog, Fn *fn)
   static_assert(__arg_kind_count == 8);
   switch (var->kind) {
   case ARG_VAR_LOC:
-    assert(var->label < local->count);
-    var_type = &local->items[var->label].type;
+    assert(var->label < vars->count);
+    var_type = &vars->items[var->label]->type;
     break;
   case ARG_VAR_ARG:
     assert(var->label < args->count);
-    var_type = &args->items[var->label].type;
+    var_type = &args->items[var->label]->type;
     break;
   case ARG_NAME:
     UNREACHABLE("currently this is imposible");
@@ -1063,7 +1152,7 @@ static bool detect_binop_dst_type(VarList *vars, OpBinop *binop)
       return false;
     }
 
-    label_item(vars, dst->label).type = type_bool();
+    vars->items[dst->label]->type = type_bool();
     
     break;
   case BINOP_SUB:
@@ -1107,7 +1196,7 @@ static bool detect_binop_dst_type(VarList *vars, OpBinop *binop)
     }
 
     dst->type = type_clone(lhs->type);
-    label_item(vars, dst->label).type = type_clone(lhs->type);
+    vars->items[dst->label]->type = type_clone(lhs->type);
 
     return true;
     break;
@@ -1120,7 +1209,8 @@ static bool detect_binop_dst_type(VarList *vars, OpBinop *binop)
 
 static bool detect_all_unknown_type(Program *prog)
 {
-  da_foreach (Fn, fn, &prog->fn_list) {
+  da_foreach (Fn*, fn_ptr, &prog->fn_list) {
+    Fn *fn = *fn_ptr;
     da_foreach (Op, op, &fn->fn_body) {
       static_assert(__op_kind_count == 7);
       switch (op->kind) {
@@ -1138,7 +1228,7 @@ static bool detect_all_unknown_type(Program *prog)
         }
 
         if (!op->invoke.ret_ignore) {
-          Var *ret = &label_item(&fn->local, op->invoke.result_label);
+          Var *ret = fn->vars.items[op->invoke.result_label];
           TypeExpr *ret_type = fn->type.fn_type.ret_type;
 
           assert(ret_type->kind != TYPE_UNKNOWN);
@@ -1148,7 +1238,7 @@ static bool detect_all_unknown_type(Program *prog)
       case OP_BINOP:
         if (!detect_arg_type(&op->binop.lhs, prog, fn)) return false;
         if (!detect_arg_type(&op->binop.rhs, prog, fn)) return false;
-        if (!detect_binop_dst_type(&fn->local, &op->binop)) return false;
+        if (!detect_binop_dst_type(&fn->vars, &op->binop)) return false;
         break;
       case OP_JMP_ELSE:
         if (!detect_arg_type(&op->jmp.cond, prog, fn)) return false;
@@ -1172,20 +1262,21 @@ static bool compile_file(Lexer *l, Program *prog)
     }
 
     if (l->current.kind == TOKEN_FN) {
-      if (!compile_function(l, prog)) return false;
+      if (!compile_function(l, prog, prog->global)) return false;
     } else if (l->current.kind == TOKEN_EXT) {
       if (!prefetch_expect_token(l, TOKEN_ID)) return false;
 
-      Extern ext = {
-        .name = l->current.str,
+      Extern *ext = calloc(1, sizeof(Extern));
+      *ext = (Extern) {
+        .linkname = l->current.str,
         .loc = l->current.start,
       };
+      da_append(&prog->externs, ext);
+      if (!insert_sym(prog->global, l->current, SYMBOL_EXTERN, ext)) return false;
 
       if (!prefetch_expect_token(l, ':')) return false;
       if (!prefetch_not_none(l)) return false;
-      if (!compile_type_expr(l, &ext.type)) return false;
-
-      da_append(&prog->externs, ext);
+      if (!compile_type_expr(l, &ext->type)) return false;
     } else {
       UNREACHABLE("");
     }
@@ -1196,7 +1287,8 @@ static bool compile_file(Lexer *l, Program *prog)
 
 static bool check_type(Program *prog)
 {
-  da_foreach (Fn, fn, &prog->fn_list) {
+  da_foreach (Fn *, fn_ptr, &prog->fn_list) {
+    Fn *fn = *fn_ptr;
     TypeExpr *fn_type = &fn->type;
 
     assert(fn_type->kind == TYPE_FN);
@@ -1207,9 +1299,8 @@ static bool check_type(Program *prog)
         TypeExpr *ret_type = &op->ret_val.type;
         if (!type_matched(fn_type->fn_type.ret_type, ret_type)) {
           pcompile_info(op->loc,
-                        "error: the return type of "SV_Fmt" "
-                        "is required to be ",
-                        SV_Arg(fn->name));
+                        "error: the return type of this function "
+                        "is required to be ");
           dump_type_expr(fn_type->fn_type.ret_type, stderr);
           fprintf(stderr, ", but got ");
           dump_type_expr(ret_type, stderr);
@@ -1299,45 +1390,10 @@ typedef struct {
   size_t capacity;
 } DefList;
 
-#define check_redefined(list, defs) do {                                \
-    for (size_t i = 0; i < (list)->count; ++i) {                        \
-      String_View name = (list)->items[i].name;                         \
-      Cursor loc = (list)->items[i].loc;                                \
-      if (sv_eq(name, sv_from_cstr(""))) continue;                      \
-      size_t j = dct_geti((defs), name);                                \
-      if (j < (defs)->count) {                                          \
-        Cursor first_loc = (defs)->items[j].loc;                        \
-        pcompile_info(loc, "error: symbol `"SV_Fmt"` redefined\n", SV_Arg(name)); \
-        pcompile_info(first_loc, "info: it is firstly defined here\n"); \
-        result = false;                                                 \
-      } else {                                                          \
-        da_append((defs), ((Def) {.name = name, .loc = loc}));          \
-      }                                                                 \
-    }                                                                   \
-  } while(0);
-
-static bool check_symbol_redefined(Program *prog)
-{
-  bool result = true;
-
-  DefList defs = {0};
-  check_redefined(&prog->externs, &defs);
-  check_redefined(&prog->fn_list, &defs);
-
-  da_foreach (Fn, fn, &prog->fn_list) {
-    defs.count = 0;
-    check_redefined(&fn->args, &defs);
-    check_redefined(&fn->local, &defs);
-  }
-
-  da_free(defs);
-
-  return result;
-}
-
 static bool check_fn_returned(Program *prog)
 {
-  da_foreach(Fn, fn, &prog->fn_list) {
+  da_foreach(Fn *, fn_ptr, &prog->fn_list) {
+    Fn *fn = *fn_ptr;
     bool returned = false;
     da_foreach(Op, op, &fn->fn_body) {
       static_assert(__op_kind_count == 7);
@@ -1352,8 +1408,7 @@ static bool check_fn_returned(Program *prog)
     if (!returned) {
       assert(fn->type.kind == TYPE_FN);
       if (fn->type.fn_type.ret_type->kind != TYPE_VOID) {
-        pcompile_info(fn->loc, "error: function "SV_Fmt" is never returned\n",
-                      SV_Arg(fn->name));
+        pcompile_info(fn->loc, "error: this function is never returned\n");
         return false;
       } else {
         Op op = {
@@ -1368,8 +1423,8 @@ static bool check_fn_returned(Program *prog)
 
 bool compile_program(Lexer *l, Program *prog)
 {
+  prog->global = alloc_scoop(&prog->symbols, NULL);
   if (!compile_file(l, prog)) return false;
-  if (!check_symbol_redefined(prog)) return false;
   if (!backpatch_name_args(prog)) return false;
   if (!detect_all_unknown_type(prog)) return false;
   if (!check_type(prog)) return false;
@@ -1380,8 +1435,10 @@ bool compile_program(Lexer *l, Program *prog)
 
 void destroy_program(Program *prog)
 {
-  da_foreach (Extern, ext, &prog->externs) {
+  da_foreach (Extern *, ext_ptr, &prog->externs) {
+    Extern *ext = *ext_ptr;
     destroy_type_expr(&ext->type);
+    free(ext);
   }
   da_free(prog->externs);
 
@@ -1389,4 +1446,6 @@ void destroy_program(Program *prog)
   if (prog->str_lits.capacity > 0) {
     da_free(prog->str_lits);
   }
+
+  free_all_symbol(&prog->symbols);
 }

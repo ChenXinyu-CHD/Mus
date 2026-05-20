@@ -3,7 +3,7 @@
 
 #include <stdio.h>
 
-#include "nob.h"
+#include "3rd/nob.h"
 
 int sv_to_int(String_View sv);
 

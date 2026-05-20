@@ -3,9 +3,49 @@
 
 #include <stddef.h>
 
-#include "nob.h"
+#include "3rd/nob.h"
+#include "3rd/ht.h"
+
 #include "lexer.h"
 #include "type.h"
+
+typedef enum {
+  SYMBOL_FN = 0,
+  SYMBOL_VAR,
+  SYMBOL_EXTERN,
+  __symbol_kind_count,
+} SymbolKind;
+
+typedef struct Var Var;
+typedef struct Extern Extern;
+typedef struct Fn Fn;
+
+typedef struct {
+  SymbolKind kind;
+  union {
+    Var *var;
+    Extern *ext;
+    Fn *fn;
+    void *ptr;
+  };
+} Symbol;
+
+typedef struct Scoop Scoop;
+struct Scoop {
+  Scoop *upper;
+  Ht(String_View, Symbol) symbols;
+};
+
+bool insert_sym(Scoop *sp, Token name, SymbolKind kind, void *ptr);
+String_View sym_name(Scoop* sp, void *sym);
+
+// C is so bad
+typedef struct {
+  Scoop *scoop;
+  Symbol *sym;
+} SymSearchResult;
+
+SymSearchResult sym_search(Scoop *sp, String_View name);
 
 typedef enum {
   ARG_NONE = 0,
@@ -26,13 +66,12 @@ typedef struct {
     struct {
       String_View name;
       Cursor loc;
+      Scoop *scoop;
     };
     int    num_int;
     size_t label;
   };
 } Arg;
-
-#define label_item(table, label) (table)->items[(assert(label < (table)->count), (label))]
 
 typedef struct {
   Arg *items;
@@ -110,28 +149,27 @@ typedef struct {
   size_t capacity;
 } OpList;
 
-typedef struct {
-  String_View name;
+struct Extern {
+  String_View linkname;
   Cursor loc;
   TypeExpr type;
-} Extern;
+};
 
 typedef struct {
-  Extern *items;
+  Extern **items;
   size_t count;
   size_t capacity;
 } ExternList;
 
-typedef struct {
-  String_View name;
-  Cursor loc;
+struct Var {
   TypeExpr type;
+  Cursor loc;
   
   ptrdiff_t offset;
-} Var;
+};
 
 typedef struct {
-  Var *items;
+  Var **items;
   size_t memsize;
   
   size_t count;
@@ -140,23 +178,32 @@ typedef struct {
 
 size_t alloc_var(VarList *vars);
 
-typedef struct {
-  String_View name;
-  Cursor loc;
+struct Fn {
   TypeExpr type;
+  Cursor loc;
   
   OpList fn_body;
-  VarList local;
+  VarList vars;
   VarList args;
-} Fn;
+  Scoop *local;
+};
 
 typedef struct {
-  Fn *items;
+  Fn **items;
   size_t count;
   size_t capacity;
 } FnList;
 
 typedef struct {
+  Scoop **items;
+  size_t count;
+  size_t capacity;
+} SymbolTable;
+
+typedef struct {
+  SymbolTable symbols;
+  Scoop *global;
+  
   FnList fn_list;
   ExternList externs;
   struct {
@@ -165,6 +212,9 @@ typedef struct {
     size_t capacity;
   } str_lits;
 } Program;
+
+Scoop *alloc_scoop(SymbolTable *st, Scoop *upper);
+void free_all_symbol(SymbolTable *st);
 
 bool compile_program(Lexer *l, Program *grog);
 void destroy_program(Program *prog);
