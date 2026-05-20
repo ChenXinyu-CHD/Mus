@@ -1,0 +1,14 @@
+fn main(): i32
+{
+    var a = 0;
+    {
+        printf("a = %d\n", a);
+        var a = a + 1;
+        printf("a = %d\n", a);
+    }
+    printf("a = %d\n", a);
+    return 0;
+}
+
+extern printf: fn(&i8, ...):i32;
+
