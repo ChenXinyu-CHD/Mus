@@ -766,21 +766,20 @@ static bool compile_local_var(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
   };
   da_append(&fn->fn_body, set_var);
 
+  if (l->current.kind == ';') {
+    if (!prefetch_not_none(l)) return false;
+  }
+
   return true;
 }
+
+static bool compile_block(Lexer *l, Program* prog, Fn *fn, Scoop *sp);
 
 static bool compile_stat(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
 {
   // block
   if (l->current.kind == '{') {
-    Scoop *block = alloc_scoop(&prog->symbols, sp);
-    if (!prefetch_not_none(l)) return false;
-    while (l->current.kind != '}') {
-      if (!compile_stat(l, prog, fn, block)) return false;
-    }
-    if (!prefetch_not_none(l)) return false;
-    
-    return true;
+    return compile_block(l, prog, fn, sp);
   }
 
   // empty statement;
@@ -803,8 +802,6 @@ static bool compile_stat(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
     ast_del(&expr);
 
     da_append(&fn->fn_body, ret);
-  } else if (l->current.kind == TOKEN_VAR) {
-    if (!compile_local_var(l, prog, fn, sp)) return false;
   } else if (l->current.kind == TOKEN_IF) {
     if (!prefetch_not_none(l)) return false;
 
@@ -860,14 +857,27 @@ static bool compile_stat(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
   return true;
 }
 
-static bool compile_fn_body(Lexer *l, Program *prog, Fn *fn) {
-  assert(l->current.kind == '{');
+static bool compile_def(Lexer *l, Program *prog, Scoop *sp);
 
+static bool compile_block(Lexer *l, Program* prog, Fn *fn, Scoop *sp)
+{
+  assert(l->current.kind == '{');
+  
+  Scoop *block = alloc_scoop(&prog->symbols, sp);
   if (!prefetch_not_none(l)) return false;
   while (l->current.kind != '}') {
-    if (!compile_stat(l, prog, fn, fn->local)) return false;
-  }
+    if (l->current.kind == TOKEN_VAR) {
+      if (!compile_local_var(l, prog, fn, block)) return false;
+      continue;
+    }
 
+    if (compile_def(l, prog, block)) {
+      continue;
+    }
+
+    if (!compile_stat(l, prog, fn, block)) return false;
+  }
+  lexer_next(l);
   return true;
 }
 
@@ -929,10 +939,7 @@ static bool compile_function(Lexer *l, Program *prog, Scoop *sp)
   if (!compile_fn_sign(l, fn, prog, sp)) return false;
 
   if (!prefetch_expect_token(l, '{')) return false;
-  if (!compile_fn_body(l, prog, fn)) return false;
-  if (!expect_token(l, '}')) return false;
-  
-  return true;
+  return compile_block(l, prog, fn, fn->local);
 }
 
 static size_t search_ptr(void *arr, size_t n, void *val)
@@ -1254,35 +1261,49 @@ static bool detect_all_unknown_type(Program *prog)
   return true;
 }
 
+static bool compile_def(Lexer *l, Program *prog, Scoop *sp)
+{
+  if (l->current.kind == TOKEN_FN) {
+    return compile_function(l, prog, sp);
+  } else if (l->current.kind == TOKEN_EXT) {
+    if (!prefetch_expect_token(l, TOKEN_ID)) return false;
+
+    Extern *ext = calloc(1, sizeof(Extern));
+    *ext = (Extern) {
+      .linkname = l->current.str,
+      .loc = l->current.start,
+    };
+    da_append(&prog->externs, ext);
+    if (!insert_sym(sp, l->current, SYMBOL_EXTERN, ext)) return false;
+
+    if (!prefetch_expect_token(l, ':')) return false;
+    if (!prefetch_not_none(l)) return false;
+    if (!compile_type_expr(l, &ext->type)) return false;
+
+    lexer_next(l);
+    if (l->current.kind == ';') lexer_next(l);
+    
+    return true;
+  }
+  
+  return false;
+}
+
 static bool compile_file(Lexer *l, Program *prog)
 {
-  while (lexer_next(l)) {
-    if (l->current.kind == ';') {
-      continue;
-    }
-
-    if (l->current.kind == TOKEN_FN) {
-      if (!compile_function(l, prog, prog->global)) return false;
-    } else if (l->current.kind == TOKEN_EXT) {
-      if (!prefetch_expect_token(l, TOKEN_ID)) return false;
-
-      Extern *ext = calloc(1, sizeof(Extern));
-      *ext = (Extern) {
-        .linkname = l->current.str,
-        .loc = l->current.start,
-      };
-      da_append(&prog->externs, ext);
-      if (!insert_sym(prog->global, l->current, SYMBOL_EXTERN, ext)) return false;
-
-      if (!prefetch_expect_token(l, ':')) return false;
-      if (!prefetch_not_none(l)) return false;
-      if (!compile_type_expr(l, &ext->type)) return false;
-    } else {
-      UNREACHABLE("");
+  lexer_next(l);
+  while (l->current.kind != TOKEN_EOF && l->current.kind != TOKEN_ERR) {
+    Cursor loc = l->current.start;
+    if (!compile_def(l, prog, prog->global)) {
+      Cursor c = l->current.start;
+      if (loc.row == c.row && loc.col == c.col)
+      pcompile_info(loc,
+                    "error: expected a defination in global scoop.\n");
+      return false;
     }
   }
 
-  return true;
+  return l->current.kind == TOKEN_EOF;
 }
 
 static bool check_type(Program *prog)

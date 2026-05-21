@@ -234,6 +234,7 @@ static struct {
   // complex tokens, their str is uncertain
   {.print_name = "string literal",  .kind = TOKEN_STR},
   {.print_name = "integer literal", .kind = TOKEN_INT},
+  {.print_name = "identifier", .kind = TOKEN_ID},
   // special token, they have no str part
   {.print_name = "EOF",       .kind = TOKEN_EOF},
   {.print_name = "Err token", .kind = TOKEN_ERR},
