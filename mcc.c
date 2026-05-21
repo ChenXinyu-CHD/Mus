@@ -419,10 +419,11 @@ static const struct {
 
 static struct {
   const char *program;
-  bool only_lexer;
   Target target;
   File_Paths files;
   const char *outfile;
+  bool only_lexer;
+  bool run;
 } mcc_args;
 
 void usage(FILE *stream)
@@ -472,6 +473,9 @@ bool parse_mcc_args(int argc, char **argv)
       }
     } else if (strcmp(argv[i], "-l") == 0) {
       mcc_args.only_lexer = true;
+      i += 1;
+    } else if (strcmp(argv[i], "-r") == 0 || strcmp(argv[i], "--run")) {
+      mcc_args.run = true;
       i += 1;
     }
   }
@@ -541,6 +545,14 @@ int main(int argc, char **argv)
     if (!build_x86_64_native(mcc_args.outfile, &prog)) return_defer(1);
     break;
   default: UNREACHABLE("target");
+  }
+
+  if (mcc_args.run) {
+    Cmd cmd = {0};
+    cmd_append(&cmd, temp_sprintf("./%s", mcc_args.outfile));
+    int result = cmd_run(&cmd);
+    da_free(cmd);
+    return_defer(result);
   }
 
   return_defer(0);
