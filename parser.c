@@ -168,9 +168,9 @@ static Arg arg_local_var(Fn *fn, size_t i)
   };
 }
 
-static void expr_to_ir(EXPR *expr, Program *prog, Fn *fn, Scoop *sp);
+static void expr_to_ir(Expr *expr, Program *prog, Fn *fn, Scoop *sp);
 
-static void expr_to_arg(EXPR *expr, Program *prog, Fn *fn, Scoop *sp, Arg *exp_result)
+static void expr_to_arg(Expr *expr, Program *prog, Fn *fn, Scoop *sp, Arg *exp_result)
 {
 
   static_assert(__expr_kind_count == 3);
@@ -241,7 +241,7 @@ static void expr_to_arg(EXPR *expr, Program *prog, Fn *fn, Scoop *sp, Arg *exp_r
   }
 }
 
-static void expr_to_ir(EXPR *expr, Program *prog, Fn *fn, Scoop *sp)
+static void expr_to_ir(Expr *expr, Program *prog, Fn *fn, Scoop *sp)
 {
   static_assert(__expr_kind_count == 3);
   switch (expr->kind) {
@@ -249,7 +249,7 @@ static void expr_to_ir(EXPR *expr, Program *prog, Fn *fn, Scoop *sp)
     Op op = { .kind = OP_INVOKE };
     expr_to_arg(expr->invoke.fn, prog, fn, sp, &op.invoke.fn);
 
-    da_foreach(EXPR, expr_arg, &expr->invoke.args) {
+    da_foreach(Expr, expr_arg, &expr->invoke.args) {
       Arg arg = {0};
       expr_to_arg(expr_arg, prog, fn, sp, &arg);
       da_append(&op.invoke.args, arg);
@@ -285,12 +285,12 @@ static void expr_to_ir(EXPR *expr, Program *prog, Fn *fn, Scoop *sp)
 static bool compile_stat_simple(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
 {
   Cursor loc = l->cursor;
-  EXPR expr = {0};
+  Expr expr = {0};
   if (!compile_expr(l, &expr)) return false;
 
   bool result;
   if (l->current.kind == '=') {
-    EXPR val_expr = {0};
+    Expr val_expr = {0};
     if (!prefetch_not_none(l)) return_defer(false);
     if (!compile_expr(l, &val_expr)) return_defer(false);
 
@@ -479,7 +479,7 @@ static bool compile_local_var(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
 
   Cursor loc = l->current.start;
   if (!prefetch_not_none(l)) return false;
-  EXPR expr = {0};
+  Expr expr = {0};
   if (!compile_expr(l, &expr)) return false;
   Arg val = {0};
   expr_to_arg(&expr, prog, fn, sp, &val);
@@ -525,7 +525,7 @@ static bool compile_stat(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
     };
     if (!prefetch_not_none(l)) return false;
 
-    EXPR expr = {0};
+    Expr expr = {0};
     if (!compile_expr(l, &expr)) return false;
     expr_to_arg(&expr, prog, fn, sp, &ret.ret_val);
     expr_del(&expr);
@@ -538,7 +538,7 @@ static bool compile_stat(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
       Op op = {
         .kind = OP_JMP_ELSE,
       };
-      EXPR cond = {0};
+      Expr cond = {0};
       if (!compile_expr(l, &cond)) return false;
       expr_to_arg(&cond, prog, fn, sp, &op.jmp.cond);
       expr_del(&cond);

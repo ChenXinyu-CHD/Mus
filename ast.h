@@ -8,15 +8,15 @@ typedef enum {
   EXPR_INVOKE,
   EXPR_BINOP,
   __expr_kind_count
-} EXPR_Kind;
+} Expr_Kind;
 
-typedef struct EXPR EXPR;
+typedef struct Expr Expr;
 
 typedef struct {
-  EXPR *items;
+  Expr *items;
   size_t count;
   size_t capacity;
-} EXPR_List;
+} Expr_List;
 
 typedef enum {
   BINOP_ADD = 0,
@@ -33,24 +33,24 @@ typedef enum {
   __binop_kind_count,
 } BinopKind;
 
-struct EXPR {
-  EXPR_Kind kind;
+struct Expr {
+  Expr_Kind kind;
   union {
     Token atom;
     struct {
-      EXPR* fn;
-      EXPR_List args;
+      Expr* fn;
+      Expr_List args;
     } invoke;
     struct {
       BinopKind kind;
-      EXPR *lhs;
-      EXPR *rhs;
+      Expr *lhs;
+      Expr *rhs;
     } binop;
   };
 };
 
-bool compile_expr(Lexer *l, EXPR *expr);
-void expr_del(EXPR *expr);
+bool compile_expr(Lexer *l, Expr *expr);
+void expr_del(Expr *expr);
 
 #endif // MCC_AST_H_
 
@@ -84,10 +84,10 @@ const char *binop_name(BinopKind kind)
   UNREACHABLE("");
 }
 
-static EXPR expr_atom(Token token) { return (EXPR) {.kind = EXPR_ATOM, .atom = token}; }
-static EXPR expr_invoke(EXPR *fn, EXPR_List args)
+static Expr expr_atom(Token token) { return (Expr) {.kind = EXPR_ATOM, .atom = token}; }
+static Expr expr_invoke(Expr *fn, Expr_List args)
 {
-  return (EXPR) {
+  return (Expr) {
     .kind = EXPR_INVOKE,
     .invoke =  {
       .fn = fn,
@@ -95,11 +95,11 @@ static EXPR expr_invoke(EXPR *fn, EXPR_List args)
     }
   };
 }
-static EXPR expr_binop(Token op, EXPR *lhs, EXPR *rhs)
+static Expr expr_binop(Token op, Expr *lhs, Expr *rhs)
 {
   for (size_t i = 0; i < ARRAY_LEN(binop_list); ++i) {
     if (binop_list[i].token_kind == op.kind) {
-      return (EXPR) {
+      return (Expr) {
         .kind = EXPR_BINOP,
         .binop = {
           .kind = binop_list[i].binop_kind,
@@ -112,15 +112,15 @@ static EXPR expr_binop(Token op, EXPR *lhs, EXPR *rhs)
   UNREACHABLE("");
 }
 
-static void expr_list_del(EXPR_List *exprs)
+static void expr_list_del(Expr_List *exprs)
 {
-  da_foreach (EXPR, expr, exprs) {
+  da_foreach (Expr, expr, exprs) {
     expr_del(expr);
   }
   da_free(*exprs);
 }
 
-void expr_del(EXPR *expr)
+void expr_del(Expr *expr)
 {
   static_assert(__expr_kind_count == 3);
   switch(expr->kind) {
@@ -138,14 +138,14 @@ void expr_del(EXPR *expr)
   }
 }
 
-static bool compile_invoke_args(Lexer *l, EXPR_List *args)
+static bool compile_invoke_args(Lexer *l, Expr_List *args)
 {
   assert(l->current.kind == '(');
   bool result;
   if (!prefetch_not_none(l)) return_defer(false);
 
   while (l->current.kind != ')') {
-    EXPR arg;
+    Expr arg;
     if (!compile_expr(l, &arg)) return_defer(false);
     da_append(args, arg);
 
@@ -163,7 +163,7 @@ static bool compile_invoke_args(Lexer *l, EXPR_List *args)
   return result;
 }
 
-static bool compile_simple_expr(Lexer *l, EXPR *expr)
+static bool compile_simple_expr(Lexer *l, Expr *expr)
 {
   bool result;
   if (!expect_tokens(l,
@@ -185,10 +185,10 @@ static bool compile_simple_expr(Lexer *l, EXPR *expr)
 
   if (!lexer_next(l)) return_defer(false);
   while (l->current.kind == '(') {
-    EXPR_List args = {0};
+    Expr_List args = {0};
     if (!compile_invoke_args(l, &args)) return_defer(false);
 
-    EXPR *fn = malloc(sizeof(EXPR));
+    Expr *fn = malloc(sizeof(Expr));
     *fn = *expr;
     *expr = expr_invoke(fn, args);
   }
@@ -199,7 +199,7 @@ static bool compile_simple_expr(Lexer *l, EXPR *expr)
   return result;
 }
 
-static bool compile_mul(Lexer *l, EXPR *expr)
+static bool compile_mul(Lexer *l, Expr *expr)
 {
   if (!compile_simple_expr(l, expr)) return false;
 
@@ -208,12 +208,12 @@ static bool compile_mul(Lexer *l, EXPR *expr)
     Token op = l->current;
     if (!prefetch_not_none(l)) return_defer(false);
 
-    EXPR rhs_expr = {0};
+    Expr rhs_expr = {0};
     if (!compile_simple_expr(l, &rhs_expr)) return_defer(false);
 
-    EXPR *lhs = malloc(sizeof(EXPR));
+    Expr *lhs = malloc(sizeof(*lhs));
     *lhs = *expr;
-    EXPR *rhs = malloc(sizeof(EXPR));
+    Expr *rhs = malloc(sizeof(*rhs));
     *rhs = rhs_expr;
 
     *expr = expr_binop(op, lhs, rhs);
@@ -225,7 +225,7 @@ static bool compile_mul(Lexer *l, EXPR *expr)
   return result;
 }
 
-static bool compile_add(Lexer *l, EXPR *expr)
+static bool compile_add(Lexer *l, Expr *expr)
 {
   if (!compile_mul(l, expr)) return false;
 
@@ -234,12 +234,12 @@ static bool compile_add(Lexer *l, EXPR *expr)
     Token op = l->current;
     if (!prefetch_not_none(l)) return_defer(false);
 
-    EXPR rhs_expr = {0};
+    Expr rhs_expr = {0};
     if (!compile_mul(l, &rhs_expr)) return_defer(false);
 
-    EXPR *lhs = malloc(sizeof(EXPR));
+    Expr *lhs = malloc(sizeof(*lhs));
     *lhs = *expr;
-    EXPR *rhs = malloc(sizeof(EXPR));
+    Expr *rhs = malloc(sizeof(*rhs));
     *rhs = rhs_expr;
 
     *expr = expr_binop(op, lhs, rhs);
@@ -251,7 +251,7 @@ static bool compile_add(Lexer *l, EXPR *expr)
   return result;
 }
 
-static bool compile_cmp(Lexer *l, EXPR *expr)
+static bool compile_cmp(Lexer *l, Expr *expr)
 {
   if (!compile_add(l, expr)) return false;
 
@@ -265,12 +265,12 @@ static bool compile_cmp(Lexer *l, EXPR *expr)
     Token op = l->current;
     if (!prefetch_not_none(l)) return_defer(false);
 
-    EXPR rhs_expr = {0};
+    Expr rhs_expr = {0};
     if (!compile_add(l, &rhs_expr)) return_defer(false);
 
-    EXPR *lhs = malloc(sizeof(EXPR));
+    Expr *lhs = malloc(sizeof(*lhs));
     *lhs = *expr;
-    EXPR *rhs = malloc(sizeof(EXPR));
+    Expr *rhs = malloc(sizeof(*rhs));
     *rhs = rhs_expr;
 
     *expr = expr_binop(op, lhs, rhs);
@@ -282,7 +282,7 @@ static bool compile_cmp(Lexer *l, EXPR *expr)
   return result;
 }
 
-bool compile_expr(Lexer *l, EXPR *expr)
+bool compile_expr(Lexer *l, Expr *expr)
 {
   // EXPR   :: CMP
   // CMP    :: ADD | ADD == CMP | ADD != CMP | ADD < CMP | ADD > CMP | ADD <= CMP | ADD >= CMP
