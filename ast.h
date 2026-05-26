@@ -33,14 +33,16 @@ typedef enum {
   __binop_kind_count,
 } BinopKind;
 
+typedef struct {
+  Expr* fn;
+  Expr_List args;
+} AST_Invoke;
+
 struct Expr {
   Expr_Kind kind;
   union {
     Token atom;
-    struct {
-      Expr* fn;
-      Expr_List args;
-    } invoke;
+    AST_Invoke invoke;
     struct {
       BinopKind kind;
       Expr *lhs;
@@ -51,6 +53,30 @@ struct Expr {
 
 bool compile_expr(Lexer *l, Expr *expr);
 void expr_del(Expr *expr);
+
+typedef enum {
+  STAT_EMPTY = 0,
+  STAT_INVOKE,
+  STAT_RET,
+  STAT_ASSIGN,
+  __stat_kind_count,
+} Stat_Kind;
+
+typedef struct {
+  Stat_Kind kind;
+  Cursor loc;
+  union {
+    AST_Invoke invoke;
+    Expr *ret_val;
+    struct {
+      Expr *dst;
+      Expr *val;
+    } assign;
+  };
+} Stat;
+
+bool compile_stat_ast(Lexer *l, Stat *stat);
+void stat_del(Stat *stat);
 
 #endif // MCC_AST_H_
 
@@ -293,6 +319,97 @@ bool compile_expr(Lexer *l, Expr *expr)
   // INVOKE :: EXPR ( ARGS )
   // ARGS   :: EXPR | EXPR , ARGS
   return compile_cmp(l, expr);
+}
+
+bool compile_stat_ast(Lexer *l, Stat *stat)
+{
+  *stat = (Stat) {
+    .kind = STAT_EMPTY,
+    .loc = l->current.start,
+  };
+
+  // simple statement
+  if (l->current.kind == TOKEN_RET) {
+    if (!prefetch_not_none(l)) return false;
+
+    Expr *expr = calloc(1, sizeof(*expr));
+
+    if (!compile_expr(l, expr)) {
+      free(expr);
+      return false;
+    }
+
+    stat->kind = STAT_RET;
+    stat->ret_val = expr;
+  } else {
+    Expr *expr = calloc(1, sizeof(*expr));
+    if (!compile_expr(l, expr)) {
+      free(expr);
+      return false;
+    }
+
+    if (l->current.kind == '=') {
+      Expr *val = calloc(1, sizeof(*expr));
+      if (!compile_expr(l, val)) {
+        free(val);
+
+        expr_del(expr);
+        free(expr);
+        return false;
+      }
+      stat->kind = STAT_ASSIGN;
+      stat->assign.val = val;
+      stat->assign.dst = expr;
+    } else if (expr->kind == EXPR_INVOKE) {
+      stat->kind = STAT_INVOKE;
+      stat->invoke = expr->invoke;
+    } else {
+      pcompile_info(stat->loc,
+                    "error: expect a statement, but got an expression.\n");
+
+      expr_del(expr);
+      free(expr);
+      return false;
+    }
+  }
+
+  // a simple statment can be followed with an optional ';'
+  // This makes "if true foo(); else bar();" acceptable
+  // because 'foo();' is a single statement
+  // insteed of a function call followed by a empty statement.
+  // "if true ;; else foo()" is not acceptable
+  // because both ';' are two empty statement
+  // because they are not followed by a simple statement
+  if (l->current.kind == ';') {
+    if (!prefetch_not_none(l)) return false;
+  }
+
+  return true;
+}
+
+void stat_del(Stat *stat)
+{
+  static_assert(__stat_kind_count == 4);
+  switch(stat->kind) {
+  case STAT_EMPTY:
+    // nothing to do;
+    break;
+  case STAT_ASSIGN:
+    expr_del(stat->assign.dst);
+    expr_del(stat->assign.val);
+    free(stat->assign.dst);
+    free(stat->assign.val);
+    break;
+  case STAT_RET:
+    expr_del(stat->ret_val);
+    free(stat->ret_val);
+    break;
+  case STAT_INVOKE:
+    expr_del(stat->invoke.fn);
+    expr_list_del(&stat->invoke.args);
+    break;
+  default: UNREACHABLE("");
+  }
 }
 
 #endif // MCC_AST_IMPLEMENTATION

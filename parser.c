@@ -282,41 +282,45 @@ static void expr_to_ir(Expr *expr, Program *prog, Fn *fn, Scoop *sp)
   }
 }
 
-static bool compile_stat_simple(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
+static void stat_to_ir(Stat *stat, Program *prog, Fn *fn, Scoop *sp)
 {
-  Cursor loc = l->cursor;
-  Expr expr = {0};
-  if (!compile_expr(l, &expr)) return false;
+  static_assert(__stat_kind_count == 4);
+  switch (stat->kind) {
+  case STAT_INVOKE: {
+    Op op = { .kind = OP_INVOKE };
+    expr_to_arg(stat->invoke.fn, prog, fn, sp, &op.invoke.fn);
 
-  bool result;
-  if (l->current.kind == '=') {
-    Expr val_expr = {0};
-    if (!prefetch_not_none(l)) return_defer(false);
-    if (!compile_expr(l, &val_expr)) return_defer(false);
+    da_foreach(Expr, stat_arg, &stat->invoke.args) {
+      Arg arg = {0};
+      expr_to_arg(stat_arg, prog, fn, sp, &arg);
+      da_append(&op.invoke.args, arg);
+    }
 
-    Arg var, val;
-    expr_to_arg(&expr, prog, fn, sp, &var);
-    expr_to_arg(&val_expr, prog, fn, sp, &val);
-
-    Op set_var = {
-      .kind = OP_SET_VAR,
-      .loc = loc,
-      .set_var = {
-        .var = var,
-        .val = val,
-      },
+    op.invoke.ret_ignore = true;
+    da_append(&fn->fn_body, op);
+  } break;
+  case STAT_RET: {
+    Op op = {
+      .kind = OP_RETURN,
     };
-    da_append(&fn->fn_body, set_var);
 
-    expr_del(&val_expr);
-  } else {
-    expr_to_ir(&expr, prog, fn, sp);
+    expr_to_arg(stat->ret_val, prog, fn, sp, &op.ret_val);
+
+    da_append(&fn->fn_body, op);
+  } break;
+  case STAT_ASSIGN: {
+    Op op = {
+      .kind = OP_SET_VAR,
+    };
+    expr_to_arg(stat->assign.dst, prog, fn, sp, &op.set_var.var);
+    expr_to_arg(stat->assign.val, prog, fn, sp, &op.set_var.val);
+    da_append(&fn->fn_body, op);
+  } break;
+  case STAT_EMPTY:
+    // nothing to do
+    break;
+  default: UNREACHABLE("");
   }
-
-  return_defer(true);
- defer:
-  expr_del(&expr);
-  return result;
 }
 
 static_assert(__type_kind_count == 7);
@@ -511,27 +515,7 @@ static bool compile_stat(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
     return compile_block(l, prog, fn, sp);
   }
 
-  // empty statement;
-  if (l->current.kind == ';') {
-    if (!prefetch_not_none(l)) return false;
-    return true;
-  }
-
-  // simple statement
-  if (l->current.kind == TOKEN_RET) {
-    Op ret = {
-      .kind = OP_RETURN,
-      .loc = l->current.start,
-    };
-    if (!prefetch_not_none(l)) return false;
-
-    Expr expr = {0};
-    if (!compile_expr(l, &expr)) return false;
-    expr_to_arg(&expr, prog, fn, sp, &ret.ret_val);
-    expr_del(&expr);
-
-    da_append(&fn->fn_body, ret);
-  } else if (l->current.kind == TOKEN_IF) {
+  if (l->current.kind == TOKEN_IF) {
     if (!prefetch_not_none(l)) return false;
 
     { // parse cond, and jump to else branch
@@ -569,18 +553,11 @@ static bool compile_stat(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
       fn->fn_body.items[jmp_else].jmp.label = end_label;
     }
   } else {
-    if (!compile_stat_simple(l, prog, fn, sp)) return false;
-  }
+    Stat stat = {0};
+    if (!compile_stat_ast(l, &stat)) return false;
 
-  // a simple statment can be followed with an optional ';'
-  // This makes "if true foo(); else bar();" acceptable
-  // because 'foo();' is a single statement
-  // insteed of a function call followed by a empty statement.
-  // "if true ;; else foo()" is not acceptable
-  // because both ';' are two empty statement
-  // because they are not followed by a simple statement
-  if (l->current.kind == ';') {
-    if (!prefetch_not_none(l)) return false;
+    stat_to_ir(&stat, prog, fn, sp);
+    stat_del(&stat);
   }
 
   return true;
