@@ -168,15 +168,15 @@ static Arg arg_local_var(Fn *fn, size_t i)
   };
 }
 
-static void ast_to_ir(AST *ast, Program *prog, Fn *fn, Scoop *sp);
+static void expr_to_ir(EXPR *expr, Program *prog, Fn *fn, Scoop *sp);
 
-static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Scoop *sp, Arg *exp_result)
+static void expr_to_arg(EXPR *expr, Program *prog, Fn *fn, Scoop *sp, Arg *exp_result)
 {
 
-  static_assert(__ast_kind_count == 3);
-  switch (ast->kind) {
-  case AST_ATOM: {
-    Token token = ast->atom;
+  static_assert(__expr_kind_count == 3);
+  switch (expr->kind) {
+  case EXPR_ATOM: {
+    Token token = expr->atom;
     switch (token.kind) {
     case TOKEN_ID:
       exp_result->kind = ARG_NAME;
@@ -215,8 +215,8 @@ static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Scoop *sp, Arg *exp_resu
     default: UNREACHABLE("");
     }
   } break;
-  case AST_INVOKE: {
-    ast_to_ir(ast, prog, fn, sp);
+  case EXPR_INVOKE: {
+    expr_to_ir(expr, prog, fn, sp);
 
     Op *op = &fn->fn_body.items[fn->fn_body.count-1];
     assert(op->kind == OP_INVOKE);
@@ -229,8 +229,8 @@ static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Scoop *sp, Arg *exp_resu
       .label = op->invoke.result_label,
     };
   } break;
-  case AST_BINOP: {
-    ast_to_ir(ast, prog, fn, sp);
+  case EXPR_BINOP: {
+    expr_to_ir(expr, prog, fn, sp);
 
     Op *op = &fn->fn_body.items[fn->fn_body.count-1];
     assert(op->kind == OP_BINOP);
@@ -241,33 +241,33 @@ static void ast_to_arg(AST *ast, Program *prog, Fn *fn, Scoop *sp, Arg *exp_resu
   }
 }
 
-static void ast_to_ir(AST *ast, Program *prog, Fn *fn, Scoop *sp)
+static void expr_to_ir(EXPR *expr, Program *prog, Fn *fn, Scoop *sp)
 {
-  static_assert(__ast_kind_count == 3);
-  switch (ast->kind) {
-  case AST_INVOKE: {
+  static_assert(__expr_kind_count == 3);
+  switch (expr->kind) {
+  case EXPR_INVOKE: {
     Op op = { .kind = OP_INVOKE };
-    ast_to_arg(ast->invoke.fn, prog, fn, sp, &op.invoke.fn);
+    expr_to_arg(expr->invoke.fn, prog, fn, sp, &op.invoke.fn);
 
-    da_foreach(AST, ast_arg, &ast->invoke.args) {
+    da_foreach(EXPR, expr_arg, &expr->invoke.args) {
       Arg arg = {0};
-      ast_to_arg(ast_arg, prog, fn, sp, &arg);
+      expr_to_arg(expr_arg, prog, fn, sp, &arg);
       da_append(&op.invoke.args, arg);
     }
 
     op.invoke.ret_ignore = true;
     da_append(&fn->fn_body, op);
   } break;
-  case AST_BINOP: {
+  case EXPR_BINOP: {
     Op op = {
       .kind = OP_BINOP,
       .binop = {
-        .kind = ast->binop.kind,
+        .kind = expr->binop.kind,
       },
     };
 
-    ast_to_arg(ast->binop.lhs, prog, fn, sp, &op.binop.lhs);
-    ast_to_arg(ast->binop.rhs, prog, fn, sp, &op.binop.rhs);
+    expr_to_arg(expr->binop.lhs, prog, fn, sp, &op.binop.lhs);
+    expr_to_arg(expr->binop.rhs, prog, fn, sp, &op.binop.rhs);
 
     op.binop.dst = (Arg) {
       .kind = ARG_VAR_LOC,
@@ -277,7 +277,7 @@ static void ast_to_ir(AST *ast, Program *prog, Fn *fn, Scoop *sp)
 
     da_append(&fn->fn_body, op);
   } break;
-  case AST_ATOM: break; // this doesn't need to generate an ir op currently.
+  case EXPR_ATOM: break; // this doesn't need to generate an ir op currently.
   default: UNREACHABLE("");
   }
 }
@@ -285,18 +285,18 @@ static void ast_to_ir(AST *ast, Program *prog, Fn *fn, Scoop *sp)
 static bool compile_stat_simple(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
 {
   Cursor loc = l->cursor;
-  AST expr = {0};
+  EXPR expr = {0};
   if (!compile_expr(l, &expr)) return false;
 
   bool result;
   if (l->current.kind == '=') {
-    AST val_ast = {0};
+    EXPR val_expr = {0};
     if (!prefetch_not_none(l)) return_defer(false);
-    if (!compile_expr(l, &val_ast)) return_defer(false);
+    if (!compile_expr(l, &val_expr)) return_defer(false);
 
     Arg var, val;
-    ast_to_arg(&expr, prog, fn, sp, &var);
-    ast_to_arg(&val_ast, prog, fn, sp, &val);
+    expr_to_arg(&expr, prog, fn, sp, &var);
+    expr_to_arg(&val_expr, prog, fn, sp, &val);
 
     Op set_var = {
       .kind = OP_SET_VAR,
@@ -308,14 +308,14 @@ static bool compile_stat_simple(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
     };
     da_append(&fn->fn_body, set_var);
 
-    ast_del(&val_ast);
+    expr_del(&val_expr);
   } else {
-    ast_to_ir(&expr, prog, fn, sp);
+    expr_to_ir(&expr, prog, fn, sp);
   }
 
   return_defer(true);
  defer:
-  ast_del(&expr);
+  expr_del(&expr);
   return result;
 }
 
@@ -479,11 +479,11 @@ static bool compile_local_var(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
 
   Cursor loc = l->current.start;
   if (!prefetch_not_none(l)) return false;
-  AST expr = {0};
+  EXPR expr = {0};
   if (!compile_expr(l, &expr)) return false;
   Arg val = {0};
-  ast_to_arg(&expr, prog, fn, sp, &val);
-  ast_del(&expr);
+  expr_to_arg(&expr, prog, fn, sp, &val);
+  expr_del(&expr);
 
   Op set_var = {
     .kind = OP_SET_VAR,
@@ -525,10 +525,10 @@ static bool compile_stat(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
     };
     if (!prefetch_not_none(l)) return false;
 
-    AST expr = {0};
+    EXPR expr = {0};
     if (!compile_expr(l, &expr)) return false;
-    ast_to_arg(&expr, prog, fn, sp, &ret.ret_val);
-    ast_del(&expr);
+    expr_to_arg(&expr, prog, fn, sp, &ret.ret_val);
+    expr_del(&expr);
 
     da_append(&fn->fn_body, ret);
   } else if (l->current.kind == TOKEN_IF) {
@@ -538,10 +538,10 @@ static bool compile_stat(Lexer *l, Program *prog, Fn *fn, Scoop *sp)
       Op op = {
         .kind = OP_JMP_ELSE,
       };
-      AST cond = {0};
+      EXPR cond = {0};
       if (!compile_expr(l, &cond)) return false;
-      ast_to_arg(&cond, prog, fn, sp, &op.jmp.cond);
-      ast_del(&cond);
+      expr_to_arg(&cond, prog, fn, sp, &op.jmp.cond);
+      expr_del(&cond);
       da_append(&fn->fn_body, op);
     }
     size_t jmp_else = fn->fn_body.count - 1;
