@@ -7,6 +7,7 @@
 #include "3rd/ht.h"
 
 #include "lexer.h"
+#include "ast.h"
 #include "type.h"
 
 typedef enum {
@@ -101,21 +102,6 @@ typedef struct {
   Arg var;
   Arg val;
 } OpSetVar;
-
-typedef enum {
-  BINOP_ADD = 0,
-  BINOP_SUB,
-  BINOP_MUL,
-  BINOP_DIV,
-  BINOP_MOD,
-  BINOP_EQ,
-  BINOP_NEQ,
-  BINOP_LS,
-  BINOP_GT,
-  BINOP_LE,
-  BINOP_GE,
-  __binop_kind_count,
-} BinopKind;
 
 typedef struct {
   BinopKind kind;

@@ -393,8 +393,6 @@ bool build_x86_64_native(const char *filename, const Program *prog)
   cmd_append(&cmd, "cc", "-o", filename, asm_file);
   if(!cmd_run(&cmd)) return_defer(false);
 
-  if (!write_entire_file(asm_file, code.items, code.count)) return_defer(false);
-
   return_defer(true);
 
  defer:
