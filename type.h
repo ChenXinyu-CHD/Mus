@@ -89,7 +89,7 @@ TypeExpr type_fn(TypeExpr ret_type, TypeList arg_types, bool va_args)
 TypeExpr type_clone(TypeExpr t)
 {
   TypeExpr result = {0};
-  static_assert(__type_kind_count == 7);
+  static_assert(__type_kind_count == 7, "introduced more type kinds");
   switch (t.kind) {
   case TYPE_UNKNOWN:
   case TYPE_BOOL:
@@ -130,7 +130,7 @@ bool type_matched(TypeExpr *required, TypeExpr *actual)
 
 bool type_eq(const TypeExpr *lhs, TypeExpr *rhs)
 {
-  static_assert(__type_kind_count == 7);
+  static_assert(__type_kind_count == 7, "introduced more type kinds");
   if (lhs->kind != rhs->kind || lhs->size != rhs->size) return false;
 
   switch (lhs->kind) {
@@ -161,7 +161,7 @@ bool type_eq(const TypeExpr *lhs, TypeExpr *rhs)
 
 void dump_type_expr(TypeExpr *type, FILE *stream)
 {
-  static_assert(__type_kind_count == 7);
+  static_assert(__type_kind_count == 7, "introduced more type kinds");
   switch(type->kind) {
   case TYPE_UNKNOWN:
     fprintf(stream, "unknown type");
@@ -203,7 +203,7 @@ void destroy_type_expr(TypeExpr* type)
 {
   if (type == NULL) return;
 
-  static_assert(__type_kind_count == 7);
+  static_assert(__type_kind_count == 7, "introduced more type kinds");
   switch(type->kind) {
   case TYPE_INT: break;
   case TYPE_UINT: break;

@@ -264,7 +264,7 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
 
     for (size_t op_idx = 0; op_idx < fn->fn_body.count; ++op_idx) {
       Op *op = &fn->fn_body.items[op_idx];
-      static_assert(__op_kind_count == 7);
+      static_assert(__op_kind_count == 7, "introduced more op kinds");
       switch(op->kind) {
       case OP_INVOKE: {
         for (int i = op->invoke.args.count - 1; i >= 0; --i) {
@@ -293,7 +293,7 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         sb_appendf(&sb, "    movq %%rax, %%rbx\n");
         arg2rax(&sb, &op->binop.lhs, prog, fn);
 
-        static_assert(__binop_kind_count == 11);
+        static_assert(__binop_kind_count == 11, "introduced more binop kinds");
         switch (op->binop.kind) {
         case BINOP_ADD:
           sb_appendf(&sb, "    addq %%rbx, %%rax\n");

@@ -183,7 +183,7 @@ String_View sv_between_cs(String_Builder sb, Cursor begin, Cursor end)
   };
 }
 
-static_assert(__token_kind_count == 128 + 28);
+static_assert(__token_kind_count == 128 + 28, "introduced more token kinds");
 static struct {
   int kind;
   char *str;

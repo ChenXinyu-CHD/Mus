@@ -98,7 +98,8 @@ static const struct {
   {.token_kind =  TOKEN_LE,  .binop_kind = BINOP_LE,},
   {.token_kind =  TOKEN_GE,  .binop_kind = BINOP_GE,},
 };
-static_assert(__binop_kind_count == ARRAY_LEN(binop_list));
+static_assert(__binop_kind_count == ARRAY_LEN(binop_list),
+              "introduced more binop kinds");
 
 const char *binop_name(BinopKind kind)
 {
@@ -148,7 +149,7 @@ static void expr_list_del(Expr_List *exprs)
 
 void expr_del(Expr *expr)
 {
-  static_assert(__expr_kind_count == 3);
+  static_assert(__expr_kind_count == 3, "introduced more expr kinds");
   switch(expr->kind) {
   case EXPR_ATOM:
     return;
@@ -389,7 +390,7 @@ bool compile_stat_ast(Lexer *l, Stat *stat)
 
 void stat_del(Stat *stat)
 {
-  static_assert(__stat_kind_count == 4);
+  static_assert(__stat_kind_count == 4, "introduced more stat kinds");
   switch(stat->kind) {
   case STAT_EMPTY:
     // nothing to do;

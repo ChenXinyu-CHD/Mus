@@ -91,7 +91,7 @@ size_t alloc_var(VarList *vars)
 }
 static void destroy_op(Op *op)
 {
-  static_assert(__op_kind_count == 7);
+  static_assert(__op_kind_count == 7, "introduced more op kinds");
   switch (op->kind) {
   case OP_INVOKE:
     da_free(op->invoke.args);
@@ -173,7 +173,7 @@ static void expr_to_ir(Expr *expr, Program *prog, Fn *fn, Scoop *sp);
 static void expr_to_arg(Expr *expr, Program *prog, Fn *fn, Scoop *sp, Arg *exp_result)
 {
 
-  static_assert(__expr_kind_count == 3);
+  static_assert(__expr_kind_count == 3, "introduced more expr kinds");
   switch (expr->kind) {
   case EXPR_ATOM: {
     Token token = expr->atom;
@@ -243,7 +243,7 @@ static void expr_to_arg(Expr *expr, Program *prog, Fn *fn, Scoop *sp, Arg *exp_r
 
 static void expr_to_ir(Expr *expr, Program *prog, Fn *fn, Scoop *sp)
 {
-  static_assert(__expr_kind_count == 3);
+  static_assert(__expr_kind_count == 3, "introduced more expr kinds");
   switch (expr->kind) {
   case EXPR_INVOKE: {
     Op op = { .kind = OP_INVOKE };
@@ -284,7 +284,7 @@ static void expr_to_ir(Expr *expr, Program *prog, Fn *fn, Scoop *sp)
 
 static void stat_to_ir(Stat *stat, Program *prog, Fn *fn, Scoop *sp)
 {
-  static_assert(__stat_kind_count == 4);
+  static_assert(__stat_kind_count == 4, "introduced more stat kinds");
   switch (stat->kind) {
   case STAT_INVOKE: {
     Op op = { .kind = OP_INVOKE };
@@ -323,7 +323,7 @@ static void stat_to_ir(Stat *stat, Program *prog, Fn *fn, Scoop *sp)
   }
 }
 
-static_assert(__type_kind_count == 7);
+static_assert(__type_kind_count == 7, "introduced more type kinds");
 static struct {
   int token;
   TypeExpr type;
@@ -669,7 +669,7 @@ static bool backpatch_name_arg_impl(Arg *arg, Program *prog, Fn *fn)
     return false;
   }
   
-  static_assert(__symbol_kind_count == 3);
+  static_assert(__symbol_kind_count == 3, "introduced more symbol kinds");
   switch (r.sym->kind) {
   case SYMBOL_FN:
     arg->label = search_ptr(prog->fn_list.items, prog->fn_list.count, r.sym->ptr);
@@ -727,7 +727,7 @@ static bool backpatch_name_args(Program *prog)
   da_foreach (Fn*, fn_ptr, &prog->fn_list) {
     Fn *fn = *fn_ptr;
     da_foreach (Op, op, &fn->fn_body) {
-      static_assert(__op_kind_count == 7);
+      static_assert(__op_kind_count == 7, "introduced more op kinds");
       switch (op->kind) {
       case OP_RETURN:
         success = backpatch_name_arg_impl(&op->ret_val, prog, fn) && success;
@@ -774,7 +774,7 @@ static bool detect_arg_type(Arg *arg, Program *prog, Fn *fn) {
 
   TypeExpr *type = NULL;
 
-  static_assert(__arg_kind_count == 8);
+  static_assert(__arg_kind_count == 8, "introduced more arg kinds");
   switch(arg->kind) {
   case ARG_EXTERN:
     type = &externs->items[arg->label]->type;
@@ -809,7 +809,7 @@ static bool detect_var_type(Arg *var, Arg *val, Program *prog, Fn *fn)
 
   TypeExpr *var_type = NULL;
   // not every arg type can occur in here
-  static_assert(__arg_kind_count == 8);
+  static_assert(__arg_kind_count == 8, "introduced more arg kinds");
   switch (var->kind) {
   case ARG_VAR_LOC:
     assert(var->label < vars->count);
@@ -842,7 +842,7 @@ static bool detect_binop_dst_type(VarList *vars, OpBinop *binop)
   assert(rhs->type.kind != TYPE_UNKNOWN);
   assert(dst->kind == ARG_VAR_LOC);
 
-  static_assert(__binop_kind_count == 11);
+  static_assert(__binop_kind_count == 11, "introduced more binop kinds");
   switch (binop->kind) {
   case BINOP_EQ:
   case BINOP_NEQ:
@@ -925,7 +925,7 @@ static bool detect_all_unknown_type(Program *prog)
   da_foreach (Fn*, fn_ptr, &prog->fn_list) {
     Fn *fn = *fn_ptr;
     da_foreach (Op, op, &fn->fn_body) {
-      static_assert(__op_kind_count == 7);
+      static_assert(__op_kind_count == 7, "introduced more op kinds");
       switch (op->kind) {
       case OP_RETURN:
         if (!detect_arg_type(&op->ret_val, prog, fn)) return false;
@@ -1020,7 +1020,7 @@ static bool check_type(Program *prog)
 
     assert(fn_type->kind == TYPE_FN);
     da_foreach (Op, op, &fn->fn_body) {
-      static_assert(__op_kind_count == 7);
+      static_assert(__op_kind_count == 7, "introduced more op kinds");
       switch (op->kind) {
       case OP_RETURN: {
         TypeExpr *ret_type = &op->ret_val.type;
@@ -1123,7 +1123,7 @@ static bool check_fn_returned(Program *prog)
     Fn *fn = *fn_ptr;
     bool returned = false;
     da_foreach(Op, op, &fn->fn_body) {
-      static_assert(__op_kind_count == 7);
+      static_assert(__op_kind_count == 7, "introduced more op kinds");
       switch(op->kind) {
       case OP_RETURN:
         returned = true;
