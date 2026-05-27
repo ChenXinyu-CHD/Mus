@@ -531,7 +531,7 @@ int main(int argc, char **argv)
   }
 
   if (!compile_program(&lexer, &prog)) {
-    fprintf(stderr, "fatal error: failed to compile file %s\n", argv[1]);
+    fprintf(stderr, "fatal error: failed to compile file %s\n", mcc_args.files.items[0]);
     return_defer(1);
   }
 

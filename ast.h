@@ -3,6 +3,8 @@
 
 #include "3rd/nob.h"
 
+#include "SymbolTable.h"
+
 typedef enum {
   EXPR_ATOM = 0,
   EXPR_INVOKE,
@@ -59,10 +61,20 @@ typedef enum {
   STAT_INVOKE,
   STAT_RET,
   STAT_ASSIGN,
+  STAT_BLOCK,
+  STAT_IF,
   __stat_kind_count,
 } Stat_Kind;
 
+typedef struct Stat Stat;
+
 typedef struct {
+  Stat *items;
+  size_t count;
+  size_t capacity;
+} Stat_List;
+
+struct Stat {
   Stat_Kind kind;
   Cursor loc;
   union {
@@ -72,10 +84,22 @@ typedef struct {
       Expr *dst;
       Expr *val;
     } assign;
+    struct {
+      Scoop *local;
+      Stat_List stats;
+    } block;
+    struct {
+      Expr *cond;
+      Stat *on_true;
+      Stat *on_false;
+    } if_else;
   };
-} Stat;
+};
 
-bool compile_stat_ast(Lexer *l, Stat *stat);
+typedef struct Program Program;
+
+bool compile_stat_ast(Lexer *l, Stat *stat, Program *prog, Scoop *sp);
+bool compile_block_ast(Lexer *l, Stat *stat, Program *prog, Scoop *outer);
 void stat_del(Stat *stat);
 
 #endif // MCC_AST_H_
@@ -322,55 +346,66 @@ bool compile_expr(Lexer *l, Expr *expr)
   return compile_cmp(l, expr);
 }
 
-bool compile_stat_ast(Lexer *l, Stat *stat)
+bool compile_stat_ast(Lexer *l, Stat *stat, Program *prog, Scoop *sp)
 {
   *stat = (Stat) {
     .kind = STAT_EMPTY,
     .loc = l->current.start,
   };
 
+  if (l->current.kind == '{') {
+    if (l->current.kind == '{') {
+      return compile_block_ast(l, stat, prog, sp);
+    }
+  }
+
+  bool result = false;
   // simple statement
-  if (l->current.kind == TOKEN_RET) {
-    if (!prefetch_not_none(l)) return false;
+  if (l->current.kind == TOKEN_IF) {
 
-    Expr *expr = calloc(1, sizeof(*expr));
+    stat->kind = STAT_IF;
+    if (!prefetch_not_none(l)) return_defer(false);
 
-    if (!compile_expr(l, expr)) {
-      free(expr);
-      return false;
+    stat->if_else.cond = calloc(1, sizeof(Expr));
+    if (!compile_expr(l, stat->if_else.cond)) return_defer(false);
+
+    stat->if_else.on_true = calloc(1, sizeof(Stat));
+    if (!compile_stat_ast(l, stat->if_else.on_true, prog, sp)) return_defer(false);
+
+    stat->if_else.on_false = NULL;
+    if (l->current.kind == TOKEN_ELSE) {
+      if (!prefetch_not_none(l)) return_defer(false);
+      stat->if_else.on_false = calloc(1, sizeof(Stat));
+      if (!compile_stat_ast(l, stat->if_else.on_false, prog, sp)) return_defer(false);
     }
-
+  } else if (l->current.kind == TOKEN_RET) {
     stat->kind = STAT_RET;
-    stat->ret_val = expr;
+
+    if (!prefetch_not_none(l)) return_defer(false);
+
+    stat->ret_val = calloc(1, sizeof(Expr));
+
+    if (!compile_expr(l, stat->ret_val)) return_defer(false);
   } else {
-    Expr *expr = calloc(1, sizeof(*expr));
-    if (!compile_expr(l, expr)) {
-      free(expr);
-      return false;
-    }
+    Expr expr = {0};
+    if (!compile_expr(l, &expr)) return_defer(false);
 
     if (l->current.kind == '=') {
-      Expr *val = calloc(1, sizeof(*expr));
-      if (!compile_expr(l, val)) {
-        free(val);
-
-        expr_del(expr);
-        free(expr);
-        return false;
-      }
       stat->kind = STAT_ASSIGN;
-      stat->assign.val = val;
-      stat->assign.dst = expr;
-    } else if (expr->kind == EXPR_INVOKE) {
+      stat->assign.dst = calloc(1, sizeof(Expr));
+      *stat->assign.dst = expr;
+
+      if (!prefetch_not_none(l)) return_defer(false);
+      stat->assign.val = calloc(1, sizeof(Expr));
+      if (!compile_expr(l, stat->assign.val)) return_defer(false);
+    } else if (expr.kind == EXPR_INVOKE) {
       stat->kind = STAT_INVOKE;
-      stat->invoke = expr->invoke;
+      stat->invoke = expr.invoke;
     } else {
       pcompile_info(stat->loc,
                     "error: expect a statement, but got an expression.\n");
-
-      expr_del(expr);
-      free(expr);
-      return false;
+      expr_del(&expr);
+      return_defer(false);
     }
   }
 
@@ -382,35 +417,178 @@ bool compile_stat_ast(Lexer *l, Stat *stat)
   // because both ';' are two empty statement
   // because they are not followed by a simple statement
   if (l->current.kind == ';') {
-    if (!prefetch_not_none(l)) return false;
+    if (!prefetch_not_none(l)) return_defer(false);
   }
 
   return true;
+ defer:
+  if (!result) stat_del(stat);
+  return result;
+}
+
+bool compile_type_expr(Lexer *l, TypeExpr *type);
+
+static bool compile_var(Lexer *l, Stat *init, Scoop *sp)
+{
+  *init = (Stat) {.kind = STAT_EMPTY};
+  if (!prefetch_expect_token(l, TOKEN_ID)) return false;
+  Token name = l->current;
+
+  Var *var = calloc(1, sizeof(Var));
+  assert(var && "buy more memory");
+  *var = (Var) {
+    .type = {.kind=TYPE_UNKNOWN},
+    .loc = name.start,
+  };
+
+  if (!insert_sym(sp, name, SYMBOL_VAR, var)) return false;
+
+  if (!prefetch_not_none(l)) return false;
+
+  if (l->current.kind == ':') {
+    if (!prefetch_not_none(l)) return false;
+    if (!compile_type_expr(l, &var->type)) return false;
+    if (var->type.kind == TYPE_VOID) {
+      pcompile_info(l->current.start,
+                    "error: the type of a local variable cannot be \"void\"");
+      return false;
+    }
+    if (!prefetch_not_none(l)) return false;
+  }
+
+  if (l->current.kind == '=') {
+    Cursor loc = l->current.start;
+    if (!prefetch_not_none(l)) return false;
+
+    Expr *val = calloc(1, sizeof(*val));
+    if (!compile_expr(l, val)) {
+      free(val);
+      return false;
+    }
+
+    Expr *dst = calloc(1, sizeof(*dst));
+    *dst = expr_atom(name);
+
+    *init = (Stat) {
+      .kind = STAT_ASSIGN,
+      .loc = loc,
+      .assign = {
+        .dst = dst,
+        .val = val,
+      },
+    };
+  }
+  if (l->current.kind == ';') {
+    if (!prefetch_not_none(l)) {
+      stat_del(init);
+    }
+  }
+  var->init_end = l->current.start;
+  return true;
+}
+
+bool compile_def(Lexer *l, Program *prog, Scoop *sp);
+
+bool compile_block_ast(Lexer *l, Stat *stat, Program *prog, Scoop *outer)
+{
+  assert(l->current.kind == '{');
+  if (!prefetch_not_none(l)) return false;
+
+  Scoop *local = malloc(sizeof(*local));
+  *local = (Scoop) {
+    .upper = outer,
+    .symbols = {
+      .hasheq = ht_sv_hasheq,
+    },
+  };
+
+  Stat_List stats = {0};
+
+  while (l->current.kind != '}') {
+    Stat s = {0};
+    if (l->current.kind == TOKEN_VAR) {
+      if (!compile_var(l, &s, local)) return false;
+      da_append(&stats, s);
+      continue;
+    }
+
+    if (compile_def(l, prog, local)) {
+      continue;
+    }
+
+    if (!compile_stat_ast(l, &s, prog, local)) return false;
+    da_append(&stats, s);
+  }
+
+  *stat = (Stat) {
+    .kind = STAT_BLOCK,
+    .block = {
+      .local = local,
+      .stats = stats
+    },
+  };
+  lexer_next(l);
+  return true;
+}
+
+static void stat_list_del(Stat_List stats)
+{
+  da_foreach(Stat, stat, &stats) {
+    stat_del(stat);
+  }
+  da_free(stats);
 }
 
 void stat_del(Stat *stat)
 {
-  static_assert(__stat_kind_count == 4, "introduced more stat kinds");
+  static_assert(__stat_kind_count == 6, "introduced more stat kinds");
   switch(stat->kind) {
   case STAT_EMPTY:
     // nothing to do;
     break;
   case STAT_ASSIGN:
-    expr_del(stat->assign.dst);
-    expr_del(stat->assign.val);
-    free(stat->assign.dst);
-    free(stat->assign.val);
+    if (stat->assign.dst != NULL) {
+      expr_del(stat->assign.dst);
+      free(stat->assign.dst);
+    }
+    if (stat->assign.val != NULL) {
+      expr_del(stat->assign.val);
+      free(stat->assign.val);
+    }
     break;
   case STAT_RET:
-    expr_del(stat->ret_val);
-    free(stat->ret_val);
+    if (stat->ret_val) {
+      expr_del(stat->ret_val);
+      free(stat->ret_val);
+    }
     break;
   case STAT_INVOKE:
-    expr_del(stat->invoke.fn);
+    if (stat->invoke.fn) {
+      expr_del(stat->invoke.fn);
+      free(stat->invoke.fn);
+    }
     expr_list_del(&stat->invoke.args);
+    break;
+  case STAT_BLOCK:
+    stat_list_del(stat->block.stats);
+    break;
+  case STAT_IF:
+    if (stat->if_else.cond) {
+      expr_del(stat->if_else.cond);
+      free(stat->if_else.cond);
+    }
+    if (stat->if_else.on_true) {
+      stat_del(stat->if_else.on_true);
+      free(stat->if_else.on_true);
+    }
+    if (stat->if_else.on_false) {
+      stat_del(stat->if_else.on_false);
+      free(stat->if_else.on_false);
+    }
     break;
   default: UNREACHABLE("");
   }
 }
 
 #endif // MCC_AST_IMPLEMENTATION
+

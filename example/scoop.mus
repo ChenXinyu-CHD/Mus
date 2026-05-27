@@ -1,9 +1,10 @@
 fn main(): i32
 {
-    var a = 0;
+    var a = 114514;
     {
         printf("a = %d\n", a);
-        var a = a + 1;
+        var a =
+            a + 1;
         printf("a = %d\n", a);
     }
     printf("a = %d\n", a);

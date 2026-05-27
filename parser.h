@@ -8,45 +8,8 @@
 
 #include "lexer.h"
 #include "ast.h"
+#include "SymbolTable.h"
 #include "type.h"
-
-typedef enum {
-  SYMBOL_FN = 0,
-  SYMBOL_VAR,
-  SYMBOL_EXTERN,
-  __symbol_kind_count,
-} SymbolKind;
-
-typedef struct Var Var;
-typedef struct Extern Extern;
-typedef struct Fn Fn;
-
-typedef struct {
-  SymbolKind kind;
-  union {
-    Var *var;
-    Extern *ext;
-    Fn *fn;
-    void *ptr;
-  };
-} Symbol;
-
-typedef struct Scoop Scoop;
-struct Scoop {
-  Scoop *upper;
-  Ht(String_View, Symbol) symbols;
-};
-
-bool insert_sym(Scoop *sp, Token name, SymbolKind kind, void *ptr);
-String_View sym_name(Scoop* sp, void *sym);
-
-// C is so bad
-typedef struct {
-  Scoop *scoop;
-  Symbol *sym;
-} SymSearchResult;
-
-SymSearchResult sym_search(Scoop *sp, String_View name);
 
 typedef enum {
   ARG_NONE = 0,
@@ -141,27 +104,6 @@ struct Extern {
   TypeExpr type;
 };
 
-typedef struct {
-  Extern **items;
-  size_t count;
-  size_t capacity;
-} ExternList;
-
-struct Var {
-  TypeExpr type;
-  Cursor loc;
-  
-  ptrdiff_t offset;
-};
-
-typedef struct {
-  Var **items;
-  size_t memsize;
-  
-  size_t count;
-  size_t capacity;
-} VarList;
-
 size_t alloc_var(VarList *vars);
 
 struct Fn {
@@ -186,7 +128,7 @@ typedef struct {
   size_t capacity;
 } SymbolTable;
 
-typedef struct {
+struct Program {
   SymbolTable symbols;
   Scoop *global;
   
@@ -197,7 +139,7 @@ typedef struct {
     size_t count;
     size_t capacity;
   } str_lits;
-} Program;
+};
 
 Scoop *alloc_scoop(SymbolTable *st, Scoop *upper);
 void free_all_symbol(SymbolTable *st);
