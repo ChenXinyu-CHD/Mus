@@ -13,15 +13,15 @@
 
 typedef enum {
   ARG_NONE = 0,
-  ARG_NAME,     // 暂时只能以名称的引用的参数，作为编译时的占位符
   ARG_EXTERN,
   ARG_FN,
-  ARG_VAR_LOC,
-  ARG_VAR_ARG,
+  ARG_VAR,
   ARG_LIT_INT,
   ARG_LIT_STR,
   __arg_kind_count,
 } ArgKind;
+
+typedef struct Fn Fn;
 
 typedef struct {
   ArgKind kind;
@@ -32,7 +32,7 @@ typedef struct {
       Cursor loc;
       Scoop *scoop;
     };
-    int    num_int;
+    int num_int;
     Fn *fn;
     Var *var;
     Extern *ext;
@@ -125,12 +125,6 @@ typedef struct {
   size_t capacity;
 } FnList;
 
-typedef struct {
-  Scoop **items;
-  size_t count;
-  size_t capacity;
-} SymbolTable;
-
 struct Program {
   FnList fn_list;
   ExternList externs;
@@ -140,9 +134,6 @@ struct Program {
     size_t capacity;
   } str_lits;
 };
-
-Scoop *alloc_scoop(SymbolTable *st, Scoop *upper);
-void free_all_symbol(SymbolTable *st);
 
 bool compile_program(Lexer *l, Program *grog);
 void destroy_program(Program *prog);

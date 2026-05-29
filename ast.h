@@ -585,7 +585,7 @@ bool compile_fn_ast(Lexer *l, Scoop *sp)
   AST_Fn *fn = calloc(1, sizeof(*fn));
   fn->local = new_scoop(sp);
 
-  if (!insert_sym(sp, l->current, SYMBOL_FN_AST, fn)) return false;
+  if (!insert_sym(sp, l->current, SYMBOL_FN, fn)) return false;
   fn->loc = l->current.start;
 
   if (!prefetch_expect_token(l, '(')) return false;

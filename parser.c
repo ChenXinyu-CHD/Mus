@@ -16,30 +16,6 @@
 #define HT_IMPLEMENTATION
 #include "3rd/ht.h"
 
-Scoop *alloc_scoop(SymbolTable *st, Scoop *upper)
-{
-  Scoop *result = malloc(sizeof(Scoop));
-  assert(result && "buy more memory");
-
-  *result = (Scoop) {
-    .upper = upper,
-    .symbols = {
-      .hasheq = ht_sv_hasheq,
-    },
-  };
-  da_append(st, result);
-  return result;
-}
-
-void free_all_symbol(SymbolTable *st)
-{
-  da_foreach (Scoop*, sp, st) {
-    ht_free(sp);
-    free(*sp);
-  }
-  da_free(*st);
-}
-
 Var *alloc_var(VarList *vars)
 {
   Var *var = malloc(sizeof(Var));
@@ -164,7 +140,7 @@ static bool id_to_arg(Token id, Arg *arg, Scoop *sp, Gen_Context *ctx)
     return false;
   }
 
-  static_assert(__symbol_kind_count == 4, "introduced more symbol kinds");
+  static_assert(__symbol_kind_count == 3, "introduced more symbol kinds");
   switch (r.sym->kind) {
   case SYMBOL_VAR: {
     bool available =
@@ -177,12 +153,12 @@ static bool id_to_arg(Token id, Arg *arg, Scoop *sp, Gen_Context *ctx)
       Var* var = r.sym->var;
 
       if (contains(ctx->fn->vars.items, ctx->fn->vars.count, var)) {
-        arg->kind = ARG_VAR_LOC;
+        arg->kind = ARG_VAR;
         arg->var = var;
         arg->type = type_clone(var->type);
         return true;
       } else if (contains(ctx->fn->args.items, ctx->fn->args.count, var)) {
-        arg->kind = ARG_VAR_ARG;
+        arg->kind = ARG_VAR;
         arg->var = var;
         arg->type = type_clone(var->type);
         return true;
@@ -206,7 +182,7 @@ static bool id_to_arg(Token id, Arg *arg, Scoop *sp, Gen_Context *ctx)
     arg->type = type_clone(ext->type);
     return true;
   }
-  case SYMBOL_FN_AST: {
+  case SYMBOL_FN: {
     Fn **arg_fn = ht_find(&ctx->known, r.sym->ast_fn);
     assert(arg_fn &&
            "all fn in this scoop should be inserted in fns at first");
@@ -269,7 +245,7 @@ static bool expr_to_arg(Expr *expr, Scoop *sp, Gen_Context *ctx, Arg *result)
     op->invoke.result = alloc_var(&ctx->fn->vars);
     op->invoke.ret_ignore = false;
     *result = (Arg) {
-      .kind = ARG_VAR_LOC,
+      .kind = ARG_VAR,
       .type = {.kind = TYPE_UNKNOWN},
       .var = op->invoke.result,
     };
@@ -315,7 +291,7 @@ static bool expr_to_ir(Expr *expr, Scoop *sp, Gen_Context *ctx)
       return false;
 
     op.binop.dst = (Arg) {
-      .kind = ARG_VAR_LOC,
+      .kind = ARG_VAR,
       .type = {.kind = TYPE_UNKNOWN},
       .var = alloc_var(&ctx->fn->vars),
     };
@@ -364,7 +340,7 @@ static bool stat_to_ir(Stat *stat, Scoop *sp, Gen_Context *ctx)
     ht_foreach(sym, &stat->block.local->symbols) {
       if (sym->kind == SYMBOL_VAR) {
         da_append(&ctx->fn->vars, sym->var);
-      } else if (sym->kind == SYMBOL_FN_AST) {
+      } else if (sym->kind == SYMBOL_FN) {
         String_Builder name = {0};
         sb_appendf(&name, ".fn_%ld", ctx->known.count);
         push_fn_ast(ctx, name, sym->ast_fn);
@@ -554,11 +530,9 @@ static bool detect_arg_type(Arg *arg) {
   if (arg->type.kind != TYPE_UNKNOWN) return true;
   if (arg->kind == ARG_NONE) return true;
 
-  assert(arg->kind != ARG_NAME);
-
   TypeExpr *type = NULL;
 
-  static_assert(__arg_kind_count == 8, "introduced more arg kinds");
+  static_assert(__arg_kind_count == 6, "introduced more arg kinds");
   switch(arg->kind) {
   case ARG_EXTERN:
     type = &arg->ext->type;
@@ -566,10 +540,7 @@ static bool detect_arg_type(Arg *arg) {
   case ARG_FN:
     type = &arg->fn->type;
     break;
-  case ARG_VAR_LOC:
-    type = &arg->var->type;
-    break;
-  case ARG_VAR_ARG:
+  case ARG_VAR:
     type = &arg->var->type;
     break;
   default:
@@ -589,16 +560,11 @@ static bool detect_var_type(Arg *var, Arg *val)
 
   TypeExpr *var_type = NULL;
   // not every arg type can occur in here
-  static_assert(__arg_kind_count == 8, "introduced more arg kinds");
+  static_assert(__arg_kind_count == 6, "introduced more arg kinds");
   switch (var->kind) {
-  case ARG_VAR_LOC:
+  case ARG_VAR:
     var_type = &var->var->type;
     break;
-  case ARG_VAR_ARG:
-    var_type = &var->var->type;
-    break;
-  case ARG_NAME:
-    UNREACHABLE("currently this is imposible");
   default: UNREACHABLE("fix_type_var");
   }
 
@@ -618,7 +584,7 @@ static bool detect_binop_dst_type(OpBinop *binop)
 
   assert(lhs->type.kind != TYPE_UNKNOWN);
   assert(rhs->type.kind != TYPE_UNKNOWN);
-  assert(dst->kind == ARG_VAR_LOC);
+  assert(dst->kind == ARG_VAR);
 
   static_assert(__binop_kind_count == 11, "introduced more binop kinds");
   switch (binop->kind) {
@@ -909,10 +875,10 @@ static bool gen_ir(Program *prog, Scoop *global)
   // and the second pass generate the actual code
   Gen_Context ctx = {.prog = prog};
   ht_foreach(sym, &global->symbols) {
-    static_assert(__symbol_kind_count == 4,
+    static_assert(__symbol_kind_count == 3,
                   "introduced more symbol kinds");
     switch(sym->kind) {
-    case SYMBOL_FN_AST: {
+    case SYMBOL_FN: {
       String_Builder name = {0};
       sb_appendf(&name, SV_Fmt, SV_Arg(ht_key(&global->symbols, sym)));
       push_fn_ast(&ctx, name, sym->ast_fn);

@@ -197,16 +197,12 @@ static void rbp_offset2rax(String_Builder *sb, size_t size, ptrdiff_t offset)
 
 static void arg2rax(String_Builder *sb, Arg *arg)
 {
-  assert(arg->kind != ARG_NAME);
+  static_assert(__arg_kind_count == 6, "introduced more arg kinds");
   switch (arg->kind) {
   case ARG_NONE:
     sb_appendf(sb, "    mov %%rax, %%rax\n");
     break;
-  case ARG_VAR_LOC: {
-    Var *var = arg->var;
-    rbp_offset2rax(sb, var->type.size, var->offset);
-  } break;
-  case ARG_VAR_ARG: {
+  case ARG_VAR: {
     Var *var = arg->var;
     rbp_offset2rax(sb, var->type.size, var->offset);
   } break;
@@ -357,13 +353,13 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         default: UNREACHABLE("");
         }
 
-        assert(op->binop.dst.kind == ARG_VAR_LOC);
+        assert(op->binop.dst.kind == ARG_VAR);
         Var *var = op->binop.dst.var;
         rax2rbp_offset(&sb, var->type.size, var->offset);
       }  break;
       case OP_SET_VAR: {
         arg2rax(&sb, &op->set_var.val);
-        assert(op->set_var.var.kind == ARG_VAR_LOC);
+        assert(op->set_var.var.kind == ARG_VAR);
         Var *var = op->set_var.var.var;
         rax2rbp_offset(&sb, var->type.size, var->offset);
       } break;

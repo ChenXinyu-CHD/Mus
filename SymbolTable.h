@@ -12,7 +12,6 @@
 
 typedef enum {
   SYMBOL_FN = 0,
-  SYMBOL_FN_AST,
   SYMBOL_VAR,
   SYMBOL_EXTERN,
   __symbol_kind_count,
@@ -20,7 +19,6 @@ typedef enum {
 
 typedef struct Var Var;
 typedef struct Extern Extern;
-typedef struct Fn Fn;
 typedef struct AST_Fn AST_Fn;
 
 typedef struct {
@@ -28,7 +26,6 @@ typedef struct {
   union {
     Var *var;
     Extern *ext;
-    Fn *fn;
     AST_Fn *ast_fn;
     void *ptr;
   };
