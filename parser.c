@@ -1,20 +1,13 @@
 #include "parser.h"
-#include "lexer.h"
 
 #include "3rd/nob.h"
-#include "utils.h"
-
-#define MCC_TYPE_IMPLEMENTATION
-#include "type.h"
-
-#define MCC_AST_IMPLEMENTATION
-#include "ast.h"
-
-#define MCC_SYMBOL_TABLE_IMPELEMTATION
-#include "SymbolTable.h"
-
-#define HT_IMPLEMENTATION
 #include "3rd/ht.h"
+
+#include "lexer.h"
+#include "utils.h"
+#include "type.h"
+#include "ast.h"
+#include "SymbolTable.h"
 
 Var *alloc_var(VarList *vars)
 {
@@ -932,3 +925,5 @@ void destroy_program(Program *prog)
 
   //  free_all_symbol(&prog->symbols);
 }
+
+

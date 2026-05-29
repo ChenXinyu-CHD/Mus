@@ -4,12 +4,7 @@
 
 #include "lexer.h"
 #include "parser.h"
-
-#define MCC_UTILS_IMPLEMENTATION
 #include "utils.h"
-
-#define NOB_IMPLEMENTATION
-#include "3rd/nob.h"
 
 void append_str_lit(String_Builder *sb, String_View str)
 {
@@ -564,3 +559,22 @@ int main(int argc, char **argv)
 
   return result;
 }
+
+#define MCC_UTILS_IMPLEMENTATION
+#include "utils.h"
+
+#define NOB_IMPLEMENTATION
+#include "3rd/nob.h"
+
+#define MCC_TYPE_IMPLEMENTATION
+#include "type.h"
+
+#define MCC_AST_IMPLEMENTATION
+#include "ast.h"
+
+#define MCC_SYMBOL_TABLE_IMPELEMTATION
+#include "SymbolTable.h"
+
+#define HT_IMPLEMENTATION
+#include "3rd/ht.h"
+
