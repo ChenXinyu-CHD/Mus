@@ -33,7 +33,10 @@ typedef struct {
       Scoop *scoop;
     };
     int    num_int;
-    size_t label;
+    Fn *fn;
+    Var *var;
+    Extern *ext;
+    size_t str_label;
   };
 } Arg;
 
@@ -58,7 +61,7 @@ typedef struct {
   Arg fn;
   ArgList args;
   bool ret_ignore;
-  size_t result_label;
+  Var *result;
 } OpInvoke;
 
 typedef struct {
@@ -104,16 +107,16 @@ struct Extern {
   TypeExpr type;
 };
 
-size_t alloc_var(VarList *vars);
+Var *alloc_var(VarList *vars);
 
 struct Fn {
+  String_Builder name;
   TypeExpr type;
   Cursor loc;
-  
+
   OpList fn_body;
   VarList vars;
   VarList args;
-  Scoop *local;
 };
 
 typedef struct {
@@ -129,9 +132,6 @@ typedef struct {
 } SymbolTable;
 
 struct Program {
-  SymbolTable symbols;
-  Scoop *global;
-  
   FnList fn_list;
   ExternList externs;
   struct {

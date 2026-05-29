@@ -2,7 +2,7 @@ fn main(): i32
 {
     printf("on true, without else: ");
     if true  printf("ok\n");
-    
+
     printf("on false, with else: ");
     if false printf("error\n");
     else     printf("ok\n");
@@ -33,7 +33,7 @@ fn main(): i32
        printf("k");
        printf("\n");
     }
-    
+
     printf("block on true, with else:");
     if true {
        printf("o");
@@ -44,7 +44,7 @@ fn main(): i32
        printf("rr");
        printf("\n");
     }
-    
+
     printf("block on false, with else:");
     if false
        printf("error");
@@ -53,7 +53,7 @@ fn main(): i32
        printf("k");
        printf("\n");
     }
-    
+
     var n = 5;
     printf("%d! = %d\n", n, fact(n));
 
@@ -75,4 +75,3 @@ fn loop(i: i32, n: i32): void
 }
 
 extern printf: fn(&i8, ...):i32
-

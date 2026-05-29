@@ -10,51 +10,11 @@
 #define MCC_AST_IMPLEMENTATION
 #include "ast.h"
 
+#define MCC_SYMBOL_TABLE_IMPELEMTATION
+#include "SymbolTable.h"
+
 #define HT_IMPLEMENTATION
 #include "3rd/ht.h"
-
-bool insert_sym(Scoop *sp, Token name, SymbolKind kind, void *ptr)
-{
-  Symbol *sym = ht_find(&sp->symbols, name.str);
-  if (sym != NULL) {
-    pcompile_info(name.start,
-                  "error: symbol "SV_Fmt" redefined in this scoop\n",
-                  SV_Arg(name.str));
-    // TODO: report where the symbol is first defined;
-    return false;
-  } else {
-    *ht_put(&sp->symbols, name.str) = (Symbol) {
-      .kind = kind,
-      .ptr = ptr,
-    };
-    return true;
-  }
-}
-
-String_View sym_name(Scoop* sp, void *sym)
-{
-  ht_foreach(value, &sp->symbols) {
-    if (value->ptr == sym) {
-      return ht_key(&sp->symbols, value);
-    }
-  }
-  return sv_from_cstr("");
-}
-
-SymSearchResult sym_search(Scoop *sp, String_View name)
-{
-  for (Scoop *s = sp; s != NULL; s = s->upper) {
-    Symbol *sym = ht_find(&s->symbols, name);
-    if (sym != NULL) {
-      return (SymSearchResult) {
-        .scoop = s,
-        .sym = sym,
-      };
-    }
-  }
-
-  return (SymSearchResult) {NULL, NULL};
-}
 
 Scoop *alloc_scoop(SymbolTable *st, Scoop *upper)
 {
@@ -80,14 +40,14 @@ void free_all_symbol(SymbolTable *st)
   da_free(*st);
 }
 
-size_t alloc_var(VarList *vars)
+Var *alloc_var(VarList *vars)
 {
   Var *var = malloc(sizeof(Var));
   *var = (Var) {
     .type = {.kind = TYPE_UNKNOWN}
   };
   da_append(vars, var);
-  return vars->count - 1;
+  return var;
 }
 static void destroy_op(Op *op)
 {
@@ -158,118 +118,214 @@ static size_t compile_strlit(Program *prog, String_View str)
   return str_count;
 }
 
-static void expr_to_ir(Expr *expr, Program *prog, Fn *fn, Scoop *sp);
-
-static void expr_to_arg(Expr *expr, Program *prog, Fn *fn, Scoop *sp, Arg *exp_result)
+static bool contains(void *arr, size_t n, void *val)
 {
+  void **p = arr;
+  for (size_t i = 0; i < n; ++i) {
+    if (val == p[i]) return true;
+  }
+  return false;
+}
 
+typedef Ht(AST_Fn*, Fn*) Known_Fn;
+typedef struct {
+  AST_Fn **items;
+  size_t capacity;
+  size_t count;
+} AST_Fn_List;
+
+typedef struct {
+  Program *prog;
+  Fn *fn;
+
+  AST_Fn_List ungenerated;
+  Known_Fn known;
+} Gen_Context;
+
+void push_fn_ast(Gen_Context *ctx, String_Builder name, AST_Fn* ast)
+{
+  assert(ht_find(&ctx->known, ast) == NULL);
+  Fn *fn = calloc(1, sizeof(*fn));
+  fn->name = name;
+  da_append(&ctx->ungenerated, ast);
+  *ht_put(&ctx->known, ast) = fn;
+}
+
+static bool id_to_arg(Token id, Arg *arg, Scoop *sp, Gen_Context *ctx)
+{
+  assert(id.kind == TOKEN_ID);
+
+  arg->loc = id.start;
+  SymSearchResult r = sym_search(sp, id.str);
+  if (r.scoop == NULL) {
+    pcompile_info(id.start,
+                  "error: cannot find `"SV_Fmt"` in this scoop\n",
+                  SV_Arg(id.str));
+    return false;
+  }
+
+  static_assert(__symbol_kind_count == 4, "introduced more symbol kinds");
+  switch (r.sym->kind) {
+  case SYMBOL_VAR: {
+    bool available =
+      // after the variable is intialized
+      cs_pos(id.start) > cs_pos(r.sym->var->init_end) ||
+      // or if it is the dst of an assignment when the variable is defined
+      cs_pos(id.start) == cs_pos(r.sym->var->loc);
+
+    if (available) {
+      Var* var = r.sym->var;
+
+      if (contains(ctx->fn->vars.items, ctx->fn->vars.count, var)) {
+        arg->kind = ARG_VAR_LOC;
+        arg->var = var;
+        arg->type = type_clone(var->type);
+        return true;
+      } else if (contains(ctx->fn->args.items, ctx->fn->args.count, var)) {
+        arg->kind = ARG_VAR_ARG;
+        arg->var = var;
+        arg->type = type_clone(var->type);
+        return true;
+      } else {
+        pcompile_info(arg->loc,
+                      "error: `"SV_Fmt"` cannot be refered in this scoop\n",
+                      SV_Arg(id.str));
+        pcompile_info(var->loc,
+                      "info: `"SV_Fmt"` is defined in here\n",
+                      SV_Arg(id.str));
+        return false;
+      }
+    } else {
+      return id_to_arg(id, arg, sp->upper, ctx);
+    }
+  }
+  case SYMBOL_EXTERN: {
+    Extern *ext = r.sym->ext;
+    arg->kind = ARG_EXTERN;
+    arg->ext = ext;
+    arg->type = type_clone(ext->type);
+    return true;
+  }
+  case SYMBOL_FN_AST: {
+    Fn **arg_fn = ht_find(&ctx->known, r.sym->ast_fn);
+    assert(arg_fn &&
+           "all fn in this scoop should be inserted in fns at first");
+    arg->kind = ARG_FN;
+    arg->fn = *arg_fn;
+    // this must be unknown, because the refered function may not be generated
+    arg->type.kind = TYPE_UNKNOWN;;
+    return true;
+  }
+  default: UNREACHABLE("");
+  }
+}
+
+static bool expr_to_ir(Expr *expr, Scoop *sp, Gen_Context *ctx);
+
+static bool expr_to_arg(Expr *expr, Scoop *sp, Gen_Context *ctx, Arg *result)
+{
   static_assert(__expr_kind_count == 3, "introduced more expr kinds");
   switch (expr->kind) {
   case EXPR_ATOM: {
     Token token = expr->atom;
     switch (token.kind) {
     case TOKEN_ID:
-      exp_result->kind = ARG_NAME;
-      exp_result->name = token.str;
-      exp_result->scoop = sp;
-      exp_result->loc = token.start;
-      exp_result->type = (TypeExpr) {.kind = TYPE_UNKNOWN};
-
-      break;
+      return id_to_arg(token, result, sp, ctx);
     case TOKEN_STR:
-      exp_result->kind = ARG_LIT_STR;
-      exp_result->label = compile_strlit(prog, token.str);
-      exp_result->type = type_ptr((TypeExpr) {
+      result->kind = ARG_LIT_STR;
+      result->str_label = compile_strlit(ctx->prog, token.str);
+      result->type = type_ptr((TypeExpr) {
           .kind = TYPE_INT,
           .size = 1,
         });
-      break;
+      return true;
     case TOKEN_INT:
-      exp_result->kind = ARG_LIT_INT;
-      exp_result->num_int = sv_to_int(token.str);
-      exp_result->type = (TypeExpr) {
+      result->kind = ARG_LIT_INT;
+      result->num_int = sv_to_int(token.str);
+      result->type = (TypeExpr) {
         .kind = TYPE_INT,
         .size = 4,
       };
-      break;
+      return true;
     case TOKEN_TRUE:
-      exp_result->kind = ARG_LIT_INT;
-      exp_result->num_int = 1;
-      exp_result->type = type_bool();
-      break;
+      result->kind = ARG_LIT_INT;
+      result->num_int = 1;
+      result->type = type_bool();
+      return true;
     case TOKEN_FALSE:
-      exp_result->kind = ARG_LIT_INT;
-      exp_result->num_int = 0;
-      exp_result->type = type_bool();
-      break;
+      result->kind = ARG_LIT_INT;
+      result->num_int = 0;
+      result->type = type_bool();
+      return true;
     default: UNREACHABLE("");
     }
   } break;
   case EXPR_INVOKE: {
-    expr_to_ir(expr, prog, fn, sp);
+    if (!expr_to_ir(expr, sp, ctx)) return false;
 
-    Op *op = &fn->fn_body.items[fn->fn_body.count-1];
+    Op *op = &da_last(&ctx->fn->fn_body);
     assert(op->kind == OP_INVOKE);
 
-    op->invoke.result_label = alloc_var(&fn->vars);
+    op->invoke.result = alloc_var(&ctx->fn->vars);
     op->invoke.ret_ignore = false;
-    *exp_result = (Arg) {
+    *result = (Arg) {
       .kind = ARG_VAR_LOC,
       .type = {.kind = TYPE_UNKNOWN},
-      .label = op->invoke.result_label,
+      .var = op->invoke.result,
     };
   } break;
   case EXPR_BINOP: {
-    expr_to_ir(expr, prog, fn, sp);
+    if (!expr_to_ir(expr, sp, ctx)) return false;
 
-    Op *op = &fn->fn_body.items[fn->fn_body.count-1];
+    Op *op = &da_last(&ctx->fn->fn_body);
     assert(op->kind == OP_BINOP);
 
-    *exp_result = op->binop.dst;
+    *result = op->binop.dst;
   } break;
   default: UNREACHABLE("");
   }
+  return true;
 }
 
-static void expr_to_ir(Expr *expr, Program *prog, Fn *fn, Scoop *sp)
+static bool expr_to_ir(Expr *expr, Scoop *sp, Gen_Context *ctx)
 {
+  Op op = { .loc = expr->loc };
   static_assert(__expr_kind_count == 3, "introduced more expr kinds");
   switch (expr->kind) {
   case EXPR_INVOKE: {
-    Op op = { .kind = OP_INVOKE };
-    expr_to_arg(expr->invoke.fn, prog, fn, sp, &op.invoke.fn);
+    if (!expr_to_arg(expr->invoke.fn, sp, ctx, &op.invoke.fn))
+      return false;
 
     da_foreach(Expr, expr_arg, &expr->invoke.args) {
       Arg arg = {0};
-      expr_to_arg(expr_arg, prog, fn, sp, &arg);
+      if (!expr_to_arg(expr_arg, sp, ctx, &arg)) return false;
       da_append(&op.invoke.args, arg);
     }
 
     op.invoke.ret_ignore = true;
-    da_append(&fn->fn_body, op);
+    da_append(&ctx->fn->fn_body, op);
   } break;
   case EXPR_BINOP: {
-    Op op = {
-      .kind = OP_BINOP,
-      .binop = {
-        .kind = expr->binop.kind,
-      },
-    };
+    op.kind = OP_BINOP;
+    op.binop.kind = expr->binop.kind;
 
-    expr_to_arg(expr->binop.lhs, prog, fn, sp, &op.binop.lhs);
-    expr_to_arg(expr->binop.rhs, prog, fn, sp, &op.binop.rhs);
+    if (!expr_to_arg(expr->binop.lhs, sp, ctx, &op.binop.lhs))
+      return false;
+    if (!expr_to_arg(expr->binop.rhs, sp, ctx, &op.binop.rhs))
+      return false;
 
     op.binop.dst = (Arg) {
       .kind = ARG_VAR_LOC,
       .type = {.kind = TYPE_UNKNOWN},
-      .label = alloc_var(&fn->vars),
+      .var = alloc_var(&ctx->fn->vars),
     };
 
-    da_append(&fn->fn_body, op);
+    da_append(&ctx->fn->fn_body, op);
   } break;
   case EXPR_ATOM: break; // this doesn't need to generate an ir op currently.
   default: UNREACHABLE("");
   }
+  return true;
 }
 
 static size_t append_op(OpList *ops, Op op)
@@ -278,89 +334,94 @@ static size_t append_op(OpList *ops, Op op)
   return ops->count - 1;
 }
 
-static void stat_to_ir(Stat *stat, Program *prog, Fn *fn, Scoop *sp)
+static bool stat_to_ir(Stat *stat, Scoop *sp, Gen_Context *ctx)
 {
+  Op op = { .loc = stat->loc };
   static_assert(__stat_kind_count == 6, "introduced more stat kinds");
   switch (stat->kind) {
   case STAT_INVOKE: {
-    Op op = { .kind = OP_INVOKE };
-    expr_to_arg(stat->invoke.fn, prog, fn, sp, &op.invoke.fn);
+    op.kind = OP_INVOKE;
+    if (!expr_to_arg(stat->invoke.fn, sp, ctx, &op.invoke.fn))
+      return false;
 
     da_foreach(Expr, stat_arg, &stat->invoke.args) {
       Arg arg = {0};
-      expr_to_arg(stat_arg, prog, fn, sp, &arg);
+      if (!expr_to_arg(stat_arg, sp, ctx, &arg)) return false;
       da_append(&op.invoke.args, arg);
     }
 
     op.invoke.ret_ignore = true;
-    da_append(&fn->fn_body, op);
+    da_append(&ctx->fn->fn_body, op);
   } break;
   case STAT_RET: {
-    Op op = {
-      .kind = OP_RETURN,
-    };
-
-    expr_to_arg(stat->ret_val, prog, fn, sp, &op.ret_val);
-
-    da_append(&fn->fn_body, op);
-  } break;
-  case STAT_ASSIGN: {
-    Op op = {
-      .kind = OP_SET_VAR,
-    };
-    expr_to_arg(stat->assign.dst, prog, fn, sp, &op.set_var.var);
-    expr_to_arg(stat->assign.val, prog, fn, sp, &op.set_var.val);
-    da_append(&fn->fn_body, op);
+    op.kind = OP_RETURN;
+    if (!expr_to_arg(stat->ret_val, sp, ctx, &op.ret_val))
+      return false;
+    da_append(&ctx->fn->fn_body, op);
   } break;
   case STAT_BLOCK:
-    da_append(&prog->symbols, stat->block.local);
+    //    da_append(&prog->symbols, stat->block.local);
     ht_foreach(sym, &stat->block.local->symbols) {
       if (sym->kind == SYMBOL_VAR) {
-        da_append(&fn->vars, sym->var);
+        da_append(&ctx->fn->vars, sym->var);
+      } else if (sym->kind == SYMBOL_FN_AST) {
+        String_Builder name = {0};
+        sb_appendf(&name, ".fn_%ld", ctx->known.count);
+        push_fn_ast(ctx, name, sym->ast_fn);
       }
     }
     da_foreach(Stat, s, &stat->block.stats) {
-      stat_to_ir(s, prog, fn, stat->block.local);
+      if (!stat_to_ir(s, stat->block.local, ctx)) return false;
     }
     break;
   case STAT_IF: {
     Arg cond = {0};
-    expr_to_arg(stat->if_else.cond, prog, fn, sp, &cond);
+    if (!expr_to_arg(stat->if_else.cond, sp, ctx, &cond))
+      return false;
 
-    size_t jmp_else = append_op(&fn->fn_body, (Op){
+    size_t jmp_else = append_op(&ctx->fn->fn_body, (Op) {
         .kind = OP_JMP_ELSE,
         .jmp = {.cond = cond},
       });
-    stat_to_ir(stat->if_else.on_true, prog, fn, sp);
+    if (!stat_to_ir(stat->if_else.on_true, sp, ctx)) return false;
 
     if (stat->if_else.on_false == NULL) {
-      size_t end_label = append_op(&fn->fn_body, (Op){
+      size_t end_label = append_op(&ctx->fn->fn_body, (Op){
           .kind = OP_LABEL,
         });
-      fn->fn_body.items[jmp_else].jmp.label = end_label;
+      ctx->fn->fn_body.items[jmp_else].jmp.label = end_label;
     } else {
-      size_t jmp_end = append_op(&fn->fn_body, (Op){
+      size_t jmp_end = append_op(&ctx->fn->fn_body, (Op){
           .kind = OP_JMP,
         });
 
-      size_t else_label = append_op(&fn->fn_body, (Op){
+      size_t else_label = append_op(&ctx->fn->fn_body, (Op){
           .kind = OP_LABEL,
         });
-      fn->fn_body.items[jmp_else].jmp.label = else_label;
+      ctx->fn->fn_body.items[jmp_else].jmp.label = else_label;
 
-      stat_to_ir(stat->if_else.on_false, prog, fn, sp);
+      if (!stat_to_ir(stat->if_else.on_false, sp, ctx)) return false;
 
-      size_t end_label = append_op(&fn->fn_body, (Op){
+      size_t end_label = append_op(&ctx->fn->fn_body, (Op){
           .kind = OP_LABEL,
         });
-      fn->fn_body.items[jmp_end].jmp.label = end_label;
+      ctx->fn->fn_body.items[jmp_end].jmp.label = end_label;
     }
+  } break;
+  case STAT_ASSIGN: {
+    op.kind = OP_SET_VAR;
+    if (!expr_to_arg(stat->assign.dst, sp, ctx, &op.set_var.var))
+      return false;
+    if (!expr_to_arg(stat->assign.val, sp, ctx, &op.set_var.val))
+      return false;
+    da_append(&ctx->fn->fn_body, op);
   } break;
   case STAT_EMPTY:
     // nothing to do
     break;
   default: UNREACHABLE("");
   }
+  return true;
 }
 
 static_assert(__type_kind_count == 7, "introduced more type kinds");
@@ -489,228 +550,27 @@ static bool compile_type_fn(Lexer *l, TypeExpr *type)
   return result;
 }
 
-static bool compile_block(Lexer *l, Program* prog, Fn *fn, Scoop *sp);
-
-bool compile_def(Lexer *l, Program *prog, Scoop *sp);
-
-static bool compile_block(Lexer *l, Program* prog, Fn *fn, Scoop *sp)
-{
-  Stat block = {0};
-  if (!compile_block_ast(l, &block, prog, sp)) return false;
-  stat_to_ir(&block, prog, fn, sp);
-  stat_del(&block);
-
-  return true;
-}
-
-static bool compile_fn_sign(Lexer *l, Fn *fn, Program *prog, Scoop *sp)
-{
-  assert(l->current.kind == TOKEN_FN);
-
-  if (!prefetch_expect_token(l, TOKEN_ID)) return false;
-  if (!insert_sym(sp, l->current, SYMBOL_FN, fn)) return false;
-
-  *fn = (Fn) {
-    .loc = l->current.start,
-    .type = {.kind = TYPE_FN},
-    .local = alloc_scoop(&prog->symbols, prog->global),
-  };
-
-  if (!prefetch_expect_token(l, '(')) return false;
-  if (!prefetch_expect_tokens(l, ')', TOKEN_ID)) return false;
-
-  while (l->current.kind != ')') {
-    // TODO: it leaks;
-    assert(l->current.kind == TOKEN_ID);
-
-    Var *var = calloc(1, sizeof(Var));
-    da_append(&fn->args, var);
-    var->loc = l->current.start;
-    if (!insert_sym(fn->local, l->current, SYMBOL_VAR, var)) return false;
-
-    if (!prefetch_expect_token(l, ':')) return false;
-    if (!lexer_next(l)) return false;
-    if (!compile_type_expr(l, &var->type)) return false;
-
-    da_append(&fn->type.fn_type.arg_types, (type_clone(var->type)));
-
-    if (!prefetch_expect_tokens(l, ',', ')')) return false;
-
-    if (l->current.kind == ',') {
-      if (!prefetch_expect_token(l, TOKEN_ID)) return false;
-    }
-  }
-  assert(l->current.kind == ')');
-
-  if (!prefetch_expect_token(l, ':')) return false;
-  if (!prefetch_not_none(l)) return false;
-
-  TypeExpr ret_type = {0};
-  if (!compile_type_expr(l, &ret_type)) return false;
-  fn->type.fn_type.ret_type = malloc(sizeof(TypeExpr));
-  *fn->type.fn_type.ret_type = ret_type;
-
-  return true;
-}
-
-static bool compile_function(Lexer *l, Program *prog, Scoop *sp)
-{
-  Fn *fn = calloc(1, sizeof(Fn));
-  da_append(&prog->fn_list, fn);
-
-  if (!compile_fn_sign(l, fn, prog, sp)) return false;
-
-  if (!prefetch_expect_token(l, '{')) return false;
-  return compile_block(l, prog, fn, fn->local);
-}
-
-static size_t search_ptr(void *arr, size_t n, void *val)
-{
-  void **p = arr;
-  for (size_t i = 0; i < n; ++i) {
-    if (val == p[i]) return i;
-  }
-  return n;
-}
-
-static bool backpatch_name_arg_impl(Arg *arg, Program *prog, Fn *fn)
-{
-  if (arg->kind != ARG_NAME) return true;
-
-  SymSearchResult r = sym_search(arg->scoop, arg->name);
-  if (r.scoop == NULL) {
-    pcompile_info(arg->loc,
-                  "error: symbol `"SV_Fmt"` refered but never defined\n",
-                  SV_Arg(arg->name));
-    return false;
-  }
-  
-  static_assert(__symbol_kind_count == 3, "introduced more symbol kinds");
-  switch (r.sym->kind) {
-  case SYMBOL_FN:
-    arg->label = search_ptr(prog->fn_list.items, prog->fn_list.count, r.sym->ptr);
-    arg->kind = ARG_FN;
-    assert(arg->label < prog->fn_list.count);
-    arg->type = type_clone(prog->fn_list.items[arg->label]->type);
-    return true;
-  break;
-  case SYMBOL_VAR: {
-    Scoop *s = r.scoop;
-    Symbol *sym = r.sym;
-    while (s != NULL && s != prog->global) {
-      bool available =
-        // after the variable is intialized
-        cs_pos(arg->loc) > cs_pos(sym->var->init_end) ||
-        // or if it is the dst of an assignment when the variable is defined
-        cs_pos(arg->loc) == cs_pos(sym->var->loc);
-      if (available) break;
-
-      SymSearchResult r = sym_search(s->upper, arg->name);
-      sym = r.sym;
-      s = r.scoop;
-    }
-    if (s == NULL) {
-      pcompile_info(arg->loc,
-                    "error: local variable `"SV_Fmt"` refered before it is defined\n",
-                    SV_Arg(arg->name));
-      pcompile_info(r.sym->var->loc,
-                    "info: it is defined here\n");
-      return false;
-    }
-    
-    if (s == prog->global) {
-      TODO("support global variables.");
-    }
-
-    Var* var = sym->var;
-    arg->label = search_ptr(fn->vars.items, fn->vars.count, var);
-    if (arg->label < fn->vars.count) {
-      arg->kind = ARG_VAR_LOC;
-      arg->type = type_clone(fn->vars.items[arg->label]->type);
-    } else {
-      arg->label = search_ptr(fn->args.items, fn->args.count, var);
-      arg->kind = ARG_VAR_ARG;
-      assert(arg->label < fn->args.count);
-      arg->type = type_clone(fn->args.items[arg->label]->type);
-    }
-    return true;
-  }
-  case SYMBOL_EXTERN:
-    arg->label = search_ptr(prog->externs.items, prog->externs.count, r.sym->ptr);
-    arg->kind = ARG_EXTERN;
-    assert(arg->label < prog->externs.count);
-    arg->type = type_clone(prog->externs.items[arg->label]->type);
-    return true;
-  default: UNREACHABLE("");
-  }
-}
-
-static bool backpatch_name_args(Program *prog)
-{
-  bool success = true;
-  da_foreach (Fn*, fn_ptr, &prog->fn_list) {
-    Fn *fn = *fn_ptr;
-    da_foreach (Op, op, &fn->fn_body) {
-      static_assert(__op_kind_count == 7, "introduced more op kinds");
-      switch (op->kind) {
-      case OP_RETURN:
-        success = backpatch_name_arg_impl(&op->ret_val, prog, fn) && success;
-        break;
-      case OP_SET_VAR:
-        success = backpatch_name_arg_impl(&op->set_var.val, prog, fn) && success;
-        success = backpatch_name_arg_impl(&op->set_var.var, prog, fn) && success;
-        break;
-      case OP_INVOKE:
-        success = backpatch_name_arg_impl(&op->invoke.fn, prog, fn) && success;
-        da_foreach (Arg, arg, &op->invoke.args) {
-          success = backpatch_name_arg_impl(arg, prog, fn) && success;
-        }
-        break;
-      case OP_BINOP:
-        success = backpatch_name_arg_impl(&op->binop.lhs, prog, fn) && success;
-        success = backpatch_name_arg_impl(&op->binop.rhs, prog, fn) && success;
-        break;
-      case OP_JMP_ELSE:
-        success = backpatch_name_arg_impl(&op->jmp.cond, prog, fn) && success;
-        break;
-      case OP_LABEL:
-      case OP_JMP:
-        // nothing to do because these op has no argument.
-        break;
-     default: UNREACHABLE("op");
-      }
-    }
-  }
-
-  return success;
-}
-
-static bool detect_arg_type(Arg *arg, Program *prog, Fn *fn) {
+static bool detect_arg_type(Arg *arg) {
   if (arg->type.kind != TYPE_UNKNOWN) return true;
   if (arg->kind == ARG_NONE) return true;
 
   assert(arg->kind != ARG_NAME);
-
-  ExternList *externs = &prog->externs;
-  FnList *fn_list = &prog->fn_list;
-  VarList *vars = &fn->vars;
-  VarList *args = &fn->args;
 
   TypeExpr *type = NULL;
 
   static_assert(__arg_kind_count == 8, "introduced more arg kinds");
   switch(arg->kind) {
   case ARG_EXTERN:
-    type = &externs->items[arg->label]->type;
+    type = &arg->ext->type;
     break;
   case ARG_FN:
-    type = &fn_list->items[arg->label]->type;
+    type = &arg->fn->type;
     break;
   case ARG_VAR_LOC:
-    type = &vars->items[arg->label]->type;
+    type = &arg->var->type;
     break;
   case ARG_VAR_ARG:
-    type = &args->items[arg->label]->type;
+    type = &arg->var->type;
     break;
   default:
     UNREACHABLE("detect_arg_type");
@@ -722,26 +582,20 @@ static bool detect_arg_type(Arg *arg, Program *prog, Fn *fn) {
   return true;
 }
 
-static bool detect_var_type(Arg *var, Arg *val, Program *prog, Fn *fn)
+static bool detect_var_type(Arg *var, Arg *val)
 {
-  UNUSED(prog);
   assert(val->type.kind != TYPE_UNKNOWN);
   if (var->type.kind != TYPE_UNKNOWN) return true;
-
-  VarList *vars = &fn->vars;
-  VarList *args = &fn->args;
 
   TypeExpr *var_type = NULL;
   // not every arg type can occur in here
   static_assert(__arg_kind_count == 8, "introduced more arg kinds");
   switch (var->kind) {
   case ARG_VAR_LOC:
-    assert(var->label < vars->count);
-    var_type = &vars->items[var->label]->type;
+    var_type = &var->var->type;
     break;
   case ARG_VAR_ARG:
-    assert(var->label < args->count);
-    var_type = &args->items[var->label]->type;
+    var_type = &var->var->type;
     break;
   case ARG_NAME:
     UNREACHABLE("currently this is imposible");
@@ -756,7 +610,7 @@ static bool detect_var_type(Arg *var, Arg *val, Program *prog, Fn *fn)
   return true;
 }
 
-static bool detect_binop_dst_type(VarList *vars, OpBinop *binop)
+static bool detect_binop_dst_type(OpBinop *binop)
 {
   Arg *lhs = &binop->lhs;
   Arg *rhs = &binop->rhs;
@@ -789,8 +643,8 @@ static bool detect_binop_dst_type(VarList *vars, OpBinop *binop)
       return false;
     }
 
-    vars->items[dst->label]->type = type_bool();
-    
+    dst->var->type = type_bool();
+
     break;
   case BINOP_SUB:
   case BINOP_ADD:
@@ -833,7 +687,7 @@ static bool detect_binop_dst_type(VarList *vars, OpBinop *binop)
     }
 
     dst->type = type_clone(lhs->type);
-    vars->items[dst->label]->type = type_clone(lhs->type);
+    dst->var->type = type_clone(lhs->type);
 
     return true;
     break;
@@ -852,20 +706,20 @@ static bool detect_all_unknown_type(Program *prog)
       static_assert(__op_kind_count == 7, "introduced more op kinds");
       switch (op->kind) {
       case OP_RETURN:
-        if (!detect_arg_type(&op->ret_val, prog, fn)) return false;
+        if (!detect_arg_type(&op->ret_val)) return false;
         break;
       case OP_SET_VAR:
-        if (!detect_arg_type(&op->set_var.val, prog, fn)) return false;
-        if (!detect_var_type(&op->set_var.var, &op->set_var.val, prog, fn)) return false;
+        if (!detect_arg_type(&op->set_var.val)) return false;
+        if (!detect_var_type(&op->set_var.var, &op->set_var.val)) return false;
         break;
       case OP_INVOKE: {
-        if (!detect_arg_type(&op->invoke.fn, prog, fn)) return false;
+        if (!detect_arg_type(&op->invoke.fn)) return false;
         da_foreach (Arg, arg, &op->invoke.args) {
-          if (!detect_arg_type(arg, prog, fn)) return false;
+          if (!detect_arg_type(arg)) return false;
         }
 
         if (!op->invoke.ret_ignore) {
-          Var *ret = fn->vars.items[op->invoke.result_label];
+          Var *ret = op->invoke.result;
           TypeExpr *ret_type = fn->type.fn_type.ret_type;
 
           assert(ret_type->kind != TYPE_UNKNOWN);
@@ -873,12 +727,12 @@ static bool detect_all_unknown_type(Program *prog)
         }
       } break;
       case OP_BINOP:
-        if (!detect_arg_type(&op->binop.lhs, prog, fn)) return false;
-        if (!detect_arg_type(&op->binop.rhs, prog, fn)) return false;
-        if (!detect_binop_dst_type(&fn->vars, &op->binop)) return false;
+        if (!detect_arg_type(&op->binop.lhs)) return false;
+        if (!detect_arg_type(&op->binop.rhs)) return false;
+        if (!detect_binop_dst_type(&op->binop)) return false;
         break;
       case OP_JMP_ELSE:
-        if (!detect_arg_type(&op->jmp.cond, prog, fn)) return false;
+        if (!detect_arg_type(&op->jmp.cond)) return false;
         break;
       case OP_JMP:
       case OP_LABEL:
@@ -889,51 +743,6 @@ static bool detect_all_unknown_type(Program *prog)
     }
   }
   return true;
-}
-
-bool compile_def(Lexer *l, Program *prog, Scoop *sp)
-{
-  if (l->current.kind == TOKEN_FN) {
-    return compile_function(l, prog, sp);
-  } else if (l->current.kind == TOKEN_EXT) {
-    if (!prefetch_expect_token(l, TOKEN_ID)) return false;
-
-    Extern *ext = calloc(1, sizeof(Extern));
-    *ext = (Extern) {
-      .linkname = l->current.str,
-      .loc = l->current.start,
-    };
-    da_append(&prog->externs, ext);
-    if (!insert_sym(sp, l->current, SYMBOL_EXTERN, ext)) return false;
-
-    if (!prefetch_expect_token(l, ':')) return false;
-    if (!prefetch_not_none(l)) return false;
-    if (!compile_type_expr(l, &ext->type)) return false;
-
-    lexer_next(l);
-    if (l->current.kind == ';') lexer_next(l);
-    
-    return true;
-  }
-  
-  return false;
-}
-
-static bool compile_file(Lexer *l, Program *prog)
-{
-  lexer_next(l);
-  while (l->current.kind != TOKEN_EOF && l->current.kind != TOKEN_ERR) {
-    Cursor loc = l->current.start;
-    if (!compile_def(l, prog, prog->global)) {
-      Cursor c = l->current.start;
-      if (loc.row == c.row && loc.col == c.col)
-      pcompile_info(loc,
-                    "error: expected a defination in global scoop.\n");
-      return false;
-    }
-  }
-
-  return l->current.kind == TOKEN_EOF;
 }
 
 static bool check_type(Program *prog)
@@ -961,7 +770,8 @@ static bool check_type(Program *prog)
       } break;
       case OP_SET_VAR:
         if (!type_matched(&op->set_var.var.type, &op->set_var.val.type)) {
-          pcompile_info(op->loc, "error: incompatible types when assigning to type \"");
+          pcompile_info(op->loc,
+                        "error: incompatible types when assigning to type \"");
           dump_type_expr(&op->set_var.var.type, stderr);
           fprintf(stderr, "\" from type \"");
           dump_type_expr(&op->set_var.val.type, stderr);
@@ -1072,11 +882,67 @@ static bool check_fn_returned(Program *prog)
   return true;
 }
 
+static bool gen_ir_fn(AST_Fn *ast, Gen_Context *ctx)
+{
+  Fn **fn = ht_find(&ctx->known, ast);
+  assert(fn != NULL);
+  da_append(&ctx->prog->fn_list, *fn);
+  ctx->fn = *fn;
+
+  (*fn)->loc = ast->loc;
+  (*fn)->type.kind = TYPE_FN;
+  da_foreach(Var*, arg, &ast->args) {
+    da_append(&ctx->fn->args, *arg);
+    da_append(&(*fn)->type.fn_type.arg_types, type_clone((*arg)->type));
+  }
+  (*fn)->type.fn_type.ret_type = malloc(sizeof(TypeExpr));
+  *(*fn)->type.fn_type.ret_type = type_clone(ast->ret_type);
+
+  if (!stat_to_ir(ast->body, ast->local, ctx)) return false;
+  return true;
+}
+
+static bool gen_ir(Program *prog, Scoop *global)
+{
+  // To make the code generation able to find all of the symbols
+  // the first pass would collect all global symbols
+  // and the second pass generate the actual code
+  Gen_Context ctx = {.prog = prog};
+  ht_foreach(sym, &global->symbols) {
+    static_assert(__symbol_kind_count == 4,
+                  "introduced more symbol kinds");
+    switch(sym->kind) {
+    case SYMBOL_FN_AST: {
+      String_Builder name = {0};
+      sb_appendf(&name, SV_Fmt, SV_Arg(ht_key(&global->symbols, sym)));
+      push_fn_ast(&ctx, name, sym->ast_fn);
+    } break;
+    case SYMBOL_VAR:
+      TODO("support global variables.");
+      break;
+    case SYMBOL_EXTERN:
+      da_append(&prog->externs, sym->ptr);
+      break;
+    default: UNREACHABLE("");
+    }
+  }
+
+  AST_Fn_List *ungenerated = &ctx.ungenerated;
+  while (ungenerated->count != 0) {
+    AST_Fn *fn = da_pop(ungenerated);
+    gen_ir_fn(fn, &ctx);
+  }
+
+  return true;
+}
+
 bool compile_program(Lexer *l, Program *prog)
 {
-  prog->global = alloc_scoop(&prog->symbols, NULL);
-  if (!compile_file(l, prog)) return false;
-  if (!backpatch_name_args(prog)) return false;
+  Scoop *global = new_scoop(NULL);
+  if (!compile_prog_ast(l, global)) return false;
+
+  if (!gen_ir(prog, global)) return false;
+
   if (!detect_all_unknown_type(prog)) return false;
   if (!check_type(prog)) return false;
   if (!check_fn_returned(prog)) return false;
@@ -1098,6 +964,5 @@ void destroy_program(Program *prog)
     da_free(prog->str_lits);
   }
 
-  free_all_symbol(&prog->symbols);
+  //  free_all_symbol(&prog->symbols);
 }
-
