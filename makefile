@@ -1,5 +1,5 @@
 CC?=clang
-CFLAGS=-Wall -Wextra -ggdb -O0 -Wno-unused-function
+CFLAGS=-Wall -Wextra -ggdb -O0
 
 mcc: mcc.o parser.o lexer.o
 	$(CC) -o mcc mcc.o parser.o lexer.o $(CFLAGS)
