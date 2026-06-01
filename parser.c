@@ -13,7 +13,7 @@ Var *alloc_var(VarList *vars)
 {
   Var *var = malloc(sizeof(Var));
   *var = (Var) {
-    .type = {.kind = TYPE_UNKNOWN}
+    .type = {.kind = TYPE_UNKNOWN},
   };
   da_append(vars, var);
   return var;
@@ -53,15 +53,6 @@ static void destroy_fn(Fn *fn)
     }
     da_free(fn->vars);
   }
-
-  if (fn->args.count != 0) {
-    for (size_t i = 0; i < fn->args.count; ++i) {
-      Var *arg = fn->args.items[i];
-      destroy_type_expr(&arg->type);
-      free(arg);
-    }
-    da_free(fn->args);
-  }
 }
 
 static void destroy_fn_list(FnList *fn_list)
@@ -72,6 +63,84 @@ static void destroy_fn_list(FnList *fn_list)
     free(fn);
   }
   da_free(*fn_list);
+}
+
+static void dump_arg(String_Builder *sb, Arg *arg)
+{
+  static_assert(__arg_kind_count == 6, "introduced more arg kinds");
+  switch(arg->kind) {
+  case ARG_NONE:
+    sb_appendf(sb, "None");
+    break;
+  case ARG_EXTERN:
+    sb_appendf(sb, SV_Fmt, SV_Arg(arg->ext->linkname));
+    break;
+  case ARG_FN:
+    sb_appendf(sb, SV_Fmt, SV_Arg(sb_to_sv(arg->fn->name)));
+    break;
+  case ARG_VAR:
+    sb_appendf(sb, "var[%ld]", arg->var->id);
+    break;
+  case ARG_LIT_INT:
+    sb_appendf(sb, "%d", arg->num_int);
+    break;
+  case ARG_LIT_STR:
+    sb_appendf(sb, ".S_%ld", arg->str_label);
+    break;
+  default: UNREACHABLE("");
+  }
+}
+
+void dump_op(String_Builder *sb, Op *op)
+{
+  static_assert(__op_kind_count == 7, "introduced more op kinds");
+  switch (op->kind) {
+  case OP_INVOKE:
+    if (!op->invoke.ret_ignore) {
+      dump_arg(sb, &op->invoke.ret);
+      sb_appendf(sb, " = ");
+    }
+    dump_arg(sb, &op->invoke.fn);
+    sb_appendf(sb, "(");
+    if (op->invoke.args.count != 0) {
+      dump_arg(sb, &da_first(&op->invoke.args));
+      for (size_t i = 1; i < op->invoke.args.count; ++i) {
+        sb_appendf(sb, ", ");
+        dump_arg(sb, &op->invoke.args.items[i]);
+      }
+    }
+    sb_appendf(sb, ")");
+    break;
+  case OP_RETURN:
+    sb_appendf(sb, "ret ");
+    dump_arg(sb, &op->ret_val);
+    break;
+  case OP_SET_VAR:
+    dump_arg(sb, &op->set_var.var);
+    sb_appendf(sb, " = ");
+    dump_arg(sb, &op->set_var.var);
+    break;
+  case OP_BINOP:
+    dump_arg(sb, &op->binop.dst);
+    sb_appendf(sb, " = ");
+    dump_arg(sb, &op->binop.lhs);
+    sb_appendf(sb, " %s ", binop_name(op->binop.kind));
+    dump_arg(sb, &op->binop.rhs);
+    break;
+  case OP_JMP:
+    sb_appendf(sb, "jmp .%ld", op->jmp.label);
+    break;
+  case OP_JMP_ELSE:
+    sb_appendf(sb, "jmp_else ");
+    dump_arg(sb, &op->jmp.cond);
+    sb_appendf(sb, ", .%ld", op->jmp.label);
+    break;
+  case OP_LABEL:
+    sb_appendf(sb, ".%ld:", op->label);
+    break;
+  default: UNREACHABLE("");
+  }
+  sb_appendf(sb, "\n");
 }
 
 static size_t compile_strlit(Program *prog, String_View str)
@@ -146,11 +215,6 @@ static bool id_to_arg(Token id, Arg *arg, Scoop *sp, Gen_Context *ctx)
       Var* var = r.sym->var;
 
       if (contains(ctx->fn->vars.items, ctx->fn->vars.count, var)) {
-        arg->kind = ARG_VAR;
-        arg->var = var;
-        arg->type = type_clone(var->type);
-        return true;
-      } else if (contains(ctx->fn->args.items, ctx->fn->args.count, var)) {
         arg->kind = ARG_VAR;
         arg->var = var;
         arg->type = type_clone(var->type);
@@ -235,13 +299,13 @@ static bool expr_to_arg(Expr *expr, Scoop *sp, Gen_Context *ctx, Arg *result)
     Op *op = &da_last(&ctx->fn->fn_body);
     assert(op->kind == OP_INVOKE);
 
-    op->invoke.result = alloc_var(&ctx->fn->vars);
     op->invoke.ret_ignore = false;
-    *result = (Arg) {
+    op->invoke.ret = (Arg) {
       .kind = ARG_VAR,
       .type = {.kind = TYPE_UNKNOWN},
-      .var = op->invoke.result,
+      .var = alloc_var(&ctx->fn->vars),
     };
+    *result = op->invoke.ret;
   } break;
   case EXPR_BINOP: {
     if (!expr_to_ir(expr, sp, ctx)) return false;
@@ -303,6 +367,13 @@ static size_t append_op(OpList *ops, Op op)
   return ops->count - 1;
 }
 
+static size_t append_op_label(OpList *ops)
+{
+  size_t label = append_op(ops, (Op) {.kind = OP_LABEL});
+  ops->items[label].label = label;
+  return label;
+}
+
 static bool stat_to_ir(Stat *stat, Scoop *sp, Gen_Context *ctx)
 {
   Op op = { .loc = stat->loc };
@@ -355,25 +426,19 @@ static bool stat_to_ir(Stat *stat, Scoop *sp, Gen_Context *ctx)
     if (!stat_to_ir(stat->if_else.on_true, sp, ctx)) return false;
 
     if (stat->if_else.on_false == NULL) {
-      size_t end_label = append_op(&ctx->fn->fn_body, (Op){
-          .kind = OP_LABEL,
-        });
+      size_t end_label = append_op_label(&ctx->fn->fn_body);
       ctx->fn->fn_body.items[jmp_else].jmp.label = end_label;
     } else {
       size_t jmp_end = append_op(&ctx->fn->fn_body, (Op){
           .kind = OP_JMP,
         });
 
-      size_t else_label = append_op(&ctx->fn->fn_body, (Op){
-          .kind = OP_LABEL,
-        });
+      size_t else_label = append_op_label(&ctx->fn->fn_body);
       ctx->fn->fn_body.items[jmp_else].jmp.label = else_label;
 
       if (!stat_to_ir(stat->if_else.on_false, sp, ctx)) return false;
 
-      size_t end_label = append_op(&ctx->fn->fn_body, (Op){
-          .kind = OP_LABEL,
-        });
+      size_t end_label = append_op_label(&ctx->fn->fn_body);
       ctx->fn->fn_body.items[jmp_end].jmp.label = end_label;
     }
   } break;
@@ -678,7 +743,8 @@ static bool detect_all_unknown_type(Program *prog)
         }
 
         if (!op->invoke.ret_ignore) {
-          Var *ret = op->invoke.result;
+          assert(op->invoke.ret.kind == ARG_VAR);
+          Var *ret = op->invoke.ret.var;
           TypeExpr *ret_type = fn->type.fn_type.ret_type;
 
           assert(ret_type->kind != TYPE_UNKNOWN);
@@ -851,13 +917,16 @@ static bool gen_ir_fn(AST_Fn *ast, Gen_Context *ctx)
   (*fn)->loc = ast->loc;
   (*fn)->type.kind = TYPE_FN;
   da_foreach(Var*, arg, &ast->args) {
-    da_append(&ctx->fn->args, *arg);
+    da_append(&ctx->fn->vars, *arg);
     da_append(&(*fn)->type.fn_type.arg_types, type_clone((*arg)->type));
   }
   (*fn)->type.fn_type.ret_type = malloc(sizeof(TypeExpr));
   *(*fn)->type.fn_type.ret_type = type_clone(ast->ret_type);
 
   if (!stat_to_ir(ast->body, ast->local, ctx)) return false;
+  for (size_t i = 0; i < (*fn)->vars.count; ++i) {
+    (*fn)->vars.items[i]->id = i;
+  }
   return true;
 }
 

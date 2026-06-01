@@ -41,6 +41,7 @@ struct Var {
   TypeExpr type;
   Cursor loc;
   Cursor init_end;
+  size_t id;
 
   ptrdiff_t offset;
 };

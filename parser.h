@@ -61,7 +61,7 @@ typedef struct {
   Arg fn;
   ArgList args;
   bool ret_ignore;
-  Var *result;
+  Arg ret;
 } OpInvoke;
 
 typedef struct {
@@ -92,8 +92,11 @@ typedef struct {
     OpSetVar set_var;
     OpBinop binop;
     OpJmp jmp;
+    size_t label;
   };
 } Op;
+
+void dump_op(String_Builder *sb, Op *op);
 
 typedef struct {
   Op *items;
@@ -116,7 +119,6 @@ struct Fn {
 
   OpList fn_body;
   VarList vars;
-  VarList args;
 };
 
 typedef struct {

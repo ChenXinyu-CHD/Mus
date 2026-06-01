@@ -11,37 +11,6 @@ void append_str_lit(String_Builder *sb, String_View str)
   sb_appendf(sb, "\""SV_Fmt"\"", SV_Arg(str));
 }
 
-void gen_arg_ir(String_Builder *sb, Arg arg)
-{
-  UNUSED(sb);
-  UNUSED(arg);
-  TODO("");
-  /* switch(arg.kind) { */
-  /* case ARG_NAME: */
-  /*   sb_appendf(sb, SV_Fmt, SV_Arg(arg.name)); */
-  /*   break; */
-  /* case ARG_VAR_LOC: */
-  /*   sb_appendf(sb, "%%var[%ld]", (int)arg.var); */
-  /*   break; */
-  /* case ARG_VAR_ARG: */
-  /*   sb_appendf(sb, "%%var[%ld]", arg.label); */
-  /*   break; */
-  /* case ARG_EXTERN: */
-  /*   sb_appendf(sb, "%%extern[%ld]", arg.label); */
-  /*   break; */
-  /* case ARG_FN: */
-  /*   sb_appendf(sb, ".fn_%ld", arg.label); */
-  /*   break; */
-  /* case ARG_LIT_INT: */
-  /*   sb_appendf(sb, "%d", arg.num_int); */
-  /*   break; */
-  /* case ARG_LIT_STR: */
-  /*   sb_appendf(sb, ".str_lits[%ld]", arg.label); */
-  /*   break; */
-  /* default: UNREACHABLE("arg"); */
-  /* } */
-}
-
 String_Builder gen_code_ir(const Program *prog)
 {
   String_Builder sb = {0};
@@ -52,9 +21,8 @@ String_Builder gen_code_ir(const Program *prog)
   }
   sb_appendf(&sb, "\n\n");
 
-  sb_appendf(&sb, ".str_lits:\n");
   for (size_t i = 0; i < prog->str_lits.count; ++i) {
-    sb_appendf(&sb, "    .%ld: ", i);
+    sb_appendf(&sb, ".S_%ld = ", i);
     append_str_lit(&sb, prog->str_lits.items[i]);
     sb_append(&sb, '\n');
   }
@@ -72,33 +40,10 @@ String_Builder gen_code_ir(const Program *prog)
     sb_appendf(&sb, ".fn_%ld:\n", i);
 
     da_foreach (Op, op, &fn->fn_body) {
-      switch(op->kind) {
-      case OP_INVOKE:
-        sb_appendf(&sb, "    call ");
-        gen_arg_ir(&sb, op->invoke.fn);
-        da_foreach (Arg, arg, &op->invoke.args) {
-          sb_appendf(&sb, ", ");
-          gen_arg_ir(&sb, *arg);
-        }
-        sb_append(&sb, '\n');
-        break;
-      case OP_RETURN:
-        sb_appendf(&sb, "    ret ");
-        if (op->ret_val.kind != ARG_NONE) {
-          gen_arg_ir(&sb, op->ret_val);
-        }
-        sb_append(&sb, '\n');
-        break;
-      case OP_SET_VAR:
-        sb_appendf(&sb, "    set ");
-        gen_arg_ir(&sb, op->set_var.var);
-        sb_appendf(&sb, " = ");
-        gen_arg_ir(&sb, op->set_var.val);
-        sb_append(&sb, '\n');
-        break;
-      default:
-        UNREACHABLE("op");
+      if (op->kind != OP_LABEL) {
+        sb_appendf(&sb, "    ");
       }
+      dump_op(&sb, op);
     }
   }
 
@@ -124,27 +69,29 @@ static char *param_regs[] = {
 
 #define PARAM_REGS_CNT ARRAY_LEN(param_regs)
 
-static void build_var_offset_x86_64_gas(VarList *args, VarList *local)
+static void build_var_offset_x86_64_gas(VarList *vars, size_t arg_count)
 {
-  if (args->count > PARAM_REGS_CNT) TODO("support more than PARAM_REGS_CNT args");
-  size_t reg_args = args->count < PARAM_REGS_CNT? args->count: PARAM_REGS_CNT;
+  if (arg_count > PARAM_REGS_CNT)
+    TODO("support more than PARAM_REGS_CNT args");
+  size_t reg_args = arg_count < PARAM_REGS_CNT? arg_count: PARAM_REGS_CNT;
+
+  vars->memsize = 0;
   for (size_t i = 0; i < reg_args; ++i) {
-    Var *arg = args->items[i];
+    Var *arg = vars->items[i];
     size_t size = arg->type.size;
     assert(size != 0);
-    args->memsize = ceil_to(args->memsize, size) + size;
-    arg->offset = -args->memsize;
+    vars->memsize = ceil_to(vars->memsize, size) + size;
+    arg->offset = -vars->memsize;
   }
 
-  local->memsize = args->memsize;
-  for (size_t i = 0; i < local->count; ++i) {
-    Var *var = local->items[i];
+  for (size_t i = reg_args; i < vars->count; ++i) {
+    Var *var = vars->items[i];
     size_t size = var->type.size;
     assert(size != 0);
-    local->memsize = ceil_to(local->memsize, size) + size;
-    var->offset = -local->memsize;
+    vars->memsize = ceil_to(vars->memsize, size) + size;
+    var->offset = -vars->memsize;
   }
-  local->memsize = ceil_to(local->memsize, 16);
+  vars->memsize = ceil_to(vars->memsize, 16);
 }
 
 static void rax2rbp_offset(String_Builder *sb, size_t size, ptrdiff_t offset)
@@ -249,13 +196,14 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
     sb_appendf(&sb, "    pushq %%rbp\n");
     sb_appendf(&sb, "    movq  %%rsp, %%rbp\n");
 
-    build_var_offset_x86_64_gas(&fn->args, &fn->vars);
+    assert(fn->type.kind == TYPE_FN);
+    build_var_offset_x86_64_gas(&fn->vars, fn->type.fn_type.arg_types.count);
     sb_appendf(&sb, "    subq $%ld, %%rsp\n", fn->vars.memsize);
 
     for (size_t i = 0; i < PARAM_REGS_CNT; ++i) {
-      if (i >= fn->args.count) break;
+      if (i >= fn->type.fn_type.arg_types.count) break;
       sb_appendf(&sb, "    movq %s, %%rax\n", param_regs[i]);
-      Var *arg = fn->args.items[i];
+      Var *arg = fn->vars.items[i];
       rax2rbp_offset(&sb, arg->type.size, arg->offset);
     }
 
@@ -276,7 +224,8 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         sb_appendf(&sb, "    call *%%rax\n");
 
         if (!op->invoke.ret_ignore) {
-          Var *ret = op->invoke.result;
+          assert(op->invoke.ret.kind == ARG_VAR);
+          Var *ret = op->invoke.ret.var;
           rax2rbp_offset(&sb, ret->type.size, ret->offset);
         }
       } break;
