@@ -116,7 +116,9 @@ struct AST_Fn {
 };
 
 bool compile_fn_ast(Lexer *l, Scoop *sp);
+void del_fn_ast(AST_Fn *fn);
 bool compile_prog_ast(Lexer *l, Scoop *global);
+void del_syms(Scoop *global);
 
 #endif // MCC_AST_H_
 
@@ -695,6 +697,36 @@ void stat_del(Stat *stat)
     }
     break;
   default: UNREACHABLE("");
+  }
+}
+
+void del_fn_ast(AST_Fn *fn)
+{
+  destroy_type_expr(&fn->ret_type);
+  da_free(fn->args);
+  stat_del(fn->body);
+  del_syms(fn->local);
+}
+
+void del_syms(Scoop *global)
+{
+  ht_foreach(sym, &global->symbols) {
+    static_assert(__symbol_kind_count == 3,
+                  "introduced more symbol kinds");
+    if (sym->ptr == NULL) continue;
+    switch(sym->kind) {
+    case SYMBOL_FN:
+      del_fn_ast(sym->ast_fn);
+      break;
+    case SYMBOL_VAR:
+      destroy_type_expr(&sym->var->type);
+      break;
+    case SYMBOL_EXTERN:
+      destroy_type_expr(&sym->ext->type);
+      break;
+    default: UNREACHABLE("");
+    }
+    free(sym->ptr);
   }
 }
 

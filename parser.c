@@ -400,14 +400,22 @@ static bool stat_to_ir(Stat *stat, Scoop *sp, Gen_Context *ctx)
     da_append(&ctx->fn->fn_body, op);
   } break;
   case STAT_BLOCK:
-    //    da_append(&prog->symbols, stat->block.local);
     ht_foreach(sym, &stat->block.local->symbols) {
-      if (sym->kind == SYMBOL_VAR) {
-        da_append(&ctx->fn->vars, sym->var);
-      } else if (sym->kind == SYMBOL_FN) {
+      static_assert(__symbol_kind_count == 3,
+                    "introduced more symbol kinds");
+      switch(sym->kind) {
+      case SYMBOL_FN: {
         String_Builder name = {0};
         sb_appendf(&name, ".fn_%ld", ctx->known.count);
         push_fn_ast(ctx, name, sym->ast_fn);
+      } break;
+      case SYMBOL_VAR:
+        da_append(&ctx->fn->vars, sym->var);
+        break;
+      case SYMBOL_EXTERN:
+        da_append(&ctx->prog->externs, sym->ext);
+        break;
+      default: UNREACHABLE("");
       }
     }
     da_foreach(Stat, s, &stat->block.stats) {
@@ -917,6 +925,7 @@ static bool gen_ir_fn(AST_Fn *ast, Gen_Context *ctx)
   (*fn)->loc = ast->loc;
   (*fn)->type.kind = TYPE_FN;
   da_foreach(Var*, arg, &ast->args) {
+    // the ownership is moved to fn
     da_append(&ctx->fn->vars, *arg);
     da_append(&(*fn)->type.fn_type.arg_types, type_clone((*arg)->type));
   }
@@ -955,17 +964,29 @@ static bool gen_ir(Program *prog, Scoop *global)
     }
   }
 
+  bool result;
+
   AST_Fn_List *ungenerated = &ctx.ungenerated;
   while (ungenerated->count != 0) {
     AST_Fn *fn = da_pop(ungenerated);
-    gen_ir_fn(fn, &ctx);
+    if (!gen_ir_fn(fn, &ctx)) return_defer(false);
   }
 
-  return true;
+  return_defer(true);
+ defer:
+  da_free(ctx.ungenerated);
+  ht_free(&ctx.known);
+  return result;
 }
 
 bool compile_program(Lexer *l, Program *prog)
 {
+  // TODO: free global correctly
+  // currently, externs and vars are shared between prog and global
+  // but ast_fns are not.
+  // this makes the ownership are too complex to free the memory.
+  // It seems like extern, fn, and var do not need to be a pointer.
+  // just copy them insteed of move them may be a good solution.
   Scoop *global = new_scoop(NULL);
   if (!compile_prog_ast(l, global)) return false;
 
@@ -991,8 +1012,5 @@ void destroy_program(Program *prog)
   if (prog->str_lits.capacity > 0) {
     da_free(prog->str_lits);
   }
-
-  //  free_all_symbol(&prog->symbols);
 }
-
 

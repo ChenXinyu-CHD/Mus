@@ -445,11 +445,17 @@ bool dump_all_tokens(Lexer *l)
 {
   while (lexer_next(l)) {
     Token t = l->current;
-    printf(CS_Fmt "%s: "SV_Fmt"\n", CS_Arg(t.start), token_name(t.kind), SV_Arg(t.str));
+    printf(CS_Fmt "%s: "SV_Fmt"\n",
+           CS_Arg(t.start),
+           token_name(t.kind),
+           SV_Arg(t.str));
   }
 
   Token t = l->current;
-  printf(CS_Fmt "%s: "SV_Fmt"\n", CS_Arg(t.start), token_name(t.kind), SV_Arg(t.str));
+  printf(CS_Fmt "%s: "SV_Fmt"\n",
+         CS_Arg(t.start),
+         token_name(t.kind),
+         SV_Arg(t.str));
   if (t.kind == TOKEN_ERR) return false;
 
   return true;
@@ -470,14 +476,17 @@ int main(int argc, char **argv)
   }
 
   Lexer lexer = {0};
-  if (!lexer_init(&lexer, sv_from_cstr(mcc_args.files.items[0]))) return_defer(1);
+  if (!lexer_init(&lexer, sv_from_cstr(mcc_args.files.items[0])))
+    return_defer(1);
 
   if (mcc_args.only_lexer) {
     return_defer(dump_all_tokens(&lexer)? 0 : 1);
   }
 
   if (!compile_program(&lexer, &prog)) {
-    fprintf(stderr, "fatal error: failed to compile file %s\n", mcc_args.files.items[0]);
+    fprintf(stderr,
+            "fatal error: failed to compile file %s\n",
+            mcc_args.files.items[0]);
     return_defer(1);
   }
 
@@ -511,6 +520,9 @@ int main(int argc, char **argv)
 
 #define MCC_UTILS_IMPLEMENTATION
 #include "utils.h"
+
+#define MCC_LEXER_IMPLEMENTATION
+#include "lexer.h"
 
 #define NOB_IMPLEMENTATION
 #include "3rd/nob.h"
