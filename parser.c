@@ -7,7 +7,79 @@
 #include "utils.h"
 #include "type.h"
 #include "ast.h"
-#include "SymbolTable.h"
+
+typedef enum {
+  SYMBOL_FN = 0,
+  SYMBOL_VAR,
+  SYMBOL_EXTERN,
+  __symbol_kind_count,
+} SymbolKind;
+
+typedef struct {
+  SymbolKind kind;
+  Cursor loc;
+  union {
+    Var *var;
+    Extern *ext;
+    // AST_Fn *ast_fn;
+    Fn *fn;
+    void *ptr;
+  };
+} Symbol;
+
+typedef struct Scoop Scoop;
+struct Scoop {
+  Scoop *upper;
+  Ht(String_View, Symbol) symbols;
+};
+
+static Scoop *new_scoop(Scoop *upper)
+{
+  Scoop *s = calloc(1, sizeof(*s));
+  s->symbols.hasheq = ht_sv_hasheq;
+  s->upper = upper;
+  return s;
+}
+
+static Symbol *insert_sym(Scoop *sp, String_View name, Cursor loc, SymbolKind kind)
+{
+  Symbol *sym = ht_find(&sp->symbols, name);
+  if (sym != NULL) {
+    pcompile_info(loc,
+                  "error: symbol "SV_Fmt" redefined in this scoop\n",
+                  SV_Arg(name));
+    // TODO: report where the symbol is first defined;
+    return NULL;
+  } else {
+    sym = ht_put(&sp->symbols, name);
+    *sym = (Symbol) {
+      .kind = kind,
+      .loc = loc,
+    };
+    return sym;
+  }
+}
+
+// C is so bad
+typedef struct {
+  Scoop *scoop;
+  Symbol *sym;
+} SymSearchResult;
+
+static SymSearchResult sym_search(Scoop *sp, String_View name)
+{
+  for (Scoop *s = sp; s != NULL; s = s->upper) {
+    Symbol *sym = ht_find(&s->symbols, name);
+    if (sym != NULL) {
+      return (SymSearchResult) {
+        .scoop = s,
+        .sym = sym,
+      };
+    }
+  }
+
+  return (SymSearchResult) {NULL, NULL};
+}
 
 Var *alloc_var(VarList *vars)
 {

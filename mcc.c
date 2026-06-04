@@ -533,9 +533,6 @@ int main(int argc, char **argv)
 #define MCC_AST_IMPLEMENTATION
 #include "ast.h"
 
-#define MCC_SYMBOL_TABLE_IMPELEMTATION
-#include "SymbolTable.h"
-
 #define HT_IMPLEMENTATION
 #include "3rd/ht.h"
 

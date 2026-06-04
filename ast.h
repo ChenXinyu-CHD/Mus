@@ -4,7 +4,6 @@
 #include "3rd/nob.h"
 
 #include "type.h"
-#include "SymbolTable.h"
 
 typedef enum {
   EXPR_ATOM = 0,
@@ -85,10 +84,10 @@ typedef enum {
   __def_kind_count,
 } Def_Kind;
 
-struct Extern {
+typedef struct {
   String_View linkname;
   TypeExpr type;
-};
+} Extern;
 
 typedef struct Def Def;
 

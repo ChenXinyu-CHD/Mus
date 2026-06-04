@@ -8,7 +8,6 @@
 
 #include "lexer.h"
 #include "ast.h"
-#include "SymbolTable.h"
 #include "type.h"
 
 typedef enum {
@@ -22,16 +21,26 @@ typedef enum {
 } ArgKind;
 
 typedef struct Fn Fn;
+typedef struct {
+  TypeExpr type;
+  size_t id;
+
+  ptrdiff_t offset;
+} Var;
+
+typedef struct {
+  Var **items;
+  size_t memsize;
+
+  size_t count;
+  size_t capacity;
+} VarList;
 
 typedef struct {
   ArgKind kind;
   TypeExpr type;
+  Cursor loc;
   union {
-    struct {
-      String_View name;
-      Cursor loc;
-      Scoop *scoop;
-    };
     int num_int;
     Fn *fn;
     Var *var;
@@ -120,6 +129,12 @@ typedef struct {
   size_t count;
   size_t capacity;
 } FnList;
+
+typedef struct {
+  Extern **items;
+  size_t count;
+  size_t capacity;
+} ExternList;
 
 typedef struct {
   FnList fn_list;
