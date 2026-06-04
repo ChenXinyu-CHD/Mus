@@ -1,8 +1,8 @@
 #ifndef MCC_UTILS_H
 #define MCC_UTILS_H
 
-#include "3rd/nob.h"
-#include "3rd/ht.h"
+#include "nob.h"
+#include "ht.h"
 
 size_t ceil_to(size_t size, size_t align);
 

@@ -525,7 +525,7 @@ int main(int argc, char **argv)
 #include "lexer.h"
 
 #define NOB_IMPLEMENTATION
-#include "3rd/nob.h"
+#include "nob.h"
 
 #define MCC_TYPE_IMPLEMENTATION
 #include "type.h"
@@ -534,5 +534,5 @@ int main(int argc, char **argv)
 #include "ast.h"
 
 #define HT_IMPLEMENTATION
-#include "3rd/ht.h"
+#include "ht.h"
 

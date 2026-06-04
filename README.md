@@ -6,10 +6,31 @@
 > [!WARNING]
 > This language is work in progress
 
-## Quick start
+## How to use
+
+First build:
 
 ```console
-$ make && ./mcc ./example/hello_world.mus -t x64_linux && ./hello_world
+$ cc -o nob nob.c
+```
+
+After that, you can use nob to build the compiler.
+
+```console
+$ ./nob
+```
+
+This will automatic build nob itself, and build the compiler named mcc,
+which can be used as follow:
+
+```console
+$ ./mcc -o hello example/hello_world.mus && ./hello
+```
+
+or you can use the following for convenience.
+
+```console
+$ ./mcc -r example/hello_world.mus
 ```
 
 ## 3rd lib used

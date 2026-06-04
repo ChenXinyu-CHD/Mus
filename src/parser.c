@@ -1,7 +1,7 @@
 #include "parser.h"
 
-#include "3rd/nob.h"
-#include "3rd/ht.h"
+#include "nob.h"
+#include "ht.h"
 
 #include "lexer.h"
 #include "utils.h"
@@ -21,7 +21,6 @@ typedef struct {
   union {
     Var *var;
     Extern *ext;
-    // AST_Fn *ast_fn;
     Fn *fn;
     void *ptr;
   };

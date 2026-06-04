@@ -1,7 +1,7 @@
 #ifndef MCC_AST_H_
 #define MCC_AST_H_
 
-#include "3rd/nob.h"
+#include "nob.h"
 
 #include "type.h"
 
