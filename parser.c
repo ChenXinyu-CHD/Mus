@@ -165,72 +165,72 @@ static bool contains(void *arr, size_t n, void *val)
   return false;
 }
 
-typedef Ht(AST_Fn*, Fn*) Known_Fn;
 typedef struct {
-  AST_Fn **items;
-  size_t capacity;
-  size_t count;
-} AST_Fn_List;
+  AST_Fn *fn;
+  Scoop *sp;
+} Fn_Ctx;
+
+typedef Ht(Fn*, Fn_Ctx) Known_Fn;
 
 typedef struct {
   Program *prog;
   Fn *fn;
 
-  AST_Fn_List ungenerated;
+  FnList ungenerated;
   Known_Fn known;
+
+  struct {
+    Scoop **items;
+    size_t capacity;
+    size_t count;
+  } sps;
 } Gen_Context;
 
-void push_fn_ast(Gen_Context *ctx, String_Builder name, AST_Fn* ast)
+static Fn *push_fn_ast(Gen_Context *ctx, String_Builder name, AST_Fn* ast, Scoop *sp)
 {
-  assert(ht_find(&ctx->known, ast) == NULL);
   Fn *fn = calloc(1, sizeof(*fn));
   fn->name = name;
-  da_append(&ctx->ungenerated, ast);
-  *ht_put(&ctx->known, ast) = fn;
+  da_append(&ctx->ungenerated, fn);
+
+  sp = new_scoop(sp);
+  da_append(&ctx->sps, sp);
+
+  *ht_put(&ctx->known, fn) = (Fn_Ctx) {
+    .fn = ast,
+    .sp = sp,
+  };
+  return fn;
 }
 
-static bool id_to_arg(Token id, Arg *arg, Scoop *sp, Gen_Context *ctx)
+static bool id_to_arg(String_View name, Cursor loc, Arg *arg, Scoop *sp, Gen_Context *ctx)
 {
-  assert(id.kind == TOKEN_ID);
-
-  arg->loc = id.start;
-  SymSearchResult r = sym_search(sp, id.str);
+  arg->loc = loc;
+  SymSearchResult r = sym_search(sp, name);
   if (r.scoop == NULL) {
-    pcompile_info(id.start,
+    pcompile_info(loc,
                   "error: cannot find `"SV_Fmt"` in this scoop\n",
-                  SV_Arg(id.str));
+                  SV_Arg(name));
     return false;
   }
 
   static_assert(__symbol_kind_count == 3, "introduced more symbol kinds");
   switch (r.sym->kind) {
   case SYMBOL_VAR: {
-    bool available =
-      // after the variable is intialized
-      cs_pos(id.start) > cs_pos(r.sym->var->init_end) ||
-      // or if it is the dst of an assignment when the variable is defined
-      cs_pos(id.start) == cs_pos(r.sym->var->loc);
+    Var* var = r.sym->var;
 
-    if (available) {
-      Var* var = r.sym->var;
-
-      if (contains(ctx->fn->vars.items, ctx->fn->vars.count, var)) {
-        arg->kind = ARG_VAR;
-        arg->var = var;
-        arg->type = type_clone(var->type);
-        return true;
-      } else {
-        pcompile_info(arg->loc,
-                      "error: `"SV_Fmt"` cannot be refered in this scoop\n",
-                      SV_Arg(id.str));
-        pcompile_info(var->loc,
-                      "info: `"SV_Fmt"` is defined in here\n",
-                      SV_Arg(id.str));
-        return false;
-      }
-    } else {
-      return id_to_arg(id, arg, sp->upper, ctx);
+    if (!contains(ctx->fn->vars.items, ctx->fn->vars.count, var)) {
+      // TODO: support global variables
+      pcompile_info(arg->loc,
+                    "error: try to visit a nonlocal variable\n");
+      pcompile_info(r.sym->loc,
+                    "info: `"SV_Fmt"` is defined in here\n",
+                    SV_Arg(name));
+      return false;
     }
+    arg->kind = ARG_VAR;
+    arg->var = var;
+    arg->type = type_clone(var->type);
+    return true;
   }
   case SYMBOL_EXTERN: {
     Extern *ext = r.sym->ext;
@@ -240,13 +240,10 @@ static bool id_to_arg(Token id, Arg *arg, Scoop *sp, Gen_Context *ctx)
     return true;
   }
   case SYMBOL_FN: {
-    Fn **arg_fn = ht_find(&ctx->known, r.sym->ast_fn);
-    assert(arg_fn &&
-           "all fn in this scoop should be inserted in fns at first");
     arg->kind = ARG_FN;
-    arg->fn = *arg_fn;
+    arg->fn = r.sym->fn;
     // this must be unknown, because the refered function may not be generated
-    arg->type.kind = TYPE_UNKNOWN;;
+    arg->type.kind = TYPE_UNKNOWN;
     return true;
   }
   default: UNREACHABLE("");
@@ -263,7 +260,7 @@ static bool expr_to_arg(Expr *expr, Scoop *sp, Gen_Context *ctx, Arg *result)
     Token token = expr->atom;
     switch (token.kind) {
     case TOKEN_ID:
-      return id_to_arg(token, result, sp, ctx);
+      return id_to_arg(token.str, token.start, result, sp, ctx);
     case TOKEN_STR:
       result->kind = ARG_LIT_STR;
       result->str_label = compile_strlit(ctx->prog, token.str);
@@ -377,7 +374,7 @@ static size_t append_op_label(OpList *ops)
 static bool stat_to_ir(Stat *stat, Scoop *sp, Gen_Context *ctx)
 {
   Op op = { .loc = stat->loc };
-  static_assert(__stat_kind_count == 6, "introduced more stat kinds");
+  static_assert(__stat_kind_count == 7, "introduced more stat kinds");
   switch (stat->kind) {
   case STAT_INVOKE: {
     op.kind = OP_INVOKE;
@@ -399,29 +396,13 @@ static bool stat_to_ir(Stat *stat, Scoop *sp, Gen_Context *ctx)
       return false;
     da_append(&ctx->fn->fn_body, op);
   } break;
-  case STAT_BLOCK:
-    ht_foreach(sym, &stat->block.local->symbols) {
-      static_assert(__symbol_kind_count == 3,
-                    "introduced more symbol kinds");
-      switch(sym->kind) {
-      case SYMBOL_FN: {
-        String_Builder name = {0};
-        sb_appendf(&name, ".fn_%ld", ctx->known.count);
-        push_fn_ast(ctx, name, sym->ast_fn);
-      } break;
-      case SYMBOL_VAR:
-        da_append(&ctx->fn->vars, sym->var);
-        break;
-      case SYMBOL_EXTERN:
-        da_append(&ctx->prog->externs, sym->ext);
-        break;
-      default: UNREACHABLE("");
-      }
+  case STAT_BLOCK: {
+    Scoop *new_sp = new_scoop(sp);
+    da_append(&ctx->sps, sp);
+    da_foreach(Stat, s, &stat->block) {
+      if (!stat_to_ir(s, new_sp, ctx)) return false;
     }
-    da_foreach(Stat, s, &stat->block.stats) {
-      if (!stat_to_ir(s, stat->block.local, ctx)) return false;
-    }
-    break;
+  } break;
   case STAT_IF: {
     Arg cond = {0};
     if (!expr_to_arg(stat->if_else.cond, sp, ctx, &cond))
@@ -457,6 +438,57 @@ static bool stat_to_ir(Stat *stat, Scoop *sp, Gen_Context *ctx)
     if (!expr_to_arg(stat->assign.val, sp, ctx, &op.set_var.val))
       return false;
     da_append(&ctx->fn->fn_body, op);
+  } break;
+  case STAT_DEF: {
+    static_assert(__def_kind_count == 3,
+                  "introduced more def kinds");
+    switch (stat->def.kind) {
+    case DEF_EXT: {
+      Symbol *sym = insert_sym(sp, stat->def.name, stat->loc, SYMBOL_EXTERN);
+      if (sym == NULL) return false;
+
+      sym->ext = calloc(1, sizeof(*sym->ext));
+      sym->ext->linkname = stat->def.ext.linkname;
+      sym->ext->type = type_clone(stat->def.ext.type);
+      da_append(&ctx->prog->externs, sym->ext);
+    } break;
+    case DEF_FN: {
+      Symbol *sym = insert_sym(sp, stat->def.name, stat->loc, SYMBOL_FN);
+      if (sym == NULL) return false;
+
+      String_Builder name = {0};
+      if (ctx->fn == NULL) {
+        sb_appendf(&name, SV_Fmt, SV_Arg(stat->def.name));
+      } else {
+        sb_appendf(&name, ".fn_%ld", ctx->known.count);
+      }
+      sym->fn = push_fn_ast(ctx, name, &stat->def.fn, sp);
+    } break;
+    case DEF_VAR: {
+      if (ctx->fn == NULL) TODO("implement global variables");
+      if (stat->def.var.init != NULL) {
+        op.kind = OP_SET_VAR;
+        if (!expr_to_arg(stat->def.var.init, sp, ctx, &op.set_var.val))
+          return false;
+      }
+
+      Symbol *sym = insert_sym(sp, stat->def.name, stat->loc, SYMBOL_VAR);
+      if (sym == NULL) return false;
+
+      sym->var = calloc(1, sizeof(*sym->var));
+      da_append(&ctx->fn->vars, sym->var);
+
+      *sym->var = (Var) {
+        .type = type_clone(stat->def.var.type),
+      };
+      if (stat->def.var.init != NULL) {
+        if (!id_to_arg(stat->def.name, stat->def.loc, &op.set_var.var, sp, ctx))
+          return false;
+        da_append(&ctx->fn->fn_body, op);
+      }
+    } break;
+    default: UNREACHABLE("");
+    }
   } break;
   case STAT_EMPTY:
     // nothing to do
@@ -873,17 +905,6 @@ static bool check_type(Program *prog)
   return true;
 }
 
-typedef struct {
-  String_View name;
-  Cursor loc;
-} Def;
-
-typedef struct {
-  Def *items;
-  size_t count;
-  size_t capacity;
-} DefList;
-
 static bool check_fn_returned(Program *prog)
 {
   da_foreach(Fn *, fn_ptr, &prog->fn_list) {
@@ -915,82 +936,87 @@ static bool check_fn_returned(Program *prog)
   return true;
 }
 
-static bool gen_ir_fn(AST_Fn *ast, Gen_Context *ctx)
+static bool gen_ir_fn(Fn *fn, Gen_Context *ctx)
 {
-  Fn **fn = ht_find(&ctx->known, ast);
-  assert(fn != NULL);
-  da_append(&ctx->prog->fn_list, *fn);
-  ctx->fn = *fn;
+  ctx->fn = fn;
 
-  (*fn)->loc = ast->loc;
-  (*fn)->type.kind = TYPE_FN;
-  da_foreach(Var*, arg, &ast->args) {
-    // the ownership is moved to fn
-    da_append(&ctx->fn->vars, *arg);
-    da_append(&(*fn)->type.fn_type.arg_types, type_clone((*arg)->type));
+  Fn_Ctx *fn_ctx = ht_find(&ctx->known, fn);
+  assert(fn_ctx != NULL);
+  da_append(&ctx->prog->fn_list, fn);
+  AST_Fn *ast = fn_ctx->fn;
+
+  fn->loc = ast->loc;
+  fn->type.kind = TYPE_FN;
+  da_foreach(Def, arg, &ast->args) {
+    assert(arg->kind == DEF_VAR);
+    if (arg->var.init != NULL) TODO("support default argument for function");
+    Symbol *sym = insert_sym(fn_ctx->sp, arg->name, arg->loc, SYMBOL_VAR);
+    if (sym == NULL) return false;
+    sym->var = calloc(1, sizeof(*sym->var));
+    sym->var->type = type_clone(arg->var.type);
+
+    da_append(&ctx->fn->vars, sym->var);
+    da_append(&fn->type.fn_type.arg_types, type_clone(arg->var.type));
   }
-  (*fn)->type.fn_type.ret_type = malloc(sizeof(TypeExpr));
-  *(*fn)->type.fn_type.ret_type = type_clone(ast->ret_type);
+  fn->type.fn_type.ret_type = malloc(sizeof(TypeExpr));
+  *fn->type.fn_type.ret_type = type_clone(ast->ret_type);
 
-  if (!stat_to_ir(ast->body, ast->local, ctx)) return false;
-  for (size_t i = 0; i < (*fn)->vars.count; ++i) {
-    (*fn)->vars.items[i]->id = i;
+  da_foreach (Stat, stat, &ast->body) {
+    if (!stat_to_ir(stat, fn_ctx->sp, ctx)) return false;
+  }
+  //  if (!stat_to_ir(ast->body, NULL, ctx)) return false;
+  for (size_t i = 0; i < fn->vars.count; ++i) {
+    fn->vars.items[i]->id = i;
   }
   return true;
 }
 
-static bool gen_ir(Program *prog, Scoop *global)
+static bool gen_ir(Program *prog, Stat_List *stats)
 {
-  // To make the code generation able to find all of the symbols
-  // the first pass would collect all global symbols
-  // and the second pass generate the actual code
+  bool result = true;
+
   Gen_Context ctx = {.prog = prog};
-  ht_foreach(sym, &global->symbols) {
-    static_assert(__symbol_kind_count == 3,
-                  "introduced more symbol kinds");
-    switch(sym->kind) {
-    case SYMBOL_FN: {
-      String_Builder name = {0};
-      sb_appendf(&name, SV_Fmt, SV_Arg(ht_key(&global->symbols, sym)));
-      push_fn_ast(&ctx, name, sym->ast_fn);
-    } break;
-    case SYMBOL_VAR:
-      TODO("support global variables.");
-      break;
-    case SYMBOL_EXTERN:
-      da_append(&prog->externs, sym->ptr);
-      break;
-    default: UNREACHABLE("");
+  Scoop *global = new_scoop(NULL);
+  da_append(&ctx.sps, global);
+  da_foreach(Stat, stat, stats) {
+    if (stat->kind != STAT_DEF) {
+      pcompile_info(stat->loc, "error: only definations are available here.\n");
+      result = false;
+      continue;
     }
+    if (!stat_to_ir(stat, global, &ctx)) result = false;
   }
 
-  bool result;
-
-  AST_Fn_List *ungenerated = &ctx.ungenerated;
+  FnList *ungenerated = &ctx.ungenerated;
   while (ungenerated->count != 0) {
-    AST_Fn *fn = da_pop(ungenerated);
-    if (!gen_ir_fn(fn, &ctx)) return_defer(false);
+    Fn *fn = da_pop(ungenerated);
+    if (!gen_ir_fn(fn, &ctx)) result = false;
   }
 
-  return_defer(true);
- defer:
   da_free(ctx.ungenerated);
   ht_free(&ctx.known);
+  da_foreach(Scoop *, sp, &ctx.sps) {
+    ht_free(&(*sp)->symbols);
+    free(*sp);
+  }
+  da_free(ctx.sps);
+
   return result;
 }
 
 bool compile_program(Lexer *l, Program *prog)
 {
-  // TODO: free global correctly
-  // currently, externs and vars are shared between prog and global
-  // but ast_fns are not.
-  // this makes the ownership are too complex to free the memory.
-  // It seems like extern, fn, and var do not need to be a pointer.
-  // just copy them insteed of move them may be a good solution.
-  Scoop *global = new_scoop(NULL);
-  if (!compile_prog_ast(l, global)) return false;
+  Stat_List stats = {0};
+  if (!compile_file(l, &stats)) {
+    stat_list_del(stats);
+    return false;
+  }
+  if (!gen_ir(prog, &stats)) {
+    stat_list_del(stats);
+    return false;
+  }
 
-  if (!gen_ir(prog, global)) return false;
+  stat_list_del(stats);
 
   if (!detect_all_unknown_type(prog)) return false;
   if (!check_type(prog)) return false;

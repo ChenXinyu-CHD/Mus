@@ -19,14 +19,17 @@ typedef enum {
 
 typedef struct Var Var;
 typedef struct Extern Extern;
-typedef struct AST_Fn AST_Fn;
+typedef struct Fn Fn;
+// typedef struct AST_Fn AST_Fn;
 
 typedef struct {
   SymbolKind kind;
+  Cursor loc;
   union {
     Var *var;
     Extern *ext;
-    AST_Fn *ast_fn;
+    // AST_Fn *ast_fn;
+    Fn *fn;
     void *ptr;
   };
 } Symbol;
@@ -39,8 +42,6 @@ typedef struct {
 
 struct Var {
   TypeExpr type;
-  Cursor loc;
-  Cursor init_end;
   size_t id;
 
   ptrdiff_t offset;
@@ -60,7 +61,7 @@ struct Scoop {
   Ht(String_View, Symbol) symbols;
 };
 
-bool insert_sym(Scoop *sp, Token name, SymbolKind kind, void *ptr);
+Symbol *insert_sym(Scoop *sp, String_View name, Cursor loc, SymbolKind kind);
 String_View sym_name(Scoop* sp, void *sym);
 Scoop *new_scoop(Scoop *upper);
 
@@ -84,21 +85,22 @@ Scoop *new_scoop(Scoop *upper)
   return s;
 }
 
-bool insert_sym(Scoop *sp, Token name, SymbolKind kind, void *ptr)
+Symbol *insert_sym(Scoop *sp, String_View name, Cursor loc, SymbolKind kind)
 {
-  Symbol *sym = ht_find(&sp->symbols, name.str);
+  Symbol *sym = ht_find(&sp->symbols, name);
   if (sym != NULL) {
-    pcompile_info(name.start,
+    pcompile_info(loc,
                   "error: symbol "SV_Fmt" redefined in this scoop\n",
-                  SV_Arg(name.str));
+                  SV_Arg(name));
     // TODO: report where the symbol is first defined;
-    return false;
+    return NULL;
   } else {
-    *ht_put(&sp->symbols, name.str) = (Symbol) {
+    sym = ht_put(&sp->symbols, name);
+    *sym = (Symbol) {
       .kind = kind,
-      .ptr = ptr,
+      .loc = loc,
     };
-    return true;
+    return sym;
   }
 }
 

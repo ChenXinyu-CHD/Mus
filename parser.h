@@ -104,12 +104,6 @@ typedef struct {
   size_t capacity;
 } OpList;
 
-struct Extern {
-  String_View linkname;
-  Cursor loc;
-  TypeExpr type;
-};
-
 Var *alloc_var(VarList *vars);
 
 struct Fn {
@@ -127,7 +121,7 @@ typedef struct {
   size_t capacity;
 } FnList;
 
-struct Program {
+typedef struct {
   FnList fn_list;
   ExternList externs;
   struct {
@@ -135,7 +129,7 @@ struct Program {
     size_t count;
     size_t capacity;
   } str_lits;
-};
+} Program;
 
 bool compile_program(Lexer *l, Program *grog);
 void destroy_program(Program *prog);

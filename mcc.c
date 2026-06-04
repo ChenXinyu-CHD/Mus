@@ -187,12 +187,10 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
 
     //    String_View fn_name = sym_name(prog->global, fn);
     String_View fn_name = sb_to_sv(fn->name);
-    if (fn_name.count > 0) {
-      sb_appendf(&sb, "    .globl  "SV_Fmt"\n", SV_Arg(fn_name));
-      sb_appendf(&sb, "    .type  "SV_Fmt", @function\n", SV_Arg(fn_name));
-      sb_appendf(&sb, SV_Fmt":\n", SV_Arg(fn_name));
-    }
-    sb_appendf(&sb, ".fn_%ld:\n", fn_i);
+    sb_appendf(&sb, "    .globl  "SV_Fmt"\n", SV_Arg(fn_name));
+    sb_appendf(&sb, "    .type  "SV_Fmt", @function\n", SV_Arg(fn_name));
+    sb_appendf(&sb, SV_Fmt":\n", SV_Arg(fn_name));
+
     sb_appendf(&sb, "    pushq %%rbp\n");
     sb_appendf(&sb, "    movq  %%rsp, %%rbp\n");
 
@@ -209,6 +207,8 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
 
     for (size_t op_idx = 0; op_idx < fn->fn_body.count; ++op_idx) {
       Op *op = &fn->fn_body.items[op_idx];
+      sb_appendf(&sb, "    // ");
+      dump_op(&sb, op);
       static_assert(__op_kind_count == 7, "introduced more op kinds");
       switch(op->kind) {
       case OP_INVOKE: {

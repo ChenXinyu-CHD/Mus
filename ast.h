@@ -3,6 +3,7 @@
 
 #include "3rd/nob.h"
 
+#include "type.h"
 #include "SymbolTable.h"
 
 typedef enum {
@@ -65,6 +66,7 @@ typedef enum {
   STAT_ASSIGN,
   STAT_BLOCK,
   STAT_IF,
+  STAT_DEF,
   __stat_kind_count,
 } Stat_Kind;
 
@@ -76,20 +78,59 @@ typedef struct {
   size_t capacity;
 } Stat_List;
 
+typedef enum {
+  DEF_VAR,
+  DEF_FN,
+  DEF_EXT,
+  __def_kind_count,
+} Def_Kind;
+
+struct Extern {
+  String_View linkname;
+  TypeExpr type;
+};
+
+typedef struct Def Def;
+
+typedef struct {
+  Cursor loc;
+
+  TypeExpr ret_type;
+  struct {
+    Def *items;
+    size_t count;
+    size_t capacity;
+  } args;
+
+  Stat_List body;
+} AST_Fn;
+
+struct Def {
+  Def_Kind kind;
+  String_View name;
+  Cursor loc;
+  union {
+    struct {
+      TypeExpr type;
+      Expr *init;
+    } var;
+    Extern ext;
+    AST_Fn fn;
+  };
+};
+
 struct Stat {
   Stat_Kind kind;
   Cursor loc;
   union {
     AST_Invoke invoke;
     Expr *ret_val;
+    Def def;
     struct {
       Expr *dst;
       Expr *val;
     } assign;
-    struct {
-      Scoop *local;
-      Stat_List stats;
-    } block;
+    Stat_List block;
     struct {
       Expr *cond;
       Stat *on_true;
@@ -98,27 +139,12 @@ struct Stat {
   };
 };
 
-typedef struct Program Program;
-
-bool compile_stat_ast(Lexer *l, Stat *stat, Scoop *sp);
-bool compile_block_ast(Lexer *l, Stat *stat, Scoop *outer);
+bool compile_stat(Lexer *l, Stat *stat);
+bool compile_block(Lexer *l, Stat_List *block);
 void stat_del(Stat *stat);
 
-struct AST_Fn {
-  Cursor loc;
-
-  TypeExpr ret_type;
-  VarList args;
-
-  // the outer scoop must be the global scoop currently.
-  Scoop *local;
-  Stat *body;
-};
-
-bool compile_fn_ast(Lexer *l, Scoop *sp);
-void del_fn_ast(AST_Fn *fn);
-bool compile_prog_ast(Lexer *l, Scoop *global);
-void del_syms(Scoop *global);
+bool compile_file(Lexer *l, Stat_List *stats);
+void stat_list_del(Stat_List stats);
 
 #endif // MCC_AST_H_
 
@@ -261,7 +287,7 @@ static bool compile_simple_expr(Lexer *l, Expr *expr)
     *expr = expr_atom(l->current);
   }
 
-  if (!lexer_next(l)) return_defer(false);
+  if (!prefetch_not_none(l)) return_defer(false);
   while (l->current.kind == '(') {
     Expr_List args = {0};
     if (!compile_invoke_args(l, &args)) return_defer(false);
@@ -373,7 +399,92 @@ bool compile_expr(Lexer *l, Expr *expr)
   return compile_cmp(l, expr);
 }
 
-bool compile_stat_ast(Lexer *l, Stat *stat, Scoop *sp)
+bool compile_type_expr(Lexer *l, TypeExpr *type);
+
+static bool compile_var(Lexer *l, Def *def, bool prefix)
+{
+  if (prefix) {
+    assert(l->current.kind == TOKEN_VAR);
+    if (!prefetch_not_none(l)) return false;
+  }
+  if (!expect_token(l, TOKEN_ID)) return false;
+
+  *def = (Def) {
+    .kind = DEF_VAR,
+    .name = l->current.str,
+    .var = {
+      .type = {.kind=TYPE_UNKNOWN},
+      .init = NULL,
+    },
+  };
+
+  if (!prefetch_not_none(l)) return false;
+
+  if (l->current.kind == ':') {
+    if (!prefetch_not_none(l)) return false;
+    if (!compile_type_expr(l, &def->var.type)) return false;
+    if (def->var.type.kind == TYPE_VOID) {
+      pcompile_info(l->current.start,
+                    "error: the type of a local variable cannot be \"void\"");
+      return false;
+    }
+    if (!prefetch_not_none(l)) return false;
+  }
+
+  if (l->current.kind == '=') {
+    if (!prefetch_not_none(l)) return false;
+
+    Expr *val = calloc(1, sizeof(*val));
+    if (!compile_expr(l, val)) {
+      free(val);
+      return false;
+    }
+    def->var.init = val;
+  }
+
+  return true;
+}
+
+bool compile_fn(Lexer *l, Def *def)
+{
+  assert(l->current.kind == TOKEN_FN);
+
+  if (!prefetch_expect_token(l, TOKEN_ID)) return false;
+  *def = (Def) {
+    .kind = DEF_FN,
+    .name = l->current.str,
+    .fn = {
+      .loc = l->current.start,
+    },
+  };
+
+  if (!prefetch_expect_token(l, '(')) return false;
+  if (!prefetch_expect_tokens(l, ')', TOKEN_ID)) return false;
+
+  while (l->current.kind != ')') {
+    assert(l->current.kind == TOKEN_ID);
+
+    Def arg_def = {0};
+    if (!compile_var(l, &arg_def, false)) return false;
+    if (!expect_tokens(l, ',', ')')) return false;
+
+    if (l->current.kind == ',') {
+      if (!prefetch_expect_token(l, TOKEN_ID)) return false;
+    }
+    da_append(&def->fn.args, arg_def);
+  }
+  assert(l->current.kind == ')');
+
+  if (!prefetch_expect_token(l, ':')) return false;
+  if (!prefetch_not_none(l)) return false;
+
+  if (!compile_type_expr(l, &def->fn.ret_type)) return false;
+
+  if (!prefetch_expect_token(l, '{')) return false;
+  return compile_block(l, &def->fn.body);
+}
+
+bool compile_stat(Lexer *l, Stat *stat)
 {
   *stat = (Stat) {
     .kind = STAT_EMPTY,
@@ -382,14 +493,37 @@ bool compile_stat_ast(Lexer *l, Stat *stat, Scoop *sp)
 
   if (l->current.kind == '{') {
     if (l->current.kind == '{') {
-      return compile_block_ast(l, stat, sp);
+      stat->kind = STAT_BLOCK;
+      return compile_block(l, &stat->block);
     }
   }
 
   bool result = false;
   // simple statement
-  if (l->current.kind == TOKEN_IF) {
+  if (l->current.kind == TOKEN_EXT) {
+    stat->kind = STAT_DEF;
+    if (!prefetch_expect_token(l, TOKEN_ID)) return false;
+    stat->def = (Def) {
+      .kind = DEF_EXT,
+      .loc = l->current.start,
+      .name = l->current.str,
+      .ext = {
+        .linkname = l->current.str,
+      },
+    };
 
+    if (!prefetch_expect_token(l, ':')) return false;
+    if (!prefetch_not_none(l)) return false;
+    if (!compile_type_expr(l, &stat->def.ext.type)) return false;
+
+    lexer_next(l);
+  } else if (l->current.kind == TOKEN_FN) {
+    stat->kind = STAT_DEF;
+    if (!compile_fn(l, &stat->def)) return_defer(false);
+  } else if (l->current.kind == TOKEN_VAR) {
+    stat->kind = STAT_DEF;
+    if (!compile_var(l, &stat->def, true)) return_defer(false);
+  } else if (l->current.kind == TOKEN_IF) {
     stat->kind = STAT_IF;
     if (!prefetch_not_none(l)) return_defer(false);
 
@@ -397,13 +531,13 @@ bool compile_stat_ast(Lexer *l, Stat *stat, Scoop *sp)
     if (!compile_expr(l, stat->if_else.cond)) return_defer(false);
 
     stat->if_else.on_true = calloc(1, sizeof(Stat));
-    if (!compile_stat_ast(l, stat->if_else.on_true, sp)) return_defer(false);
+    if (!compile_stat(l, stat->if_else.on_true)) return_defer(false);
 
     stat->if_else.on_false = NULL;
     if (l->current.kind == TOKEN_ELSE) {
       if (!prefetch_not_none(l)) return_defer(false);
       stat->if_else.on_false = calloc(1, sizeof(Stat));
-      if (!compile_stat_ast(l, stat->if_else.on_false, sp)) return_defer(false);
+      if (!compile_stat(l, stat->if_else.on_false)) return_defer(false);
     }
   } else if (l->current.kind == TOKEN_RET) {
     stat->kind = STAT_RET;
@@ -444,7 +578,7 @@ bool compile_stat_ast(Lexer *l, Stat *stat, Scoop *sp)
   // because both ';' are two empty statement
   // because they are not followed by a simple statement
   if (l->current.kind == ';') {
-    if (!prefetch_not_none(l)) return_defer(false);
+    lexer_next(l);
   }
 
   return true;
@@ -453,195 +587,34 @@ bool compile_stat_ast(Lexer *l, Stat *stat, Scoop *sp)
   return result;
 }
 
-bool compile_type_expr(Lexer *l, TypeExpr *type);
-
-static bool compile_var(Lexer *l, Stat *init, Scoop *sp)
-{
-  *init = (Stat) {.kind = STAT_EMPTY};
-  if (!prefetch_expect_token(l, TOKEN_ID)) return false;
-  Token name = l->current;
-
-  Var *var = calloc(1, sizeof(Var));
-  assert(var && "buy more memory");
-  *var = (Var) {
-    .type = {.kind=TYPE_UNKNOWN},
-    .loc = name.start,
-  };
-
-  if (!insert_sym(sp, name, SYMBOL_VAR, var)) return false;
-
-  if (!prefetch_not_none(l)) return false;
-
-  if (l->current.kind == ':') {
-    if (!prefetch_not_none(l)) return false;
-    if (!compile_type_expr(l, &var->type)) return false;
-    if (var->type.kind == TYPE_VOID) {
-      pcompile_info(l->current.start,
-                    "error: the type of a local variable cannot be \"void\"");
-      return false;
-    }
-    if (!prefetch_not_none(l)) return false;
-  }
-
-  if (l->current.kind == '=') {
-    Cursor loc = l->current.start;
-    if (!prefetch_not_none(l)) return false;
-
-    Expr *val = calloc(1, sizeof(*val));
-    if (!compile_expr(l, val)) {
-      free(val);
-      return false;
-    }
-
-    Expr *dst = calloc(1, sizeof(*dst));
-    *dst = expr_atom(name);
-
-    *init = (Stat) {
-      .kind = STAT_ASSIGN,
-      .loc = loc,
-      .assign = {
-        .dst = dst,
-        .val = val,
-      },
-    };
-  }
-  if (l->current.kind == ';') {
-    if (!prefetch_not_none(l)) {
-      stat_del(init);
-    }
-  }
-  var->init_end = l->current.start;
-  return true;
-}
-
-static bool compile_def(Lexer *l, Scoop *sp);
-
-bool compile_block_ast(Lexer *l, Stat *stat, Scoop *outer)
+bool compile_block(Lexer *l, Stat_List *block)
 {
   assert(l->current.kind == '{');
   if (!prefetch_not_none(l)) return false;
 
-  Scoop *local = new_scoop(outer);
-
-  Stat_List stats = {0};
-
   while (l->current.kind != '}') {
     Stat s = {0};
-    if (l->current.kind == TOKEN_VAR) {
-      if (!compile_var(l, &s, local)) return false;
-      da_append(&stats, s);
-      continue;
-    }
-
-    if (compile_def(l, local)) {
-      continue;
-    }
-
-    if (!compile_stat_ast(l, &s, local)) return false;
-    da_append(&stats, s);
+    if (!compile_stat(l, &s)) return false;
+    da_append(block, s);
   }
-
-  *stat = (Stat) {
-    .kind = STAT_BLOCK,
-    .block = {
-      .local = local,
-      .stats = stats
-    },
-  };
+  assert(l->current.kind == '}');
   lexer_next(l);
   return true;
 }
 
-static bool compile_def(Lexer *l, Scoop *sp)
+bool compile_file(Lexer *l, Stat_List *stats)
 {
-  if (l->current.kind == TOKEN_FN) {
-    return compile_fn_ast(l, sp);
-  } else if (l->current.kind == TOKEN_EXT) {
-    if (!prefetch_expect_token(l, TOKEN_ID)) return false;
-
-    Extern *ext = calloc(1, sizeof(Extern));
-    *ext = (Extern) {
-      .linkname = l->current.str,
-      .loc = l->current.start,
-    };
-    if (!insert_sym(sp, l->current, SYMBOL_EXTERN, ext)) return false;
-
-    if (!prefetch_expect_token(l, ':')) return false;
-    if (!prefetch_not_none(l)) return false;
-    if (!compile_type_expr(l, &ext->type)) return false;
-
-    lexer_next(l);
-    if (l->current.kind == ';') lexer_next(l);
-
-    return true;
-  }
-
-  return false;
-}
-
-bool compile_fn_ast(Lexer *l, Scoop *sp)
-{
-  assert(l->current.kind == TOKEN_FN);
-
-  if (!prefetch_expect_token(l, TOKEN_ID)) return false;
-  AST_Fn *fn = calloc(1, sizeof(*fn));
-  fn->local = new_scoop(sp);
-
-  if (!insert_sym(sp, l->current, SYMBOL_FN, fn)) return false;
-  fn->loc = l->current.start;
-
-  if (!prefetch_expect_token(l, '(')) return false;
-  if (!prefetch_expect_tokens(l, ')', TOKEN_ID)) return false;
-
-  while (l->current.kind != ')') {
-    // TODO: it leaks;
-    assert(l->current.kind == TOKEN_ID);
-
-    Var *var = calloc(1, sizeof(Var));
-    da_append(&fn->args, var);
-    var->loc = l->current.start;
-    if (!insert_sym(fn->local, l->current, SYMBOL_VAR, var)) return false;
-
-    if (!prefetch_expect_token(l, ':')) return false;
-    if (!prefetch_not_none(l)) return false;
-    if (!compile_type_expr(l, &var->type)) return false;
-
-    if (!prefetch_expect_tokens(l, ',', ')')) return false;
-
-    if (l->current.kind == ',') {
-      if (!prefetch_expect_token(l, TOKEN_ID)) return false;
-    }
-  }
-  assert(l->current.kind == ')');
-
-  if (!prefetch_expect_token(l, ':')) return false;
   if (!prefetch_not_none(l)) return false;
 
-  if (!compile_type_expr(l, &fn->ret_type)) return false;
-
-  if (!prefetch_expect_token(l, '{')) return false;
-  fn->body = calloc(1, sizeof(*fn->body));
-  return compile_block_ast(l, fn->body, fn->local);
-}
-
-bool compile_prog_ast(Lexer *l, Scoop *global)
-{
-  lexer_next(l);
   while (l->current.kind != TOKEN_EOF && l->current.kind != TOKEN_ERR) {
-    Cursor loc = l->current.start;
-    if (!compile_def(l, global)) {
-      Cursor c = l->current.start;
-      if (loc.row == c.row && loc.col == c.col)
-        pcompile_info(loc,
-                      "error: expected a defination in global scoop.\n");
-      return false;
-    }
+    Stat s = {0};
+    if (!compile_stat(l, &s)) return false;
+    da_append(stats, s);
   }
-
   return l->current.kind == TOKEN_EOF;
 }
 
-static void stat_list_del(Stat_List stats)
+void stat_list_del(Stat_List stats)
 {
   da_foreach(Stat, stat, &stats) {
     stat_del(stat);
@@ -649,9 +622,33 @@ static void stat_list_del(Stat_List stats)
   da_free(stats);
 }
 
+static void del_fn_ast(AST_Fn *fn);
+
+static void del_def(Def *def)
+{
+  static_assert(__def_kind_count == 3,
+                "introduced more def kinds");
+  switch (def->kind) {
+  case DEF_VAR:
+    destroy_type_expr(&def->var.type);
+    if (def->var.init != NULL) {
+      expr_del(def->var.init);
+      free(def->var.init);
+    }
+    break;
+  case DEF_FN:
+    del_fn_ast(&def->fn);
+    break;
+  case DEF_EXT:
+    destroy_type_expr(&def->ext.type);
+    break;
+  default: UNREACHABLE("");
+  }
+}
+
 void stat_del(Stat *stat)
 {
-  static_assert(__stat_kind_count == 6, "introduced more stat kinds");
+  static_assert(__stat_kind_count == 7, "introduced more stat kinds");
   switch(stat->kind) {
   case STAT_EMPTY:
     // nothing to do;
@@ -680,7 +677,7 @@ void stat_del(Stat *stat)
     expr_list_del(&stat->invoke.args);
     break;
   case STAT_BLOCK:
-    stat_list_del(stat->block.stats);
+    stat_list_del(stat->block);
     break;
   case STAT_IF:
     if (stat->if_else.cond) {
@@ -696,38 +693,21 @@ void stat_del(Stat *stat)
       free(stat->if_else.on_false);
     }
     break;
+  case STAT_DEF:
+    del_def(&stat->def);
+    break;
   default: UNREACHABLE("");
   }
 }
 
-void del_fn_ast(AST_Fn *fn)
+static void del_fn_ast(AST_Fn *fn)
 {
   destroy_type_expr(&fn->ret_type);
-  da_free(fn->args);
-  stat_del(fn->body);
-  del_syms(fn->local);
-}
-
-void del_syms(Scoop *global)
-{
-  ht_foreach(sym, &global->symbols) {
-    static_assert(__symbol_kind_count == 3,
-                  "introduced more symbol kinds");
-    if (sym->ptr == NULL) continue;
-    switch(sym->kind) {
-    case SYMBOL_FN:
-      del_fn_ast(sym->ast_fn);
-      break;
-    case SYMBOL_VAR:
-      destroy_type_expr(&sym->var->type);
-      break;
-    case SYMBOL_EXTERN:
-      destroy_type_expr(&sym->ext->type);
-      break;
-    default: UNREACHABLE("");
-    }
-    free(sym->ptr);
+  da_foreach(Def, def, &fn->args) {
+    del_def(def);
   }
+  da_free(fn->args);
+  stat_list_del(fn->body);
 }
 
 #endif // MCC_AST_IMPLEMENTATION
