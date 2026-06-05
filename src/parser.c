@@ -4,7 +4,6 @@
 #include "ht.h"
 
 #include "lexer.h"
-#include "utils.h"
 #include "type.h"
 #include "ast.h"
 

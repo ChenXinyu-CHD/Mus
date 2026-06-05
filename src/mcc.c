@@ -4,7 +4,6 @@
 
 #include "lexer.h"
 #include "parser.h"
-#include "utils.h"
 
 void append_str_lit(String_Builder *sb, String_View str)
 {
@@ -80,7 +79,7 @@ static void build_var_offset_x86_64_gas(VarList *vars, size_t arg_count)
     Var *arg = vars->items[i];
     size_t size = arg->type.size;
     assert(size != 0);
-    vars->memsize = ceil_to(vars->memsize, size) + size;
+    vars->memsize = (vars->memsize + size - 1) / size * size + size;
     arg->offset = -vars->memsize;
   }
 
@@ -88,10 +87,10 @@ static void build_var_offset_x86_64_gas(VarList *vars, size_t arg_count)
     Var *var = vars->items[i];
     size_t size = var->type.size;
     assert(size != 0);
-    vars->memsize = ceil_to(vars->memsize, size) + size;
+    vars->memsize = (vars->memsize + size - 1) / size * size + size;
     var->offset = -vars->memsize;
   }
-  vars->memsize = ceil_to(vars->memsize, 16);
+  vars->memsize = (vars->memsize + 15) / 16 * 16;
 }
 
 static void rax2rbp_offset(String_Builder *sb, size_t size, ptrdiff_t offset)
@@ -517,9 +516,6 @@ int main(int argc, char **argv)
 
   return result;
 }
-
-#define MCC_UTILS_IMPLEMENTATION
-#include "utils.h"
 
 #define MCC_LEXER_IMPLEMENTATION
 #include "lexer.h"
