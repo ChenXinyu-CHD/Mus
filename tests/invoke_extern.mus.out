@@ -1,0 +1,3 @@
+Hello
+ CMD: cc -o invoke_extern invoke_extern.s
+[INFO] CMD: ./invoke_extern

@@ -1,0 +1,7 @@
+421
+7
+9
+1
+2
+cc -o binop binop.s
+[INFO] CMD: ./binop

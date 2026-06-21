@@ -1,0 +1,3 @@
+../example/multi-empty.mus:4:1: error: symbol main redefined in this scoop
+fatal error: failed to compile file ../example/multi-empty.mus
+compilation terminated

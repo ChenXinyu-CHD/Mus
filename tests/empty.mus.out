@@ -1,0 +1,2 @@
+[INFO] CMD: cc -o empty empty.s
+[INFO] CMD: ./empty
