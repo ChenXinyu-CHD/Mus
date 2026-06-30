@@ -532,3 +532,6 @@ int main(int argc, char **argv)
 #define HT_IMPLEMENTATION
 #include "ht.h"
 
+#define ARENA_IMPLEMENTATION
+#include "arena.h"
+
