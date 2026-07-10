@@ -53,6 +53,8 @@ void destroy_type_expr(TypeExpr* type);
 
 #ifdef MCC_TYPE_IMPLEMENTATION
 
+#include "3rd_wrapper.h"
+
 TypeExpr type_bool()
 {
   return (TypeExpr) {.kind = TYPE_BOOL, .size = 1};
@@ -63,7 +65,7 @@ TypeExpr type_ptr(TypeExpr inner)
   TypeExpr type = {
     .kind = TYPE_PTR,
     .size = 8,
-    .ref_type = malloc(sizeof(TypeExpr))
+    .ref_type = arena_alloc(sizeof(TypeExpr))
   };
   *type.ref_type = inner;
 
@@ -76,7 +78,7 @@ TypeExpr type_fn(TypeExpr ret_type, TypeList arg_types, bool va_args)
     .kind = TYPE_FN,
     .size = 8,
     .fn_type = {
-      .ret_type = malloc(sizeof(TypeExpr)),
+      .ret_type = arena_alloc(sizeof(TypeExpr)),
       .arg_types = arg_types,
       .va_args = va_args,
     },

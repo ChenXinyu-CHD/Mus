@@ -1,7 +1,7 @@
 #ifndef MCC_AST_H_
 #define MCC_AST_H_
 
-#include "nob.h"
+#include "3rd_wrapper.h"
 
 #include "type.h"
 
@@ -55,8 +55,7 @@ struct Expr {
   };
 };
 
-bool compile_expr(Lexer *l, Expr *expr);
-void expr_del(Expr *expr);
+Expr *compile_expr(Lexer *l);
 
 typedef enum {
   STAT_EMPTY = 0,
@@ -138,12 +137,10 @@ struct Stat {
   };
 };
 
-bool compile_stat(Lexer *l, Stat *stat);
+Stat *compile_stat(Lexer *l);
 bool compile_block(Lexer *l, Stat_List *block);
-void stat_del(Stat *stat);
 
-bool compile_file(Lexer *l, Stat_List *stats);
-void stat_list_del(Stat_List stats);
+bool compile_file(Lexer *l, Stat_List *file);
 
 #endif // MCC_AST_H_
 
@@ -178,17 +175,20 @@ const char *binop_name(BinopKind kind)
   UNREACHABLE("");
 }
 
-static Expr expr_atom(Token token)
+static Expr *expr_atom(Token token)
 {
-  return (Expr) {
+  Expr *expr = arena_alloc(sizeof(*expr));
+  *expr = (Expr) {
     .kind = EXPR_ATOM,
     .loc = token.start,
     .atom = token
   };
+  return expr;
 }
-static Expr expr_invoke(Expr *fn, Expr_List args)
+static Expr *expr_invoke(Expr *fn, Expr_List args)
 {
-  return (Expr) {
+  Expr *expr = arena_alloc(sizeof(*expr));
+  *expr = (Expr) {
     .kind = EXPR_INVOKE,
     .loc = fn->loc,
     .invoke =  {
@@ -196,12 +196,14 @@ static Expr expr_invoke(Expr *fn, Expr_List args)
       .args = args,
     }
   };
+  return expr;
 }
-static Expr expr_binop(Token op, Expr *lhs, Expr *rhs)
+static Expr *expr_binop(Token op, Expr *lhs, Expr *rhs)
 {
   for (size_t i = 0; i < ARRAY_LEN(binop_list); ++i) {
     if (binop_list[i].token_kind == op.kind) {
-      return (Expr) {
+      Expr *result = arena_alloc(sizeof(*result));
+      *result = (Expr) {
         .kind = EXPR_BINOP,
         .loc = op.start,
         .binop = {
@@ -210,65 +212,35 @@ static Expr expr_binop(Token op, Expr *lhs, Expr *rhs)
           .rhs = rhs,
         }
       };
+      return result;
     }
   }
   UNREACHABLE("");
 }
 
-static void expr_list_del(Expr_List *exprs)
-{
-  da_foreach (Expr, expr, exprs) {
-    expr_del(expr);
-  }
-  da_free(*exprs);
-}
-
-void expr_del(Expr *expr)
-{
-  static_assert(__expr_kind_count == 3, "introduced more expr kinds");
-  switch(expr->kind) {
-  case EXPR_ATOM:
-    return;
-  case EXPR_INVOKE:
-    expr_del(expr->invoke.fn);
-    expr_list_del(&expr->invoke.args);
-    return;
-  case EXPR_BINOP:
-    expr_del(expr->binop.lhs);
-    expr_del(expr->binop.rhs);
-    return;
-  default: UNREACHABLE("");
-  }
-}
-
 static bool compile_invoke_args(Lexer *l, Expr_List *args)
 {
   assert(l->current.kind == '(');
-  bool result;
-  if (!prefetch_not_none(l)) return_defer(false);
+  if (!prefetch_not_none(l)) return false;
 
   while (l->current.kind != ')') {
-    Expr arg;
-    if (!compile_expr(l, &arg)) return_defer(false);
-    da_append(args, arg);
+    Expr *arg = compile_expr(l);
+    if (arg == NULL) return false;
+    da_append(args, *arg);
 
-    if (!expect_tokens(l, ',', ')')) return_defer(false);
+    if (!expect_tokens(l, ',', ')')) return false;
 
     if (l->current.kind == ',') {
-      if (!prefetch_not_none(l)) return_defer(false);
+      if (!prefetch_not_none(l)) return false;
     }
   }
-  if (!prefetch_not_none(l)) return_defer(false);
+  if (!prefetch_not_none(l)) return false;
 
   return true;
- defer:
-  expr_list_del(args);
-  return result;
 }
 
-static bool compile_simple_expr(Lexer *l, Expr *expr)
+static Expr *compile_simple_expr(Lexer *l)
 {
-  bool result;
   if (!expect_tokens(l,
                      TOKEN_STR,
                      TOKEN_INT,
@@ -276,89 +248,67 @@ static bool compile_simple_expr(Lexer *l, Expr *expr)
                      TOKEN_TRUE,
                      TOKEN_FALSE,
                      '('))
-    return false;
+    return NULL;
 
+  Expr *expr = NULL;
   if (l->current.kind == '(') {
-    if (!prefetch_not_none(l))  return_defer(false);
-    if (!compile_expr(l, expr)) return_defer(false);
-    if (!expect_token(l, ')'))  return_defer(false);
+    if (!prefetch_not_none(l))  return NULL;
+    expr = compile_expr(l);
+    if (!expect_token(l, ')'))  return NULL;
   } else {
-    *expr = expr_atom(l->current);
+    expr = expr_atom(l->current);
   }
 
-  if (!prefetch_not_none(l)) return_defer(false);
+  if (!prefetch_not_none(l)) return NULL;
   while (l->current.kind == '(') {
     Expr_List args = {0};
-    if (!compile_invoke_args(l, &args)) return_defer(false);
-
-    Expr *fn = malloc(sizeof(Expr));
-    *fn = *expr;
-    *expr = expr_invoke(fn, args);
+    if (!compile_invoke_args(l, &args)) return NULL;
+    expr = expr_invoke(expr, args);
   }
 
-  return true;
- defer:
-  expr_del(expr);
-  return result;
+  return expr;
 }
 
-static bool compile_mul(Lexer *l, Expr *expr)
+static Expr *compile_mul(Lexer *l)
 {
-  if (!compile_simple_expr(l, expr)) return false;
-
-  bool result;
+  Expr *expr = compile_simple_expr(l);
+  if (expr == NULL) return NULL;
   while (l->current.kind == '*' || l->current.kind == '/' || l->current.kind == '%') {
     Token op = l->current;
-    if (!prefetch_not_none(l)) return_defer(false);
+    if (!prefetch_not_none(l)) return NULL;
 
-    Expr rhs_expr = {0};
-    if (!compile_simple_expr(l, &rhs_expr)) return_defer(false);
+    Expr *rhs = compile_simple_expr(l);
+    if (rhs == NULL) return NULL;
 
-    Expr *lhs = malloc(sizeof(*lhs));
-    *lhs = *expr;
-    Expr *rhs = malloc(sizeof(*rhs));
-    *rhs = rhs_expr;
-
-    *expr = expr_binop(op, lhs, rhs);
+    expr = expr_binop(op, expr, rhs);
   }
 
-  return true;
- defer:
-  expr_del(expr);
-  return result;
+  return expr;
 }
 
-static bool compile_add(Lexer *l, Expr *expr)
+static Expr *compile_add(Lexer *l)
 {
-  if (!compile_mul(l, expr)) return false;
+  Expr *expr = compile_mul(l);
+  if (expr == NULL) return NULL;
 
-  bool result;
   while (l->current.kind == '+' || l->current.kind == '-') {
     Token op = l->current;
-    if (!prefetch_not_none(l)) return_defer(false);
+    if (!prefetch_not_none(l)) return NULL;
 
-    Expr rhs_expr = {0};
-    if (!compile_mul(l, &rhs_expr)) return_defer(false);
+    Expr *rhs = compile_mul(l);
+    if (rhs == NULL) return NULL;
 
-    Expr *lhs = malloc(sizeof(*lhs));
-    *lhs = *expr;
-    Expr *rhs = malloc(sizeof(*rhs));
-    *rhs = rhs_expr;
-
-    *expr = expr_binop(op, lhs, rhs);
+    expr = expr_binop(op, expr, rhs);
   }
 
-  return true;
- defer:
-  expr_del(expr);
-  return result;
+  return expr;
 }
 
-static bool compile_cmp(Lexer *l, Expr *expr)
+static Expr *compile_cmp(Lexer *l)
 {
-  if (!compile_add(l, expr)) return false;
+  Expr *expr = compile_add(l);
+  if (expr == NULL) return NULL;
 
-  bool result;
   while (l->current.kind == TOKEN_EQ ||
          l->current.kind == TOKEN_LE ||
          l->current.kind == TOKEN_GE ||
@@ -366,26 +316,18 @@ static bool compile_cmp(Lexer *l, Expr *expr)
          l->current.kind == '>' ||
          l->current.kind == TOKEN_NEQ) {
     Token op = l->current;
-    if (!prefetch_not_none(l)) return_defer(false);
+    if (!prefetch_not_none(l)) return NULL;
 
-    Expr rhs_expr = {0};
-    if (!compile_add(l, &rhs_expr)) return_defer(false);
+    Expr *rhs = compile_add(l);
+    if (rhs == NULL) return NULL;
 
-    Expr *lhs = malloc(sizeof(*lhs));
-    *lhs = *expr;
-    Expr *rhs = malloc(sizeof(*rhs));
-    *rhs = rhs_expr;
-
-    *expr = expr_binop(op, lhs, rhs);
+    expr = expr_binop(op, expr, rhs);
   }
 
-  return true;
- defer:
-  expr_del(expr);
-  return result;
+  return expr;
 }
 
-bool compile_expr(Lexer *l, Expr *expr)
+Expr *compile_expr(Lexer *l)
 {
   // EXPR   :: CMP
   // CMP    :: ADD | ADD == CMP | ADD != CMP | ADD < CMP | ADD > CMP | ADD <= CMP | ADD >= CMP
@@ -395,7 +337,7 @@ bool compile_expr(Lexer *l, Expr *expr)
   // ATOM   :: STR | INT | ID
   // INVOKE :: EXPR ( ARGS )
   // ARGS   :: EXPR | EXPR , ARGS
-  return compile_cmp(l, expr);
+  return compile_cmp(l);
 }
 
 bool compile_type_expr(Lexer *l, TypeExpr *type);
@@ -433,9 +375,8 @@ static bool compile_var(Lexer *l, Def *def, bool prefix)
   if (l->current.kind == '=') {
     if (!prefetch_not_none(l)) return false;
 
-    Expr *val = calloc(1, sizeof(*val));
-    if (!compile_expr(l, val)) {
-      free(val);
+    Expr *val = compile_expr(l);
+    if (val == NULL) {
       return false;
     }
     def->var.init = val;
@@ -483,25 +424,24 @@ bool compile_fn(Lexer *l, Def *def)
   return compile_block(l, &def->fn.body);
 }
 
-bool compile_stat(Lexer *l, Stat *stat)
+Stat *compile_stat(Lexer *l)
 {
+  Stat *stat = arena_alloc(sizeof(*stat));
   *stat = (Stat) {
     .kind = STAT_EMPTY,
     .loc = l->current.start,
   };
 
   if (l->current.kind == '{') {
-    if (l->current.kind == '{') {
-      stat->kind = STAT_BLOCK;
-      return compile_block(l, &stat->block);
-    }
+    stat->kind = STAT_BLOCK;
+    if (!compile_block(l, &stat->block)) return NULL;
+    return stat;
   }
 
-  bool result = false;
   // simple statement
   if (l->current.kind == TOKEN_EXT) {
     stat->kind = STAT_DEF;
-    if (!prefetch_expect_token(l, TOKEN_ID)) return false;
+    if (!prefetch_expect_token(l, TOKEN_ID)) return NULL;
     stat->def = (Def) {
       .kind = DEF_EXT,
       .loc = l->current.start,
@@ -511,61 +451,58 @@ bool compile_stat(Lexer *l, Stat *stat)
       },
     };
 
-    if (!prefetch_expect_token(l, ':')) return false;
-    if (!prefetch_not_none(l)) return false;
-    if (!compile_type_expr(l, &stat->def.ext.type)) return false;
+    if (!prefetch_expect_token(l, ':')) return NULL;
+    if (!prefetch_not_none(l)) return NULL;
+    if (!compile_type_expr(l, &stat->def.ext.type)) return NULL;
 
     lexer_next(l);
   } else if (l->current.kind == TOKEN_FN) {
     stat->kind = STAT_DEF;
-    if (!compile_fn(l, &stat->def)) return_defer(false);
+    if (!compile_fn(l, &stat->def)) return NULL;
   } else if (l->current.kind == TOKEN_VAR) {
     stat->kind = STAT_DEF;
-    if (!compile_var(l, &stat->def, true)) return_defer(false);
+    if (!compile_var(l, &stat->def, true)) return NULL;
   } else if (l->current.kind == TOKEN_IF) {
     stat->kind = STAT_IF;
-    if (!prefetch_not_none(l)) return_defer(false);
+    if (!prefetch_not_none(l)) return NULL;
 
-    stat->if_else.cond = calloc(1, sizeof(Expr));
-    if (!compile_expr(l, stat->if_else.cond)) return_defer(false);
+    stat->if_else.cond = compile_expr(l);
+    if (stat->if_else.cond == NULL) return NULL;
 
-    stat->if_else.on_true = calloc(1, sizeof(Stat));
-    if (!compile_stat(l, stat->if_else.on_true)) return_defer(false);
+    stat->if_else.on_true = compile_stat(l);
+    if (stat->if_else.on_true == NULL) return NULL;
 
     stat->if_else.on_false = NULL;
     if (l->current.kind == TOKEN_ELSE) {
-      if (!prefetch_not_none(l)) return_defer(false);
-      stat->if_else.on_false = calloc(1, sizeof(Stat));
-      if (!compile_stat(l, stat->if_else.on_false)) return_defer(false);
+      if (!prefetch_not_none(l)) return NULL;
+      stat->if_else.on_false = compile_stat(l);
+      if (stat->if_else.on_false == NULL) return NULL;
     }
   } else if (l->current.kind == TOKEN_RET) {
     stat->kind = STAT_RET;
 
-    if (!prefetch_not_none(l)) return_defer(false);
+    if (!prefetch_not_none(l)) return NULL;
 
-    stat->ret_val = calloc(1, sizeof(Expr));
-
-    if (!compile_expr(l, stat->ret_val)) return_defer(false);
+    stat->ret_val = compile_expr(l);
+    if (stat->ret_val == NULL) return NULL;
   } else {
-    Expr expr = {0};
-    if (!compile_expr(l, &expr)) return_defer(false);
+    Expr *expr = compile_expr(l);
+    if (expr == NULL) return NULL;
 
     if (l->current.kind == '=') {
       stat->kind = STAT_ASSIGN;
-      stat->assign.dst = calloc(1, sizeof(Expr));
-      *stat->assign.dst = expr;
+      stat->assign.dst = expr;
 
-      if (!prefetch_not_none(l)) return_defer(false);
-      stat->assign.val = calloc(1, sizeof(Expr));
-      if (!compile_expr(l, stat->assign.val)) return_defer(false);
-    } else if (expr.kind == EXPR_INVOKE) {
+      if (!prefetch_not_none(l)) return NULL;
+      stat->assign.val = compile_expr(l);
+      if (stat->assign.val == NULL) return NULL;
+    } else if (expr->kind == EXPR_INVOKE) {
       stat->kind = STAT_INVOKE;
-      stat->invoke = expr.invoke;
+      stat->invoke = expr->invoke;
     } else {
       pcompile_info(stat->loc,
                     "error: expect a statement, but got an expression.\n");
-      expr_del(&expr);
-      return_defer(false);
+      return NULL;
     }
   }
 
@@ -580,10 +517,7 @@ bool compile_stat(Lexer *l, Stat *stat)
     lexer_next(l);
   }
 
-  return true;
- defer:
-  if (!result) stat_del(stat);
-  return result;
+  return stat;
 }
 
 bool compile_block(Lexer *l, Stat_List *block)
@@ -592,9 +526,9 @@ bool compile_block(Lexer *l, Stat_List *block)
   if (!prefetch_not_none(l)) return false;
 
   while (l->current.kind != '}') {
-    Stat s = {0};
-    if (!compile_stat(l, &s)) return false;
-    da_append(block, s);
+    Stat *s = compile_stat(l);
+    if (s == NULL) return false;
+    da_append(block, *s);
   }
   assert(l->current.kind == '}');
   lexer_next(l);
@@ -606,107 +540,11 @@ bool compile_file(Lexer *l, Stat_List *stats)
   if (!prefetch_not_none(l)) return false;
 
   while (l->current.kind != TOKEN_EOF && l->current.kind != TOKEN_ERR) {
-    Stat s = {0};
-    if (!compile_stat(l, &s)) return false;
-    da_append(stats, s);
+    Stat *s = compile_stat(l);
+    if (s == NULL) return false;
+    da_append(stats, *s);
   }
   return l->current.kind == TOKEN_EOF;
-}
-
-void stat_list_del(Stat_List stats)
-{
-  da_foreach(Stat, stat, &stats) {
-    stat_del(stat);
-  }
-  da_free(stats);
-}
-
-static void del_fn_ast(AST_Fn *fn);
-
-static void del_def(Def *def)
-{
-  static_assert(__def_kind_count == 3,
-                "introduced more def kinds");
-  switch (def->kind) {
-  case DEF_VAR:
-    destroy_type_expr(&def->var.type);
-    if (def->var.init != NULL) {
-      expr_del(def->var.init);
-      free(def->var.init);
-    }
-    break;
-  case DEF_FN:
-    del_fn_ast(&def->fn);
-    break;
-  case DEF_EXT:
-    destroy_type_expr(&def->ext.type);
-    break;
-  default: UNREACHABLE("");
-  }
-}
-
-void stat_del(Stat *stat)
-{
-  static_assert(__stat_kind_count == 7, "introduced more stat kinds");
-  switch(stat->kind) {
-  case STAT_EMPTY:
-    // nothing to do;
-    break;
-  case STAT_ASSIGN:
-    if (stat->assign.dst != NULL) {
-      expr_del(stat->assign.dst);
-      free(stat->assign.dst);
-    }
-    if (stat->assign.val != NULL) {
-      expr_del(stat->assign.val);
-      free(stat->assign.val);
-    }
-    break;
-  case STAT_RET:
-    if (stat->ret_val) {
-      expr_del(stat->ret_val);
-      free(stat->ret_val);
-    }
-    break;
-  case STAT_INVOKE:
-    if (stat->invoke.fn) {
-      expr_del(stat->invoke.fn);
-      free(stat->invoke.fn);
-    }
-    expr_list_del(&stat->invoke.args);
-    break;
-  case STAT_BLOCK:
-    stat_list_del(stat->block);
-    break;
-  case STAT_IF:
-    if (stat->if_else.cond) {
-      expr_del(stat->if_else.cond);
-      free(stat->if_else.cond);
-    }
-    if (stat->if_else.on_true) {
-      stat_del(stat->if_else.on_true);
-      free(stat->if_else.on_true);
-    }
-    if (stat->if_else.on_false) {
-      stat_del(stat->if_else.on_false);
-      free(stat->if_else.on_false);
-    }
-    break;
-  case STAT_DEF:
-    del_def(&stat->def);
-    break;
-  default: UNREACHABLE("");
-  }
-}
-
-static void del_fn_ast(AST_Fn *fn)
-{
-  destroy_type_expr(&fn->ret_type);
-  da_foreach(Def, def, &fn->args) {
-    del_def(def);
-  }
-  da_free(fn->args);
-  stat_list_del(fn->body);
 }
 
 #endif // MCC_AST_IMPLEMENTATION

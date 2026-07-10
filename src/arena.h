@@ -34,6 +34,7 @@ Arena *get_arena();
 extern Arena default_arena;
 
 void *arena_alloc(size_t size);
+void *arena_calloc(size_t n, size_t size);
 void *arena_realloc(void *ptr, size_t new_size);
 
 typedef struct  {
@@ -95,23 +96,26 @@ void *arena_alloc(size_t size)
 
     current_arena->end   = new_arena_block(capacity);
     current_arena->begin = current_arena->end;
+    current_arena->used  = 0;
   }
 
   while (current_arena->end->next != NULL) {
-    if (current_arena->used + alloc_size > current_arena->end->capacity)
+    if (current_arena->used + alloc_size < current_arena->end->capacity)
       break;
 
-    current_arena->end = current_arena->end->next;
+    current_arena->end  = current_arena->end->next;
+    current_arena->used = 0;
   }
 
-  if (current_arena->end->next != NULL) {
-    assert(current_arena->used + alloc_size > current_arena->end->capacity);
+  if (current_arena->used + alloc_size > current_arena->end->capacity) {
+    assert(current_arena->end->next == NULL);
 
     size_t capacity = ARENA_DEFAULT_CAPACITY;
     if (capacity < size) capacity = size;
 
-    current_arena->end   = new_arena_block(capacity);
-    current_arena->begin = current_arena->end;
+    current_arena->end->next = new_arena_block(capacity);
+    current_arena->end       = current_arena->end->next;
+    current_arena->used      = 0;
   }
 
   Arena_Slot *slot = (Arena_Slot*)&current_arena->end->data[current_arena->used];
@@ -120,12 +124,20 @@ void *arena_alloc(size_t size)
   return slot->data;
 }
 
+void *arena_calloc(size_t n, size_t size)
+{
+  void *mem = arena_alloc(n * size);
+  return memset(mem, 0, n * size);
+}
+
 void *arena_realloc(void *ptr, size_t new_size)
 {
-  Arena_Slot *slot = ptr - sizeof(Arena_Slot);
   void *new_ptr = arena_alloc(new_size);
-  memcpy(new_ptr, ptr, slot->size);
-  return ptr;
+  if (ptr != NULL) {
+    Arena_Slot *slot = ptr - sizeof(Arena_Slot);
+    memcpy(new_ptr, ptr, slot->size);
+  }
+  return new_ptr;
 }
 
 Arena_Mark arena_snapshot(Arena *a)

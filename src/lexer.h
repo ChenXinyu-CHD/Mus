@@ -3,7 +3,7 @@
 
 #include <stdio.h>
 
-#include "nob.h"
+#include "3rd_wrapper.h"
 
 int sv_to_int(String_View sv);
 
@@ -117,7 +117,7 @@ void vpcompile_info(Cursor cs, const char* fmt, va_list args)
     va_copy(ap, args);
     char *msg = temp_vsprintf(fmt, ap);
     va_end(ap);
-  
+
     fprintf(stderr, CS_Fmt" %s", CS_Arg(cs), msg);
   } temp_rewind(mark);
 }
@@ -247,7 +247,7 @@ const char *token_name(int kind)
       return token_list[i].print_name;
     }
   }
-  
+
   UNREACHABLE("");
 }
 
@@ -317,7 +317,7 @@ static bool lexer_simple_token(Lexer *l)
 
   for (size_t i = 0; i < ARRAY_LEN(token_list); ++i) {
     if (token_list[i].str == NULL) continue;
-    
+
     String_View str = sv_from_cstr(token_list[i].str);
     if (cs_move_after_prefix(sb, &l->cursor, str)) {
       l->current = (Token) {
@@ -419,14 +419,14 @@ bool prefetch_not_none(Lexer *l)
     pcompile_info(l->current.start, "error: unexpected EOF\n");
     return false;
   }
-  
+
   return result;
 }
 
 bool expect_token(Lexer *l, int token)
 {
   if (l->current.kind == token) return true;
-  
+
   pcompile_info(l->current.start,
                 "error: expect token %s, but got %s\n",
                 token_name(token),
@@ -444,7 +444,7 @@ bool prefetch_expect_token(Lexer *l, int token)
 bool vexpect_tokens_impl(Lexer *l, va_list expecteds)
 {
   bool found = false;
-  
+
   va_list ap; va_copy(ap, expecteds); {
     int arg = va_arg(ap, int);
     while (arg != TOKEN_ERR) {
@@ -460,7 +460,7 @@ bool vexpect_tokens_impl(Lexer *l, va_list expecteds)
 
   va_copy(ap, expecteds); {
     pcompile_info(l->current.start, "error: expect token ");
-    
+
     int arg = va_arg(ap, int);
     while (arg != TOKEN_ERR) {
       fprintf(stderr, "%s, ", token_name(arg));
@@ -468,18 +468,18 @@ bool vexpect_tokens_impl(Lexer *l, va_list expecteds)
     }
     fprintf(stderr, "but got %s\n", token_name(l->current.kind));
   } va_end(ap);
-  
+
   return false;
 }
 
 bool expect_tokens_impl(Lexer *l, ...)
 {
   bool found = false;
-  
+
   va_list ap; va_start(ap, l); {
     found = vexpect_tokens_impl(l, ap);
   } va_end(ap);
-  
+
   return found;
 }
 
@@ -487,11 +487,11 @@ bool prefetch_expect_tokens_impl(Lexer *l, ...)
 {
   lexer_next(l);
   bool found = false;
-  
+
   va_list ap; va_start(ap, l); {
     found = vexpect_tokens_impl(l, ap);
   } va_end(ap);
-  
+
   return found;
 }
 

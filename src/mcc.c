@@ -2,6 +2,8 @@
 #include <string.h>
 #include <stdarg.h>
 
+#include "3rd_wrapper.h"
+
 #include "lexer.h"
 #include "parser.h"
 
@@ -467,7 +469,6 @@ int main(int argc, char **argv)
   }
 
   int result        = 0;
-  String_Builder sb = {0};
   Program prog      = {0};
 
   if (mcc_args.files.count > 1) {
@@ -510,8 +511,7 @@ int main(int argc, char **argv)
   return_defer(0);
 
  defer:
-  if (sb.capacity > 0) da_free(sb);
-  destroy_program(&prog);
+  arena_free(get_arena());
   if (result) fprintf(stderr, "compilation terminated\n");
 
   return result;
@@ -520,18 +520,11 @@ int main(int argc, char **argv)
 #define MCC_LEXER_IMPLEMENTATION
 #include "lexer.h"
 
-#define NOB_IMPLEMENTATION
-#include "nob.h"
-
 #define MCC_TYPE_IMPLEMENTATION
 #include "type.h"
 
 #define MCC_AST_IMPLEMENTATION
 #include "ast.h"
 
-#define HT_IMPLEMENTATION
-#include "ht.h"
-
-#define ARENA_IMPLEMENTATION
-#include "arena.h"
-
+#define MCC_3RD_WRAPPER_IMPLEMENTATION
+#include "3rd_wrapper.h"

@@ -3,8 +3,7 @@
 
 #include <stddef.h>
 
-#include "nob.h"
-#include "ht.h"
+#include "3rd_wrapper.h"
 
 #include "lexer.h"
 #include "ast.h"

@@ -1,7 +1,6 @@
 #include "parser.h"
 
-#include "nob.h"
-#include "ht.h"
+#include "3rd_wrapper.h"
 
 #include "lexer.h"
 #include "type.h"
@@ -33,7 +32,7 @@ struct Scoop {
 
 static Scoop *new_scoop(Scoop *upper)
 {
-  Scoop *s = calloc(1, sizeof(*s));
+  Scoop *s = arena_calloc(1, sizeof(*s));
   s->symbols.hasheq = ht_sv_hasheq;
   s->upper = upper;
   return s;
@@ -81,58 +80,12 @@ static SymSearchResult sym_search(Scoop *sp, String_View name)
 
 Var *alloc_var(VarList *vars)
 {
-  Var *var = malloc(sizeof(Var));
+  Var *var = arena_alloc(sizeof(Var));
   *var = (Var) {
     .type = {.kind = TYPE_UNKNOWN},
   };
   da_append(vars, var);
   return var;
-}
-static void destroy_op(Op *op)
-{
-  static_assert(__op_kind_count == 7, "introduced more op kinds");
-  switch (op->kind) {
-  case OP_INVOKE:
-    da_free(op->invoke.args);
-    break;
-  case OP_RETURN:
-  case OP_SET_VAR:
-  case OP_BINOP:
-  case OP_JMP_ELSE:
-  case OP_JMP:
-  case OP_LABEL:
-    break;
-  default: UNREACHABLE("destroy op");
-  }
-}
-
-static void destroy_fn(Fn *fn)
-{
-  if (fn->fn_body.count != 0) {
-    da_foreach (Op, op, &fn->fn_body) {
-      destroy_op(op);
-    }
-    da_free(fn->fn_body);
-  }
-
-  if (fn->vars.count != 0) {
-    for (size_t i = 0; i < fn->vars.count; ++i) {
-      Var *var = fn->vars.items[i];
-      destroy_type_expr(&var->type);
-      free(var);
-    }
-    da_free(fn->vars);
-  }
-}
-
-static void destroy_fn_list(FnList *fn_list)
-{
-  for (size_t i = 0; i < fn_list->count; ++i) {
-    Fn *fn = fn_list->items[i];
-    destroy_fn(fn);
-    free(fn);
-  }
-  da_free(*fn_list);
 }
 
 static void dump_arg(String_Builder *sb, Arg *arg)
@@ -258,7 +211,7 @@ typedef struct {
 
 static Fn *push_fn_ast(Gen_Context *ctx, String_Builder name, AST_Fn* ast, Scoop *sp)
 {
-  Fn *fn = calloc(1, sizeof(*fn));
+  Fn *fn = arena_calloc(1, sizeof(*fn));
   fn->name = name;
   da_append(&ctx->ungenerated, fn);
 
@@ -517,7 +470,7 @@ static bool stat_to_ir(Stat *stat, Scoop *sp, Gen_Context *ctx)
       Symbol *sym = insert_sym(sp, stat->def.name, stat->loc, SYMBOL_EXTERN);
       if (sym == NULL) return false;
 
-      sym->ext = calloc(1, sizeof(*sym->ext));
+      sym->ext = arena_calloc(1, sizeof(*sym->ext));
       sym->ext->linkname = stat->def.ext.linkname;
       sym->ext->type = type_clone(stat->def.ext.type);
       da_append(&ctx->prog->externs, sym->ext);
@@ -545,7 +498,7 @@ static bool stat_to_ir(Stat *stat, Scoop *sp, Gen_Context *ctx)
       Symbol *sym = insert_sym(sp, stat->def.name, stat->loc, SYMBOL_VAR);
       if (sym == NULL) return false;
 
-      sym->var = calloc(1, sizeof(*sym->var));
+      sym->var = arena_calloc(1, sizeof(*sym->var));
       da_append(&ctx->fn->vars, sym->var);
 
       *sym->var = (Var) {
@@ -654,44 +607,34 @@ static bool compile_type_fn(Lexer *l, TypeExpr *type)
 {
   assert(l->current.kind == TOKEN_FN);
 
-  bool result;
-
   type->kind = TYPE_FN;
-  if (!prefetch_expect_token(l, '(')) return_defer(false);
+  if (!prefetch_expect_token(l, '(')) return false;
 
-  if (!prefetch_not_none(l)) return_defer(false);
+  if (!prefetch_not_none(l)) return false;
   type->fn_type.arg_types = (TypeList) {0};
   while (l->current.kind != ')') {
     if (l->current.kind == TOKEN_DOTS) { // parse "..." for va_args
       if (!prefetch_expect_token(l, ')')) return false;
       type->fn_type.va_args = true;
     } else {
-      // failures in this loop would not cause memory leak;
       TypeExpr arg_type = {0};
-      // memory would clean up in the compile_type_expr;
-      if (!compile_type_expr(l, &arg_type)) return_defer(false);
+      if (!compile_type_expr(l, &arg_type)) return false;
       da_append(&type->fn_type.arg_types, arg_type);
-      // from here, the ownership has moved to ext.type.arg_types;
-      // thus, they will be clean up together with ext.type.arg_types;
-      if (!prefetch_expect_tokens(l, ',', ')')) return_defer(false);
+      if (!prefetch_expect_tokens(l, ',', ')')) return false;
       if (l->current.kind == ',') {
-        if (!prefetch_not_none(l)) return_defer(false);
+        if (!prefetch_not_none(l)) return false;
       }
     }
   }
 
-  if (!prefetch_expect_token(l, ':')) return_defer(false);
-  if (!prefetch_not_none(l)) return_defer(false);
+  if (!prefetch_expect_token(l, ':')) return false;
+  if (!prefetch_not_none(l)) return false;
 
-  type->fn_type.ret_type = calloc(1, sizeof(TypeExpr));
+  type->fn_type.ret_type = arena_calloc(1, sizeof(TypeExpr));
   assert(type->fn_type.ret_type);
-  if (!compile_type_expr(l, type->fn_type.ret_type)) return_defer(false);
+  if (!compile_type_expr(l, type->fn_type.ret_type)) return false;
 
-  return_defer(true);
-
- defer:
-  if (!result) destroy_type_expr(type);
-  return result;
+  return true;
 }
 
 static bool detect_arg_type(Arg *arg) {
@@ -1022,13 +965,13 @@ static bool gen_ir_fn(Fn *fn, Gen_Context *ctx)
     if (arg->var.init != NULL) TODO("support default argument for function");
     Symbol *sym = insert_sym(fn_ctx->sp, arg->name, arg->loc, SYMBOL_VAR);
     if (sym == NULL) return false;
-    sym->var = calloc(1, sizeof(*sym->var));
+    sym->var = arena_calloc(1, sizeof(*sym->var));
     sym->var->type = type_clone(arg->var.type);
 
     da_append(&ctx->fn->vars, sym->var);
     da_append(&fn->type.fn_type.arg_types, type_clone(arg->var.type));
   }
-  fn->type.fn_type.ret_type = malloc(sizeof(TypeExpr));
+  fn->type.fn_type.ret_type = arena_alloc(sizeof(TypeExpr));
   *fn->type.fn_type.ret_type = type_clone(ast->ret_type);
 
   da_foreach (Stat, stat, &ast->body) {
@@ -1063,50 +1006,18 @@ static bool gen_ir(Program *prog, Stat_List *stats)
     if (!gen_ir_fn(fn, &ctx)) result = false;
   }
 
-  da_free(ctx.ungenerated);
-  ht_free(&ctx.known);
-  da_foreach(Scoop *, sp, &ctx.sps) {
-    ht_free(&(*sp)->symbols);
-    free(*sp);
-  }
-  da_free(ctx.sps);
-
   return result;
 }
 
 bool compile_program(Lexer *l, Program *prog)
 {
   Stat_List stats = {0};
-  if (!compile_file(l, &stats)) {
-    stat_list_del(stats);
-    return false;
-  }
-  if (!gen_ir(prog, &stats)) {
-    stat_list_del(stats);
-    return false;
-  }
-
-  stat_list_del(stats);
-
+  if (!compile_file(l, &stats))       return false;
+  if (!gen_ir(prog, &stats))          return false;
   if (!detect_all_unknown_type(prog)) return false;
-  if (!check_type(prog)) return false;
-  if (!check_fn_returned(prog)) return false;
+  if (!check_type(prog))              return false;
+  if (!check_fn_returned(prog))       return false;
 
   return true;
-}
-
-void destroy_program(Program *prog)
-{
-  da_foreach (Extern *, ext_ptr, &prog->externs) {
-    Extern *ext = *ext_ptr;
-    destroy_type_expr(&ext->type);
-    free(ext);
-  }
-  da_free(prog->externs);
-
-  destroy_fn_list(&prog->fn_list);
-  if (prog->str_lits.capacity > 0) {
-    da_free(prog->str_lits);
-  }
 }
 
