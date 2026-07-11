@@ -201,12 +201,6 @@ typedef struct {
 
   FnList ungenerated;
   Known_Fn known;
-
-  struct {
-    Scoop **items;
-    size_t capacity;
-    size_t count;
-  } sps;
 } Gen_Context;
 
 static Fn *push_fn_ast(Gen_Context *ctx, String_Builder name, AST_Fn* ast, Scoop *sp)
@@ -215,12 +209,9 @@ static Fn *push_fn_ast(Gen_Context *ctx, String_Builder name, AST_Fn* ast, Scoop
   fn->name = name;
   da_append(&ctx->ungenerated, fn);
 
-  sp = new_scoop(sp);
-  da_append(&ctx->sps, sp);
-
   *ht_put(&ctx->known, fn) = (Fn_Ctx) {
     .fn = ast,
-    .sp = sp,
+    .sp = new_scoop(sp),
   };
   return fn;
 }
@@ -421,7 +412,6 @@ static bool stat_to_ir(Stat *stat, Scoop *sp, Gen_Context *ctx)
   } break;
   case STAT_BLOCK: {
     Scoop *new_sp = new_scoop(sp);
-    da_append(&ctx->sps, sp);
     da_foreach(Stat, s, &stat->block) {
       if (!stat_to_ir(s, new_sp, ctx)) return false;
     }
@@ -984,40 +974,40 @@ static bool gen_ir_fn(Fn *fn, Gen_Context *ctx)
   return true;
 }
 
-static bool gen_ir(Program *prog, Stat_List *stats)
+static Program *gen_ir(Stat_List *stats)
 {
-  bool result = true;
-
-  Gen_Context ctx = {.prog = prog};
+  bool ok = true;
+  Gen_Context ctx = {.prog = arena_alloc(sizeof(*ctx.prog))};
   Scoop *global = new_scoop(NULL);
-  da_append(&ctx.sps, global);
   da_foreach(Stat, stat, stats) {
     if (stat->kind != STAT_DEF) {
       pcompile_info(stat->loc, "error: only definations are available here.\n");
-      result = false;
+      ok = false;
       continue;
     }
-    if (!stat_to_ir(stat, global, &ctx)) result = false;
+    if (!stat_to_ir(stat, global, &ctx)) ok = false;
   }
 
   FnList *ungenerated = &ctx.ungenerated;
   while (ungenerated->count != 0) {
     Fn *fn = da_pop(ungenerated);
-    if (!gen_ir_fn(fn, &ctx)) result = false;
+    if (!gen_ir_fn(fn, &ctx)) ok = false;
   }
 
-  return result;
+  return ok ? ctx.prog : NULL;
 }
 
-bool compile_program(Lexer *l, Program *prog)
+Program *compile_program(Lexer *l)
 {
   Stat_List stats = {0};
-  if (!compile_file(l, &stats))       return false;
-  if (!gen_ir(prog, &stats))          return false;
-  if (!detect_all_unknown_type(prog)) return false;
-  if (!check_type(prog))              return false;
-  if (!check_fn_returned(prog))       return false;
+  if (!compile_file(l, &stats)) return NULL;
 
-  return true;
+  Program *prog = gen_ir(&stats);
+  if (prog == NULL)                   return NULL;
+  if (!detect_all_unknown_type(prog)) return NULL;
+  if (!check_type(prog))              return NULL;
+  if (!check_fn_returned(prog))       return NULL;
+
+  return prog;
 }
 

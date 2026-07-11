@@ -468,8 +468,7 @@ int main(int argc, char **argv)
     exit(1);
   }
 
-  int result        = 0;
-  Program prog      = {0};
+  int result = 0;
 
   if (mcc_args.files.count > 1) {
     TODO("support multiple files");
@@ -483,7 +482,8 @@ int main(int argc, char **argv)
     return_defer(dump_all_tokens(&lexer)? 0 : 1);
   }
 
-  if (!compile_program(&lexer, &prog)) {
+  Program *prog = compile_program(&lexer);
+  if (prog == NULL) {
     fprintf(stderr,
             "fatal error: failed to compile file %s\n",
             mcc_args.files.items[0]);
@@ -492,10 +492,10 @@ int main(int argc, char **argv)
 
   switch(mcc_args.target) {
   case TARGET_IR:
-    if(!build_ir(mcc_args.outfile, &prog)) return_defer(1);
+    if(!build_ir(mcc_args.outfile, prog)) return_defer(1);
     break;
   case TARGET_X86_64_NATIVE:
-    if (!build_x86_64_native(mcc_args.outfile, &prog)) return_defer(1);
+    if (!build_x86_64_native(mcc_args.outfile, prog)) return_defer(1);
     break;
   default: UNREACHABLE("target");
   }

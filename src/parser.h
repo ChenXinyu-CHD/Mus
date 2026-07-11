@@ -93,7 +93,7 @@ const char *binop_name(BinopKind kind);
 
 typedef struct {
   OpKind kind;
-  Cursor loc ;
+  Cursor loc;
   union {
     OpInvoke invoke;
     Arg ret_val;
@@ -145,7 +145,6 @@ typedef struct {
   } str_lits;
 } Program;
 
-bool compile_program(Lexer *l, Program *grog);
-void destroy_program(Program *prog);
+Program *compile_program(Lexer *l);
 
 #endif // MCC_PASER_H
