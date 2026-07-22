@@ -31,6 +31,7 @@ typedef enum {
   TOKEN_STR,
   TOKEN_INT,
   TOKEN_VAR,
+  TOKEN_LET,
   TOKEN_FN,
   TOKEN_RET,
   TOKEN_EXT,
@@ -48,6 +49,7 @@ typedef enum {
   TOKEN_NEQ,
   TOKEN_LE,
   TOKEN_GE,
+  TOKEN_ARR,
 
   // internal types
   TOKEN_U8,
@@ -183,26 +185,28 @@ String_View sv_between_cs(String_Builder sb, Cursor begin, Cursor end)
   };
 }
 
-static_assert(__token_kind_count == 128 + 28, "introduced more token kinds");
+static_assert(__token_kind_count == 128 + 30, "introduced more token kinds");
 static struct {
   int kind;
   char *str;
   char *print_name;
 } token_list[] = {
-  {.str = "extern", .print_name = "extern", .kind = TOKEN_EXT},
-  {.str = "fn",     .print_name = "fn",     .kind = TOKEN_FN},
-  {.str = "return", .print_name = "return", .kind = TOKEN_RET},
-  {.str = "var",    .print_name = "var",    .kind = TOKEN_VAR},
-  {.str = "if",     .print_name = "if",     .kind = TOKEN_IF},
-  {.str = "else",   .print_name = "else",   .kind = TOKEN_ELSE},
-  {.str = "true",   .print_name = "true",   .kind = TOKEN_TRUE},
-  {.str = "false",  .print_name = "false",  .kind = TOKEN_FALSE},
+  {.str = "@extern", .print_name = "@extern", .kind = TOKEN_EXT},
+  {.str = "fn",      .print_name = "fn",      .kind = TOKEN_FN},
+  {.str = "return",  .print_name = "return",  .kind = TOKEN_RET},
+  {.str = "var",     .print_name = "var",     .kind = TOKEN_VAR},
+  {.str = "let",     .print_name = "let",     .kind = TOKEN_LET},
+  {.str = "if",      .print_name = "if",      .kind = TOKEN_IF},
+  {.str = "else",    .print_name = "else",    .kind = TOKEN_ELSE},
+  {.str = "true",    .print_name = "true",    .kind = TOKEN_TRUE},
+  {.str = "false",   .print_name = "false",   .kind = TOKEN_FALSE},
   // multi-charactor operators
   {.str = "==",  .print_name = "'=='",  .kind = TOKEN_EQ},
   {.str = "!=",  .print_name = "'!='",  .kind = TOKEN_NEQ},
   {.str = "<=",  .print_name = "'<='",  .kind = TOKEN_LE},
   {.str = ">=",  .print_name = "'>='",  .kind = TOKEN_GE},
   {.str = "...", .print_name = "'...'", .kind = TOKEN_DOTS},
+  {.str = "->",  .print_name = "'->'",  .kind = TOKEN_ARR},
   // ascii
   {.str = "(", .print_name = "'('", .kind = '('},
   {.str = ")", .print_name = "')'", .kind = ')'},

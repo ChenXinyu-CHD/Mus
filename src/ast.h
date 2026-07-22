@@ -7,6 +7,7 @@
 
 typedef enum {
   EXPR_ATOM = 0,
+  EXPR_LAMBDA,
   EXPR_INVOKE,
   EXPR_BINOP,
   __expr_kind_count
@@ -40,6 +41,37 @@ typedef struct {
   Expr_List args;
 } AST_Invoke;
 
+typedef struct Stat Stat;
+
+typedef struct {
+  Stat *items;
+  size_t count;
+  size_t capacity;
+} Stat_List;
+
+typedef struct {
+  String_View name;
+  Cursor loc;
+  TypeExpr type;
+} Fn_Arg;
+
+typedef struct {
+  bool va;
+  Fn_Arg *items;
+  size_t count;
+  size_t capacity;
+} Fn_Arg_List;
+
+typedef struct {
+  Cursor loc;
+
+  TypeExpr ret_type;
+  Fn_Arg_List args;
+
+  bool is_extern;
+  Stat_List body;
+} Lambda;
+
 struct Expr {
   Expr_Kind kind;
   Cursor loc;
@@ -47,6 +79,7 @@ struct Expr {
   union {
     Token atom;
     AST_Invoke invoke;
+    Lambda lambda;
     struct {
       BinopKind kind;
       Expr *lhs;
@@ -56,6 +89,7 @@ struct Expr {
 };
 
 Expr *compile_expr(Lexer *l);
+Expr *expr_eval(Expr* expr);
 
 typedef enum {
   STAT_EMPTY = 0,
@@ -68,53 +102,19 @@ typedef enum {
   __stat_kind_count,
 } Stat_Kind;
 
-typedef struct Stat Stat;
-
-typedef struct {
-  Stat *items;
-  size_t count;
-  size_t capacity;
-} Stat_List;
-
 typedef enum {
   DEF_VAR,
-  DEF_FN,
-  DEF_EXT,
+  DEF_LET,
   __def_kind_count,
 } Def_Kind;
 
-typedef struct {
-  String_View linkname;
-  TypeExpr type;
-} Extern;
-
 typedef struct Def Def;
-
-typedef struct {
-  Cursor loc;
-
-  TypeExpr ret_type;
-  struct {
-    Def *items;
-    size_t count;
-    size_t capacity;
-  } args;
-
-  Stat_List body;
-} AST_Fn;
 
 struct Def {
   Def_Kind kind;
   String_View name;
-  Cursor loc;
-  union {
-    struct {
-      TypeExpr type;
-      Expr *init;
-    } var;
-    Extern ext;
-    AST_Fn fn;
-  };
+  TypeExpr type;
+  Expr *val;
 };
 
 struct Stat {
@@ -145,6 +145,144 @@ bool compile_file(Lexer *l, Stat_List *file);
 #endif // MCC_AST_H_
 
 #ifdef MCC_AST_IMPLEMENTATION
+
+static_assert(__type_kind_count == 7, "introduced more type kinds");
+static struct {
+  int token;
+  TypeExpr type;
+} internal_types[] = {
+  {
+    .token = TOKEN_VOID,
+    .type = { .kind = TYPE_VOID, .size = 0, },
+  },
+  {
+    .token = TOKEN_BOOL,
+    .type = { .kind = TYPE_BOOL, .size = 1, },
+  },
+  {
+    .token = TOKEN_U8,
+    .type = { .kind = TYPE_UINT, .size = 1, },
+  },
+  {
+    .token = TOKEN_U16,
+    .type = { .kind = TYPE_UINT, .size = 2, },
+  },
+  {
+    .token = TOKEN_U32,
+    .type = { .kind = TYPE_UINT, .size = 4, },
+  },
+  {
+    .token = TOKEN_U64,
+    .type = { .kind = TYPE_UINT, .size = 8, },
+  },
+  {
+    .token = TOKEN_I8,
+    .type = { .kind = TYPE_INT, .size = 1, },
+  },
+  {
+    .token = TOKEN_I16,
+    .type = { .kind = TYPE_INT, .size = 2, },
+  },
+  {
+    .token = TOKEN_I32,
+    .type = { .kind = TYPE_INT, .size = 4, },
+  },
+  {
+    .token = TOKEN_I64,
+    .type = { .kind = TYPE_INT, .size = 8, },
+  }
+};
+
+static bool compile_internal_type(Lexer *l, TypeExpr *type) {
+  for (size_t i = 0; i < ARRAY_LEN(internal_types); ++i) {
+    if (internal_types[i].token == l->current.kind) {
+      *type = type_clone(internal_types[i].type);
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool compile_type_fn(Lexer *l, TypeExpr *type);
+
+static bool compile_type_expr(Lexer *l, TypeExpr *type)
+{
+  assert(type != NULL);
+  if (compile_internal_type(l, type)) return true;
+
+  switch (l->current.kind) {
+  case TOKEN_FN:
+    return compile_type_fn(l, type);
+  case '&': {
+    if (!prefetch_not_none(l)) return false;
+    TypeExpr ref_type;
+    if (!compile_type_expr(l, &ref_type)) return false;
+    *type = type_ptr(ref_type);
+    return true;
+  }
+  default:
+    pcompile_info(l->current.start,
+                  "error: expected a type but got %s\n",
+                  token_name(l->current.kind));
+    return false;
+  }
+}
+
+static bool compile_fn_sign(Lexer *l, TypeExpr *ret, Fn_Arg_List *args)
+{
+  assert(l->current.kind == TOKEN_FN);
+
+  if (!prefetch_expect_token(l, '(')) return false;
+
+  if (!prefetch_not_none(l)) return false;
+  while (l->current.kind != ')') {
+    if (l->current.kind == TOKEN_DOTS) { // parse "..." for va_args
+      if (!prefetch_expect_token(l, ')')) return false;
+      args->va = true;
+    } else {
+      Fn_Arg arg = {0};
+      if (!expect_token(l, TOKEN_ID)) return false;
+      arg.name = l->current.str;
+      arg.loc  = l->current.start;
+
+      if (!prefetch_expect_token(l, ':'))   return false;
+      if (!prefetch_not_none(l))            return false;
+      if (!compile_type_expr(l, &arg.type)) return false;
+      da_append(args, arg);
+
+      if (!prefetch_expect_tokens(l, ',', ')')) return false;
+      if (l->current.kind == ',') {
+        if (!prefetch_not_none(l)) return false;
+      }
+    }
+  }
+
+  if (!prefetch_expect_token(l, TOKEN_ARR)) return false;
+  if (!prefetch_not_none(l)) return false;
+
+  if (!compile_type_expr(l, ret)) return false;
+
+  return true;
+}
+
+static bool compile_type_fn(Lexer *l, TypeExpr *type)
+{
+  assert(l->current.kind == TOKEN_FN);
+
+  type->kind = TYPE_FN;
+  type->fn_type.ret_type = arena_calloc(1, sizeof(TypeExpr));
+
+  Fn_Arg_List args = {0};
+  if (!compile_fn_sign(l, type->fn_type.ret_type, &args)) return false;
+
+  type->fn_type.arg_types = (TypeList) {0};
+  type->fn_type.va_args   = args.va;
+  da_foreach(Fn_Arg, arg, &args) {
+    da_append(&type->fn_type.arg_types, arg->type);
+  }
+
+  return true;
+}
 
 static const struct {
   int token_kind;
@@ -177,6 +315,28 @@ const char *binop_name(BinopKind kind)
 
 static Expr *expr_atom(Token token)
 {
+  int expected[] = {
+    TOKEN_STR,
+    TOKEN_INT,
+    TOKEN_ID,
+    TOKEN_TRUE,
+    TOKEN_FALSE,
+  };
+  bool found = false;
+  for (size_t i = 0; i < ARRAY_LEN(expected); ++i) {
+    if (expected[i] == token.kind) {
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+    pcompile_info(token.start,
+                  "error: expected an expression but got `"SV_Fmt"`\n",
+                  token.str);
+    return NULL;
+  }
+
   Expr *expr = arena_alloc(sizeof(*expr));
   *expr = (Expr) {
     .kind = EXPR_ATOM,
@@ -239,18 +399,36 @@ static bool compile_invoke_args(Lexer *l, Expr_List *args)
   return true;
 }
 
+static Expr *compile_lambda(Lexer *l)
+{
+  Lambda lambda = {.loc = l->current.start};
+  if (!compile_fn_sign(l, &lambda.ret_type, &lambda.args)) return NULL;
+
+  if (!prefetch_not_none(l)) return false;
+  if (l->current.kind == '{') {
+    if (!compile_block(l, &lambda.body)) return false;
+    lambda.is_extern = false;
+  } else if (l->current.kind == TOKEN_EXT) {
+    lambda.is_extern = true;
+    lexer_next(l);
+  }
+
+  Expr *expr = arena_alloc(sizeof(*expr));
+  *expr = (Expr) {
+    .kind = EXPR_LAMBDA,
+    .loc = lambda.loc,
+    .lambda = lambda
+  };
+
+  return expr;
+}
+
 static Expr *compile_simple_expr(Lexer *l)
 {
-  if (!expect_tokens(l,
-                     TOKEN_STR,
-                     TOKEN_INT,
-                     TOKEN_ID,
-                     TOKEN_TRUE,
-                     TOKEN_FALSE,
-                     '('))
-    return NULL;
-
   Expr *expr = NULL;
+  if (l->current.kind == TOKEN_FN) {
+    return compile_lambda(l);
+  }
   if (l->current.kind == '(') {
     if (!prefetch_not_none(l))  return NULL;
     expr = compile_expr(l);
@@ -258,6 +436,8 @@ static Expr *compile_simple_expr(Lexer *l)
   } else {
     expr = expr_atom(l->current);
   }
+
+  if (expr == NULL) return NULL;
 
   if (!prefetch_not_none(l)) return NULL;
   while (l->current.kind == '(') {
@@ -340,131 +520,135 @@ Expr *compile_expr(Lexer *l)
   return compile_cmp(l);
 }
 
-bool compile_type_expr(Lexer *l, TypeExpr *type);
-
-static bool compile_var(Lexer *l, Def *def, bool prefix)
+Expr *expr_eval(Expr* expr)
 {
-  if (prefix) {
-    assert(l->current.kind == TOKEN_VAR);
-    if (!prefetch_not_none(l)) return false;
+  UNUSED(expr);
+  static_assert(__expr_kind_count == 4, "introduced more expr kinds");
+  switch (expr->kind) {
+  case EXPR_INVOKE:
+    pcompile_info(expr->loc,
+                  "error: invoking a function is not allowed in compile time\n");
+    return NULL;
+  case EXPR_ATOM:
+  case EXPR_LAMBDA:
+    return expr;
+  case EXPR_BINOP: {
+    Expr *lhs = expr_eval(expr->binop.lhs);
+    Expr *rhs = expr_eval(expr->binop.rhs);
+
+    Expr *result = arena_alloc(sizeof(result));
+    result->kind = EXPR_ATOM;
+    result->loc  = expr->loc;
+
+    UNUSED(lhs);
+    UNUSED(rhs);
+    static_assert(__binop_kind_count == 11, "introduced more binop kinds");
+    switch (expr->binop.kind) {
+    case BINOP_ADD:
+      TODO("");
+      break;
+    case BINOP_SUB:
+      TODO("");
+      break;
+    case BINOP_MUL:
+      TODO("");
+      break;
+    case BINOP_DIV:
+      TODO("");
+      break;
+    case BINOP_MOD:
+      TODO("");
+      break;
+    case BINOP_EQ:
+      TODO("");
+      break;
+    case BINOP_NEQ:
+      TODO("");
+      break;
+    case BINOP_LS:
+      TODO("");
+      break;
+    case BINOP_GT:
+      TODO("");
+      break;
+    case BINOP_LE:
+      TODO("");
+      break;
+    case BINOP_GE:
+      TODO("");
+      break;
+    default: UNREACHABLE("");
+    }
+    return result;
+  } default: UNREACHABLE("");
   }
-  if (!expect_token(l, TOKEN_ID)) return false;
+}
 
-  *def = (Def) {
-    .kind = DEF_VAR,
-    .name = l->current.str,
-    .var = {
-      .type = {.kind=TYPE_UNKNOWN},
-      .init = NULL,
-    },
-  };
+static Stat *compile_def(Lexer *l, Def_Kind kind)
+{
+  assert(l->current.kind == (kind == DEF_LET ? TOKEN_LET : TOKEN_VAR));
+  if (!prefetch_not_none(l)) return NULL;
 
-  if (!prefetch_not_none(l)) return false;
+  Stat *stat = arena_calloc(1, sizeof(*stat));
+  stat->kind = STAT_DEF;
+  stat->def.kind = kind;
+  stat->loc  = l->current.start;
+
+  if (!expect_token(l, TOKEN_ID)) return NULL;
+  stat->def.name = l->current.str;
+
+  if (!prefetch_not_none(l)) return NULL;
 
   if (l->current.kind == ':') {
-    if (!prefetch_not_none(l)) return false;
-    if (!compile_type_expr(l, &def->var.type)) return false;
-    if (def->var.type.kind == TYPE_VOID) {
+    if (!prefetch_not_none(l)) return NULL;
+    if (!compile_type_expr(l, &stat->def.type)) return NULL;
+
+    if (stat->def.type.kind == TYPE_VOID) {
       pcompile_info(l->current.start,
-                    "error: the type of a local variable cannot be \"void\"");
-      return false;
+                    "error: the type of a symbol cannot be \"void\"");
+      return NULL;
     }
-    if (!prefetch_not_none(l)) return false;
+    if (!prefetch_not_none(l)) return NULL;
   }
 
   if (l->current.kind == '=') {
-    if (!prefetch_not_none(l)) return false;
+    if (!prefetch_not_none(l)) return NULL;
 
-    Expr *val = compile_expr(l);
-    if (val == NULL) {
-      return false;
+    stat->def.val = compile_expr(l);
+    if (stat->def.val == NULL) {
+      return NULL;
     }
-    def->var.init = val;
   }
 
-  return true;
-}
-
-bool compile_fn(Lexer *l, Def *def)
-{
-  assert(l->current.kind == TOKEN_FN);
-
-  if (!prefetch_expect_token(l, TOKEN_ID)) return false;
-  *def = (Def) {
-    .kind = DEF_FN,
-    .name = l->current.str,
-    .fn = {
-      .loc = l->current.start,
-    },
-  };
-
-  if (!prefetch_expect_token(l, '(')) return false;
-  if (!prefetch_expect_tokens(l, ')', TOKEN_ID)) return false;
-
-  while (l->current.kind != ')') {
-    assert(l->current.kind == TOKEN_ID);
-
-    Def arg_def = {0};
-    if (!compile_var(l, &arg_def, false)) return false;
-    if (!expect_tokens(l, ',', ')')) return false;
-
-    if (l->current.kind == ',') {
-      if (!prefetch_expect_token(l, TOKEN_ID)) return false;
-    }
-    da_append(&def->fn.args, arg_def);
-  }
-  assert(l->current.kind == ')');
-
-  if (!prefetch_expect_token(l, ':')) return false;
-  if (!prefetch_not_none(l)) return false;
-
-  if (!compile_type_expr(l, &def->fn.ret_type)) return false;
-
-  if (!prefetch_expect_token(l, '{')) return false;
-  return compile_block(l, &def->fn.body);
+  return stat;
 }
 
 Stat *compile_stat(Lexer *l)
 {
-  Stat *stat = arena_alloc(sizeof(*stat));
-  *stat = (Stat) {
-    .kind = STAT_EMPTY,
-    .loc = l->current.start,
-  };
+  Stat *stat = NULL;
+  Cursor loc = l->current.start;
 
   if (l->current.kind == '{') {
+    stat = arena_alloc(sizeof(*stat));
     stat->kind = STAT_BLOCK;
+    stat->loc  = loc;
+
     if (!compile_block(l, &stat->block)) return NULL;
     return stat;
   }
 
   // simple statement
-  if (l->current.kind == TOKEN_EXT) {
-    stat->kind = STAT_DEF;
-    if (!prefetch_expect_token(l, TOKEN_ID)) return NULL;
-    stat->def = (Def) {
-      .kind = DEF_EXT,
-      .loc = l->current.start,
-      .name = l->current.str,
-      .ext = {
-        .linkname = l->current.str,
-      },
-    };
-
-    if (!prefetch_expect_token(l, ':')) return NULL;
-    if (!prefetch_not_none(l)) return NULL;
-    if (!compile_type_expr(l, &stat->def.ext.type)) return NULL;
-
-    lexer_next(l);
-  } else if (l->current.kind == TOKEN_FN) {
-    stat->kind = STAT_DEF;
-    if (!compile_fn(l, &stat->def)) return NULL;
+  if (l->current.kind == TOKEN_LET) {
+    stat = compile_def(l, DEF_LET);
+    if (stat == NULL) return NULL;
   } else if (l->current.kind == TOKEN_VAR) {
-    stat->kind = STAT_DEF;
-    if (!compile_var(l, &stat->def, true)) return NULL;
+    stat = compile_def(l, DEF_VAR);
+    if (stat == NULL) return NULL;
   } else if (l->current.kind == TOKEN_IF) {
-    stat->kind = STAT_IF;
     if (!prefetch_not_none(l)) return NULL;
+
+    stat = arena_alloc(sizeof(*stat));
+    stat->kind = STAT_IF;
 
     stat->if_else.cond = compile_expr(l);
     if (stat->if_else.cond == NULL) return NULL;
@@ -479,9 +663,10 @@ Stat *compile_stat(Lexer *l)
       if (stat->if_else.on_false == NULL) return NULL;
     }
   } else if (l->current.kind == TOKEN_RET) {
-    stat->kind = STAT_RET;
-
     if (!prefetch_not_none(l)) return NULL;
+
+    stat = arena_alloc(sizeof(*stat));
+    stat->kind = STAT_RET;
 
     stat->ret_val = compile_expr(l);
     if (stat->ret_val == NULL) return NULL;
@@ -490,6 +675,7 @@ Stat *compile_stat(Lexer *l)
     if (expr == NULL) return NULL;
 
     if (l->current.kind == '=') {
+      stat = arena_alloc(sizeof(*stat));
       stat->kind = STAT_ASSIGN;
       stat->assign.dst = expr;
 
@@ -497,6 +683,7 @@ Stat *compile_stat(Lexer *l)
       stat->assign.val = compile_expr(l);
       if (stat->assign.val == NULL) return NULL;
     } else if (expr->kind == EXPR_INVOKE) {
+      stat = arena_alloc(sizeof(*stat));
       stat->kind = STAT_INVOKE;
       stat->invoke = expr->invoke;
     } else {
@@ -517,6 +704,7 @@ Stat *compile_stat(Lexer *l)
     lexer_next(l);
   }
 
+  stat->loc = loc;
   return stat;
 }
 

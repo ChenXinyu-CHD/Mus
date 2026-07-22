@@ -6,71 +6,50 @@
 #include "type.h"
 #include "ast.h"
 
-typedef enum {
-  SYMBOL_FN = 0,
-  SYMBOL_VAR,
-  SYMBOL_EXTERN,
-  __symbol_kind_count,
-} SymbolKind;
-
-typedef struct {
-  SymbolKind kind;
-  Cursor loc;
-  union {
-    Var *var;
-    Extern *ext;
-    Fn *fn;
-    void *ptr;
-  };
-} Symbol;
-
-typedef struct Scoop Scoop;
-struct Scoop {
-  Scoop *upper;
-  Ht(String_View, Symbol) symbols;
+typedef struct Scope Scope;
+struct Scope {
+  Scope *upper;
+  Ht(String_View, Arg) values;
 };
 
-static Scoop *new_scoop(Scoop *upper)
+static Scope *new_scope(Scope *upper)
 {
-  Scoop *s = arena_calloc(1, sizeof(*s));
-  s->symbols.hasheq = ht_sv_hasheq;
+  Scope *s = arena_calloc(1, sizeof(*s));
+  s->values.hasheq = ht_sv_hasheq;
   s->upper = upper;
   return s;
 }
 
-static Symbol *insert_sym(Scoop *sp, String_View name, Cursor loc, SymbolKind kind)
+static Arg *scope_add(Scope *sp, String_View name, Cursor loc)
 {
-  Symbol *sym = ht_find(&sp->symbols, name);
-  if (sym != NULL) {
+  Arg *value = ht_find(&sp->values, name);
+  if (value != NULL) {
     pcompile_info(loc,
-                  "error: symbol "SV_Fmt" redefined in this scoop\n",
+                  "error: symbol "SV_Fmt" redefined in this scope\n",
                   SV_Arg(name));
     // TODO: report where the symbol is first defined;
     return NULL;
   } else {
-    sym = ht_put(&sp->symbols, name);
-    *sym = (Symbol) {
-      .kind = kind,
-      .loc = loc,
-    };
-    return sym;
+    value = ht_put(&sp->values, name);
+    value->loc = loc;
+    return value;
   }
 }
 
 // C is so bad
 typedef struct {
-  Scoop *scoop;
-  Symbol *sym;
+  Scope *scope;
+  Arg   *value;
 } SymSearchResult;
 
-static SymSearchResult sym_search(Scoop *sp, String_View name)
+static SymSearchResult sym_search(Scope *sp, String_View name)
 {
-  for (Scoop *s = sp; s != NULL; s = s->upper) {
-    Symbol *sym = ht_find(&s->symbols, name);
-    if (sym != NULL) {
+  for (Scope *s = sp; s != NULL; s = s->upper) {
+    Arg *value = ht_find(&s->values, name);
+    if (value != NULL) {
       return (SymSearchResult) {
-        .scoop = s,
-        .sym = sym,
+        .scope = s,
+        .value = value,
       };
     }
   }
@@ -90,13 +69,10 @@ Var *alloc_var(VarList *vars)
 
 static void dump_arg(String_Builder *sb, Arg *arg)
 {
-  static_assert(__arg_kind_count == 6, "introduced more arg kinds");
+  static_assert(__arg_kind_count == 5, "introduced more arg kinds");
   switch(arg->kind) {
   case ARG_NONE:
     sb_appendf(sb, "None");
-    break;
-  case ARG_EXTERN:
-    sb_appendf(sb, SV_Fmt, SV_Arg(arg->ext->linkname));
     break;
   case ARG_FN:
     sb_appendf(sb, SV_Fmt, SV_Arg(sb_to_sv(arg->fn->name)));
@@ -189,8 +165,8 @@ static bool contains(void *arr, size_t n, void *val)
 }
 
 typedef struct {
-  AST_Fn *fn;
-  Scoop *sp;
+  Lambda *fn;
+  Scope *sp;
 } Fn_Ctx;
 
 typedef Ht(Fn*, Fn_Ctx) Known_Fn;
@@ -203,72 +179,56 @@ typedef struct {
   Known_Fn known;
 } Gen_Context;
 
-static Fn *push_fn_ast(Gen_Context *ctx, String_Builder name, AST_Fn* ast, Scoop *sp)
+static Fn *push_fn(Lambda* lambda, Gen_Context *ctx, Scope *sp)
 {
   Fn *fn = arena_calloc(1, sizeof(*fn));
-  fn->name = name;
   da_append(&ctx->ungenerated, fn);
 
+  // default name of a function is defined here
+  // and it may be override in stat_to_ir
+  sb_appendf(&fn->name, ".lambda_%ld", ctx->known.count);
+
+  fn->is_extern = lambda->is_extern;
   *ht_put(&ctx->known, fn) = (Fn_Ctx) {
-    .fn = ast,
-    .sp = new_scoop(sp),
+    .fn = lambda,
+    .sp = new_scope(sp),
   };
   return fn;
 }
 
-static bool id_to_arg(String_View name, Cursor loc, Arg *arg, Scoop *sp, Gen_Context *ctx)
+static bool id_to_arg(String_View name, Cursor loc, Arg *arg, Scope *sp, Gen_Context *ctx)
 {
-  arg->loc = loc;
   SymSearchResult r = sym_search(sp, name);
-  if (r.scoop == NULL) {
+  if (r.scope == NULL) {
     pcompile_info(loc,
-                  "error: cannot find `"SV_Fmt"` in this scoop\n",
+                  "error: cannot find `"SV_Fmt"` in this scope\n",
                   SV_Arg(name));
-    return false;
+    return NULL;
   }
 
-  static_assert(__symbol_kind_count == 3, "introduced more symbol kinds");
-  switch (r.sym->kind) {
-  case SYMBOL_VAR: {
-    Var* var = r.sym->var;
-
-    if (!contains(ctx->fn->vars.items, ctx->fn->vars.count, var)) {
+  if (r.value->kind == ARG_VAR) {
+    if (!contains(ctx->fn->vars.items, ctx->fn->vars.count, r.value->var)) {
       // TODO: support global variables
-      pcompile_info(arg->loc,
+      pcompile_info(loc,
                     "error: try to visit a nonlocal variable\n");
-      pcompile_info(r.sym->loc,
+      pcompile_info(r.value->loc,
                     "info: `"SV_Fmt"` is defined in here\n",
                     SV_Arg(name));
-      return false;
+      return NULL;
     }
-    arg->kind = ARG_VAR;
-    arg->var = var;
-    arg->type = type_clone(var->type);
-    return true;
   }
-  case SYMBOL_EXTERN: {
-    Extern *ext = r.sym->ext;
-    arg->kind = ARG_EXTERN;
-    arg->ext = ext;
-    arg->type = type_clone(ext->type);
-    return true;
-  }
-  case SYMBOL_FN: {
-    arg->kind = ARG_FN;
-    arg->fn = r.sym->fn;
-    // this must be unknown, because the refered function may not be generated
-    arg->type.kind = TYPE_UNKNOWN;
-    return true;
-  }
-  default: UNREACHABLE("");
-  }
+
+  *arg = *r.value;
+  arg->loc = loc;
+
+  return arg;
 }
 
-static bool expr_to_ir(Expr *expr, Scoop *sp, Gen_Context *ctx);
+static bool expr_to_ir(Expr *expr, Scope *sp, Gen_Context *ctx);
 
-static bool expr_to_arg(Expr *expr, Scoop *sp, Gen_Context *ctx, Arg *result)
+static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
 {
-  static_assert(__expr_kind_count == 3, "introduced more expr kinds");
+  static_assert(__expr_kind_count == 4, "introduced more expr kinds");
   switch (expr->kind) {
   case EXPR_ATOM: {
     Token token = expr->atom;
@@ -326,15 +286,28 @@ static bool expr_to_arg(Expr *expr, Scoop *sp, Gen_Context *ctx, Arg *result)
 
     *result = op->binop.dst;
   } break;
+  case EXPR_LAMBDA:
+    TypeList arg_types = {0};
+    da_foreach(Fn_Arg, arg, &expr->lambda.args) {
+      da_append(&arg_types, arg->type);
+    }
+
+    result->kind = ARG_FN;
+    result->loc  = expr->loc;
+    result->type = type_fn(expr->lambda.ret_type,
+                           arg_types,
+                           expr->lambda.args.va);
+    result->fn   = push_fn(&expr->lambda, ctx, sp);
+    break;
   default: UNREACHABLE("");
   }
   return true;
 }
 
-static bool expr_to_ir(Expr *expr, Scoop *sp, Gen_Context *ctx)
+static bool expr_to_ir(Expr *expr, Scope *sp, Gen_Context *ctx)
 {
   Op op = { .loc = expr->loc };
-  static_assert(__expr_kind_count == 3, "introduced more expr kinds");
+  static_assert(__expr_kind_count == 4, "introduced more expr kinds");
   switch (expr->kind) {
   case EXPR_INVOKE: {
     if (!expr_to_arg(expr->invoke.fn, sp, ctx, &op.invoke.fn))
@@ -366,6 +339,7 @@ static bool expr_to_ir(Expr *expr, Scoop *sp, Gen_Context *ctx)
 
     da_append(&ctx->fn->fn_body, op);
   } break;
+  case EXPR_LAMBDA:
   case EXPR_ATOM: break; // this doesn't need to generate an ir op currently.
   default: UNREACHABLE("");
   }
@@ -385,7 +359,7 @@ static size_t append_op_label(OpList *ops)
   return label;
 }
 
-static bool stat_to_ir(Stat *stat, Scoop *sp, Gen_Context *ctx)
+static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
 {
   Op op = { .loc = stat->loc };
   static_assert(__stat_kind_count == 7, "introduced more stat kinds");
@@ -411,7 +385,7 @@ static bool stat_to_ir(Stat *stat, Scoop *sp, Gen_Context *ctx)
     da_append(&ctx->fn->fn_body, op);
   } break;
   case STAT_BLOCK: {
-    Scoop *new_sp = new_scoop(sp);
+    Scope *new_sp = new_scope(sp);
     da_foreach(Stat, s, &stat->block) {
       if (!stat_to_ir(s, new_sp, ctx)) return false;
     }
@@ -453,49 +427,58 @@ static bool stat_to_ir(Stat *stat, Scoop *sp, Gen_Context *ctx)
     da_append(&ctx->fn->fn_body, op);
   } break;
   case STAT_DEF: {
-    static_assert(__def_kind_count == 3,
+    Arg *arg = scope_add(sp, stat->def.name, stat->loc);
+    if (arg == NULL) return false;
+
+    static_assert(__def_kind_count == 2,
                   "introduced more def kinds");
     switch (stat->def.kind) {
-    case DEF_EXT: {
-      Symbol *sym = insert_sym(sp, stat->def.name, stat->loc, SYMBOL_EXTERN);
-      if (sym == NULL) return false;
+    case DEF_LET: {
+      assert(stat->def.val != NULL);
 
-      sym->ext = arena_calloc(1, sizeof(*sym->ext));
-      sym->ext->linkname = stat->def.ext.linkname;
-      sym->ext->type = type_clone(stat->def.ext.type);
-      da_append(&ctx->prog->externs, sym->ext);
-    } break;
-    case DEF_FN: {
-      Symbol *sym = insert_sym(sp, stat->def.name, stat->loc, SYMBOL_FN);
-      if (sym == NULL) return false;
+      Expr *expr = expr_eval(stat->def.val);
+      if (expr == NULL) return false;
 
-      String_Builder name = {0};
-      if (ctx->fn == NULL) {
-        sb_appendf(&name, SV_Fmt, SV_Arg(stat->def.name));
-      } else {
-        sb_appendf(&name, ".fn_%ld", ctx->known.count);
+      if (!expr_to_arg(expr, sp, ctx, arg)) return false;
+
+      // only global `let` bindings and external function need a meaningful name
+      // TODO: make functions have multiple names
+      // consider this case:
+      // ```
+      // let foo = fn () -> i32 {
+      //    printf("foo\n");
+      // }
+      // let main = foo;
+      // ```
+      // the `main` function is expected to be a alian of `foo`
+      // but currently, `main` is just not defined in assebly level
+      // TODO: consider a better way to define a external function
+      // `let printf = fn(&i32, ...)->i32 @extern` is so weird
+      // because `fn(&i32, ...)->i32 @extern` is not a valid lambda actually
+      // and will never work in `car printf = fn(&i32, ...)->i32 @extern`
+      // or in `(fn(&i32, ...)->i32 @extern)("hello, world\n")`
+      if (expr->kind == EXPR_LAMBDA && (ctx->fn == NULL || expr->lambda.is_extern)) {
+        assert(arg->kind == ARG_FN);
+
+        String_Builder name = {0};
+        sb_append_sv(&name, stat->def.name);
+        arg->fn->name = name;
       }
-      sym->fn = push_fn_ast(ctx, name, &stat->def.fn, sp);
     } break;
     case DEF_VAR: {
       if (ctx->fn == NULL) TODO("implement global variables");
-      if (stat->def.var.init != NULL) {
+      if (stat->def.val != NULL) {
         op.kind = OP_SET_VAR;
-        if (!expr_to_arg(stat->def.var.init, sp, ctx, &op.set_var.val))
+        if (!expr_to_arg(stat->def.val, sp, ctx, &op.set_var.val))
           return false;
       }
 
-      Symbol *sym = insert_sym(sp, stat->def.name, stat->loc, SYMBOL_VAR);
-      if (sym == NULL) return false;
+      arg->kind = ARG_VAR;
+      arg->var  = alloc_var(&ctx->fn->vars);
+      arg->type = type_clone(stat->def.type);
 
-      sym->var = arena_calloc(1, sizeof(*sym->var));
-      da_append(&ctx->fn->vars, sym->var);
-
-      *sym->var = (Var) {
-        .type = type_clone(stat->def.var.type),
-      };
-      if (stat->def.var.init != NULL) {
-        if (!id_to_arg(stat->def.name, stat->def.loc, &op.set_var.var, sp, ctx))
+      if (stat->def.val != NULL) {
+        if (!id_to_arg(stat->def.name, stat->loc, &op.set_var.var, sp, ctx))
           return false;
         da_append(&ctx->fn->fn_body, op);
       }
@@ -511,133 +494,14 @@ static bool stat_to_ir(Stat *stat, Scoop *sp, Gen_Context *ctx)
   return true;
 }
 
-static_assert(__type_kind_count == 7, "introduced more type kinds");
-static struct {
-  int token;
-  TypeExpr type;
-} internal_types[] = {
-  {
-    .token = TOKEN_VOID,
-    .type = { .kind = TYPE_VOID, .size = 0, },
-  },
-  {
-    .token = TOKEN_BOOL,
-    .type = { .kind = TYPE_BOOL, .size = 1, },
-  },
-  {
-    .token = TOKEN_U8,
-    .type = { .kind = TYPE_UINT, .size = 1, },
-  },
-  {
-    .token = TOKEN_U16,
-    .type = { .kind = TYPE_UINT, .size = 2, },
-  },
-  {
-    .token = TOKEN_U32,
-    .type = { .kind = TYPE_UINT, .size = 4, },
-  },
-  {
-    .token = TOKEN_U64,
-    .type = { .kind = TYPE_UINT, .size = 8, },
-  },
-  {
-    .token = TOKEN_I8,
-    .type = { .kind = TYPE_INT, .size = 1, },
-  },
-  {
-    .token = TOKEN_I16,
-    .type = { .kind = TYPE_INT, .size = 2, },
-  },
-  {
-    .token = TOKEN_I32,
-    .type = { .kind = TYPE_INT, .size = 4, },
-  },
-  {
-    .token = TOKEN_I64,
-    .type = { .kind = TYPE_INT, .size = 8, },
-  }
-};
-
-static bool compile_internal_type(Lexer *l, TypeExpr *type) {
-  for (size_t i = 0; i < ARRAY_LEN(internal_types); ++i) {
-    if (internal_types[i].token == l->current.kind) {
-      *type = type_clone(internal_types[i].type);
-      return true;
-    }
-  }
-  return false;
-}
-
-static bool compile_type_fn(Lexer *l, TypeExpr *type);
-
-bool compile_type_expr(Lexer *l, TypeExpr *type)
-{
-  assert(type != NULL);
-  if (compile_internal_type(l, type)) return true;
-
-  switch (l->current.kind) {
-  case TOKEN_FN:
-    return compile_type_fn(l, type);
-  case '&': {
-    if (!prefetch_not_none(l)) return false;
-    TypeExpr ref_type;
-    if (!compile_type_expr(l, &ref_type)) return false;
-    *type = type_ptr(ref_type);
-    return true;
-  }
-  default:
-    pcompile_info(l->current.start,
-                  "error: expected a type but got %s\n",
-                  token_name(l->current.kind));
-    return false;
-  }
-}
-
-static bool compile_type_fn(Lexer *l, TypeExpr *type)
-{
-  assert(l->current.kind == TOKEN_FN);
-
-  type->kind = TYPE_FN;
-  if (!prefetch_expect_token(l, '(')) return false;
-
-  if (!prefetch_not_none(l)) return false;
-  type->fn_type.arg_types = (TypeList) {0};
-  while (l->current.kind != ')') {
-    if (l->current.kind == TOKEN_DOTS) { // parse "..." for va_args
-      if (!prefetch_expect_token(l, ')')) return false;
-      type->fn_type.va_args = true;
-    } else {
-      TypeExpr arg_type = {0};
-      if (!compile_type_expr(l, &arg_type)) return false;
-      da_append(&type->fn_type.arg_types, arg_type);
-      if (!prefetch_expect_tokens(l, ',', ')')) return false;
-      if (l->current.kind == ',') {
-        if (!prefetch_not_none(l)) return false;
-      }
-    }
-  }
-
-  if (!prefetch_expect_token(l, ':')) return false;
-  if (!prefetch_not_none(l)) return false;
-
-  type->fn_type.ret_type = arena_calloc(1, sizeof(TypeExpr));
-  assert(type->fn_type.ret_type);
-  if (!compile_type_expr(l, type->fn_type.ret_type)) return false;
-
-  return true;
-}
-
 static bool detect_arg_type(Arg *arg) {
   if (arg->type.kind != TYPE_UNKNOWN) return true;
   if (arg->kind == ARG_NONE) return true;
 
   TypeExpr *type = NULL;
 
-  static_assert(__arg_kind_count == 6, "introduced more arg kinds");
+  static_assert(__arg_kind_count == 5, "introduced more arg kinds");
   switch(arg->kind) {
-  case ARG_EXTERN:
-    type = &arg->ext->type;
-    break;
   case ARG_FN:
     type = &arg->fn->type;
     break;
@@ -661,7 +525,7 @@ static bool detect_var_type(Arg *var, Arg *val)
 
   TypeExpr *var_type = NULL;
   // not every arg type can occur in here
-  static_assert(__arg_kind_count == 6, "introduced more arg kinds");
+  static_assert(__arg_kind_count == 5, "introduced more arg kinds");
   switch (var->kind) {
   case ARG_VAR:
     var_type = &var->var->type;
@@ -943,31 +807,32 @@ static bool gen_ir_fn(Fn *fn, Gen_Context *ctx)
 {
   ctx->fn = fn;
 
+  if (fn->is_extern) return true;
+
   Fn_Ctx *fn_ctx = ht_find(&ctx->known, fn);
   assert(fn_ctx != NULL);
   da_append(&ctx->prog->fn_list, fn);
-  AST_Fn *ast = fn_ctx->fn;
+  Lambda *lambda = fn_ctx->fn;
 
-  fn->loc = ast->loc;
+  fn->loc = lambda->loc;
   fn->type.kind = TYPE_FN;
-  da_foreach(Def, arg, &ast->args) {
-    assert(arg->kind == DEF_VAR);
-    if (arg->var.init != NULL) TODO("support default argument for function");
-    Symbol *sym = insert_sym(fn_ctx->sp, arg->name, arg->loc, SYMBOL_VAR);
-    if (sym == NULL) return false;
-    sym->var = arena_calloc(1, sizeof(*sym->var));
-    sym->var->type = type_clone(arg->var.type);
+  da_foreach(Fn_Arg, arg, &lambda->args) {
+    Arg *value = scope_add(fn_ctx->sp, arg->name, arg->loc);
+    if (value == NULL) return false;
 
-    da_append(&ctx->fn->vars, sym->var);
-    da_append(&fn->type.fn_type.arg_types, type_clone(arg->var.type));
+    value->kind = ARG_VAR;
+    value->var  = alloc_var(&ctx->fn->vars);
+    value->var->type = type_clone(arg->type);
+
+    da_append(&fn->type.fn_type.arg_types, type_clone(arg->type));
   }
   fn->type.fn_type.ret_type = arena_alloc(sizeof(TypeExpr));
-  *fn->type.fn_type.ret_type = type_clone(ast->ret_type);
+  *fn->type.fn_type.ret_type = type_clone(lambda->ret_type);
 
-  da_foreach (Stat, stat, &ast->body) {
+  da_foreach (Stat, stat, &lambda->body) {
     if (!stat_to_ir(stat, fn_ctx->sp, ctx)) return false;
   }
-  //  if (!stat_to_ir(ast->body, NULL, ctx)) return false;
+
   for (size_t i = 0; i < fn->vars.count; ++i) {
     fn->vars.items[i]->id = i;
   }
@@ -978,19 +843,19 @@ static Program *gen_ir(Stat_List *stats)
 {
   bool ok = true;
   Gen_Context ctx = {.prog = arena_alloc(sizeof(*ctx.prog))};
-  Scoop *global = new_scoop(NULL);
+  Scope *global = new_scope(NULL);
   da_foreach(Stat, stat, stats) {
     if (stat->kind != STAT_DEF) {
-      pcompile_info(stat->loc, "error: only definations are available here.\n");
+      pcompile_info(stat->loc,
+                    "error: only definations are available in global scope.\n");
       ok = false;
       continue;
     }
     if (!stat_to_ir(stat, global, &ctx)) ok = false;
   }
 
-  FnList *ungenerated = &ctx.ungenerated;
-  while (ungenerated->count != 0) {
-    Fn *fn = da_pop(ungenerated);
+  while (ctx.ungenerated.count != 0) {
+    Fn *fn = da_pop(&ctx.ungenerated);
     if (!gen_ir_fn(fn, &ctx)) ok = false;
   }
 

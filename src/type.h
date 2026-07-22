@@ -201,35 +201,4 @@ void dump_type_expr(TypeExpr *type, FILE *stream)
   }
 }
 
-void destroy_type_expr(TypeExpr* type)
-{
-  if (type == NULL) return;
-
-  static_assert(__type_kind_count == 7, "introduced more type kinds");
-  switch(type->kind) {
-  case TYPE_INT: break;
-  case TYPE_UINT: break;
-  case TYPE_BOOL: break;
-  case TYPE_VOID: break;
-  case TYPE_UNKNOWN: break;
-  case TYPE_PTR:
-    assert(type->ref_type != NULL);
-    destroy_type_expr(type->ref_type);
-    free(type->ref_type);
-    break;
-  case TYPE_FN: {
-    if (type->fn_type.ret_type != NULL) {
-      destroy_type_expr(type->fn_type.ret_type);
-      free(type->fn_type.ret_type);
-    }
-
-    da_foreach (TypeExpr, arg, &type->fn_type.arg_types) {
-      destroy_type_expr(arg);
-    }
-    if (type->fn_type.arg_types.count > 0) da_free(type->fn_type.arg_types);
-  } break;
-  default: UNREACHABLE("type");
-  }
-}
-
 #endif // MCC_TYPE_IMPLEMENTATION

@@ -64,15 +64,18 @@ int main(int argc, char **argv)
     return 1;
   }
 
+  char *cc = getenv("CC");
+  if (cc == NULL) cc = "cc";
+
   Cmd cmd = {0};
-  cmd_append(&cmd, "cc", "-Wall", "-Wextra");
+  cmd_append(&cmd, cc, "-Wall", "-Wextra");
   cmd_append(&cmd, "-O0", "-ggdb");
   cmd_append(&cmd, "-I./3rd");
   cmd_append(&cmd, "-o", "mcc", "src/mcc.c", "src/parser.c");
   if (!cmd_run(&cmd)) return 1;
 
   if (test || update_test) {
-    cmd_append(&cmd, "cc", "-Wall", "-Wextra");
+    cmd_append(&cmd, cc, "-Wall", "-Wextra");
     cmd_append(&cmd, "-O2", "-g0");
     cmd_append(&cmd, "-o", "test_tool", "test_tool.c");
     if (!cmd_run(&cmd)) {

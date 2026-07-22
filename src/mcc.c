@@ -16,12 +16,6 @@ String_Builder gen_code_ir(const Program *prog)
 {
   String_Builder sb = {0};
 
-  sb_appendf(&sb, "extern:");
-  da_foreach (Extern*, ext, &prog->externs) {
-    sb_appendf(&sb, " "SV_Fmt"", SV_Arg((*ext)->linkname));
-  }
-  sb_appendf(&sb, "\n\n");
-
   for (size_t i = 0; i < prog->str_lits.count; ++i) {
     sb_appendf(&sb, ".S_%ld = ", i);
     append_str_lit(&sb, prog->str_lits.items[i]);
@@ -140,7 +134,7 @@ static void rbp_offset2rax(String_Builder *sb, size_t size, ptrdiff_t offset)
 
 static void arg2rax(String_Builder *sb, Arg *arg)
 {
-  static_assert(__arg_kind_count == 6, "introduced more arg kinds");
+  static_assert(__arg_kind_count == 5, "introduced more arg kinds");
   switch (arg->kind) {
   case ARG_NONE:
     sb_appendf(sb, "    mov %%rax, %%rax\n");
@@ -154,10 +148,6 @@ static void arg2rax(String_Builder *sb, Arg *arg)
     sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %%rax\n",
                SV_Arg(name));
   } break;
-  case ARG_EXTERN:
-    sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %%rax\n",
-               SV_Arg(arg->ext->linkname));
-  break;
   case ARG_LIT_INT:
     sb_appendf(sb, "    movq $%d, %%rax\n", arg->num_int);
     break;

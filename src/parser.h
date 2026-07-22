@@ -11,7 +11,6 @@
 
 typedef enum {
   ARG_NONE = 0,
-  ARG_EXTERN,
   ARG_FN,
   ARG_VAR,
   ARG_LIT_INT,
@@ -43,7 +42,6 @@ typedef struct {
     int num_int;
     Fn *fn;
     Var *var;
-    Extern *ext;
     size_t str_label;
   };
 } Arg;
@@ -119,6 +117,7 @@ struct Fn {
   TypeExpr type;
   Cursor loc;
 
+  bool is_extern;
   OpList fn_body;
   VarList vars;
 };
@@ -130,14 +129,7 @@ typedef struct {
 } FnList;
 
 typedef struct {
-  Extern **items;
-  size_t count;
-  size_t capacity;
-} ExternList;
-
-typedef struct {
   FnList fn_list;
-  ExternList externs;
   struct {
     String_View *items;
     size_t count;
