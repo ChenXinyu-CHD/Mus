@@ -1,4 +1,4 @@
-fn main(): i32
+let main = fn() -> i32
 {
     printf("on true, without else: ");
     if true  printf("ok\n");
@@ -62,16 +62,16 @@ fn main(): i32
     return 0
 }
 
-fn fact(n: i32): i32
+let fact = fn(n: i32) -> i32
 {
     if n == 0 return 1;
     else      return n * fact(n - 1);
 }
 
-fn loop(i: i32, n: i32): void
+let loop = fn(i: i32, n: i32) -> void
 {
     if i != n loop(i + 1, n);
     printf("i = %d\n", i);
 }
 
-extern printf: fn(&i8, ...):i32
+let printf = fn(fmt: &i8, ...) -> i32 @extern

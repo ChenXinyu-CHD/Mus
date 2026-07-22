@@ -218,7 +218,7 @@ static bool id_to_arg(String_View name, Cursor loc, Arg *arg, Scope *sp, Gen_Con
     }
   }
 
-  *arg = *r.value;
+  *arg     = *r.value;
   arg->loc = loc;
 
   return arg;
@@ -427,8 +427,6 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
     da_append(&ctx->fn->fn_body, op);
   } break;
   case STAT_DEF: {
-    Arg *arg = scope_add(sp, stat->def.name, stat->loc);
-    if (arg == NULL) return false;
 
     static_assert(__def_kind_count == 2,
                   "introduced more def kinds");
@@ -439,10 +437,12 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
       Expr *expr = expr_eval(stat->def.val);
       if (expr == NULL) return false;
 
+      Arg *arg = scope_add(sp, stat->def.name, stat->loc);
+      if (arg == NULL) return false;
       if (!expr_to_arg(expr, sp, ctx, arg)) return false;
 
-      // only global `let` bindings and external function need a meaningful name
-      // TODO: make functions have multiple names
+      // only global `let` bindings and external function need a meaningful name.
+      // TODO: make functions have multiple names.
       // consider this case:
       // ```
       // let foo = fn () -> i32 {
@@ -451,12 +451,13 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
       // let main = foo;
       // ```
       // the `main` function is expected to be a alian of `foo`
-      // but currently, `main` is just not defined in assebly level
-      // TODO: consider a better way to define a external function
+      // but currently, `main` is just not defined in assembly level.
+      // TODO: consider a better way to define a external function.
       // `let printf = fn(&i32, ...)->i32 @extern` is so weird
       // because `fn(&i32, ...)->i32 @extern` is not a valid lambda actually
       // and will never work in `car printf = fn(&i32, ...)->i32 @extern`
-      // or in `(fn(&i32, ...)->i32 @extern)("hello, world\n")`
+      // or in `(fn(&i32, ...)->i32 @extern)("hello, world\n")`.
+      // `let printf: fn(&i32, ...) @extern` may be a better solusion.
       if (expr->kind == EXPR_LAMBDA && (ctx->fn == NULL || expr->lambda.is_extern)) {
         assert(arg->kind == ARG_FN);
 
@@ -473,9 +474,12 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
           return false;
       }
 
+      Arg *arg = scope_add(sp, stat->def.name, stat->loc);
+      if (arg == NULL) return false;
       arg->kind = ARG_VAR;
       arg->var  = alloc_var(&ctx->fn->vars);
       arg->type = type_clone(stat->def.type);
+      arg->var->type = type_clone(stat->def.type);
 
       if (stat->def.val != NULL) {
         if (!id_to_arg(stat->def.name, stat->loc, &op.set_var.var, sp, ctx))
@@ -629,6 +633,9 @@ static bool detect_binop_dst_type(OpBinop *binop)
   return true;
 }
 
+// TODO: detect types at ast level
+// this can do more things in binop and assignment
+// and solve the bug in var.mus
 static bool detect_all_unknown_type(Program *prog)
 {
   da_foreach (Fn*, fn_ptr, &prog->fn_list) {

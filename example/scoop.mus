@@ -1,9 +1,9 @@
-fn main(): i32
+let main = fn() -> i32
 {
-    fn bar():i32 {
+    let bar = fn() -> i32 {
         return 114514;
     }
-    fn foo():i32 {
+    let foo = fn() -> i32 {
         return bar();
     }
     var a = foo();
@@ -18,5 +18,5 @@ fn main(): i32
     return 0;
 }
 
-extern printf: fn(&i8, ...):i32;
+let printf = fn(fmt: &i8, ...) -> i32 @extern;
 

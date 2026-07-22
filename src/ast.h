@@ -241,13 +241,20 @@ static bool compile_fn_sign(Lexer *l, TypeExpr *ret, Fn_Arg_List *args)
       args->va = true;
     } else {
       Fn_Arg arg = {0};
-      if (!expect_token(l, TOKEN_ID)) return false;
-      arg.name = l->current.str;
-      arg.loc  = l->current.start;
 
-      if (!prefetch_expect_token(l, ':'))   return false;
-      if (!prefetch_not_none(l))            return false;
-      if (!compile_type_expr(l, &arg.type)) return false;
+      Lexer forward = *l;
+      lexer_next(&forward);
+      if (forward.current.kind == ':') {
+        if (!expect_token(l, TOKEN_ID)) return false;
+        arg.name = l->current.str;
+        arg.loc  = l->current.start;
+
+        if (!prefetch_expect_token(l, ':'))   return false;
+        if (!prefetch_not_none(l))            return false;
+        if (!compile_type_expr(l, &arg.type)) return false;
+      } else {
+        if (!compile_type_expr(l, &arg.type)) return false;
+      }
       da_append(args, arg);
 
       if (!prefetch_expect_tokens(l, ',', ')')) return false;

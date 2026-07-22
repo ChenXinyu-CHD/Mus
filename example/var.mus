@@ -1,7 +1,10 @@
 # extern printf: fn(&i8, ...):i64
 
-fn main(): i64
+let main = fn() -> i64
 {
+  # TODO: fix the bug while detecting the type of v1
+  # the type of v1 is detected as i64 in its first assignment
+  # this is understandable but not expected
   var v1
   var v2: i64
   var v3: i64 = 1
@@ -12,9 +15,9 @@ fn main(): i64
   v2 = v1
   v1 = 1
   printf("v1 = %ld, v2 = %ld\n", v1, v2);
-  
+
   return 0
 }
 
-extern printf: fn(&i8, ...):i64
+let printf = fn(&i8, ...) -> i64 @extern
 

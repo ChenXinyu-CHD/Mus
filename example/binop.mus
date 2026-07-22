@@ -1,6 +1,6 @@
-extern printf: fn(&i8, ...):i32;
+let printf = fn(fmt: &i8, ...) -> i32 @extern;
 
-fn main(): i64
+let main = fn() -> i64
 {
     var i = 34;
     printf("%ld\n", 35 - i + 420);

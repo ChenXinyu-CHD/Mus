@@ -34,7 +34,7 @@ bool run_test(Nob_Walk_Entry entry) {
 char *self;
 void usage(FILE *stream)
 {
-  fprintf(stream, "Usage: %s [update|update-test]", self);
+  fprintf(stream, "Usage: %s [test|update-test]", self);
 }
 
 int main(int argc, char **argv)
