@@ -6,7 +6,9 @@
 #include "type.h"
 
 typedef enum {
-  EXPR_ATOM = 0,
+  EXPR_INT = 0,
+  EXPR_STR,
+  EXPR_NAME,
   EXPR_LAMBDA,
   EXPR_INVOKE,
   EXPR_BINOP,
@@ -75,9 +77,12 @@ typedef struct {
 struct Expr {
   Expr_Kind kind;
   Cursor loc;
+  TypeExpr type;
 
   union {
-    Token atom;
+    int64_t integer;
+    String_View str;
+    String_View name;
     AST_Invoke invoke;
     Lambda lambda;
     struct {
@@ -322,34 +327,48 @@ const char *binop_name(BinopKind kind)
 
 static Expr *expr_atom(Token token)
 {
-  int expected[] = {
-    TOKEN_STR,
-    TOKEN_INT,
-    TOKEN_ID,
-    TOKEN_TRUE,
-    TOKEN_FALSE,
-  };
-  bool found = false;
-  for (size_t i = 0; i < ARRAY_LEN(expected); ++i) {
-    if (expected[i] == token.kind) {
-      found = true;
-      break;
-    }
-  }
+  Expr *expr = arena_alloc(sizeof(*expr));
+  expr->loc  = token.start;
 
-  if (!found) {
+  static_assert(__expr_kind_count == 6, "introduced more expr kinds");
+  switch (token.kind) {
+  case TOKEN_STR:
+    expr->kind = EXPR_STR;
+    expr->str  = token.str;
+    expr->type = type_ptr((TypeExpr) {
+        .kind = TYPE_INT,
+        .size = 1,
+      });
+    return expr;
+  case TOKEN_INT:
+    expr->kind    = EXPR_INT;
+    expr->integer = sv_to_int(token.str);
+    expr->type    = (TypeExpr) {
+      .kind = TYPE_INT,
+      .size = 4,
+    };
+    return expr;
+  case TOKEN_TRUE:
+    expr->kind    = EXPR_INT;
+    expr->integer = 1;
+    expr->type    = type_bool();
+    return expr;
+  case TOKEN_FALSE:
+    expr->kind    = EXPR_INT;
+    expr->integer = 0;
+    expr->type    = type_bool();
+    return expr;
+  case TOKEN_ID:
+    expr->kind = EXPR_NAME;
+    expr->name = token.str;
+    expr->type.kind = TYPE_UNKNOWN;
+    return expr;
+  default:
     pcompile_info(token.start,
                   "error: expected an expression but got `"SV_Fmt"`\n",
                   token.str);
     return NULL;
   }
-
-  Expr *expr = arena_alloc(sizeof(*expr));
-  *expr = (Expr) {
-    .kind = EXPR_ATOM,
-    .loc = token.start,
-    .atom = token
-  };
   return expr;
 }
 static Expr *expr_invoke(Expr *fn, Expr_List args)
@@ -529,14 +548,15 @@ Expr *compile_expr(Lexer *l)
 
 Expr *expr_eval(Expr* expr)
 {
-  UNUSED(expr);
-  static_assert(__expr_kind_count == 4, "introduced more expr kinds");
+  static_assert(__expr_kind_count == 6, "introduced more expr kinds");
   switch (expr->kind) {
   case EXPR_INVOKE:
     pcompile_info(expr->loc,
                   "error: invoking a function is not allowed in compile time\n");
     return NULL;
-  case EXPR_ATOM:
+  case EXPR_INT:
+  case EXPR_NAME:
+  case EXPR_STR:
   case EXPR_LAMBDA:
     return expr;
   case EXPR_BINOP: {
@@ -544,7 +564,6 @@ Expr *expr_eval(Expr* expr)
     Expr *rhs = expr_eval(expr->binop.rhs);
 
     Expr *result = arena_alloc(sizeof(result));
-    result->kind = EXPR_ATOM;
     result->loc  = expr->loc;
 
     UNUSED(lhs);

@@ -228,42 +228,20 @@ static bool expr_to_ir(Expr *expr, Scope *sp, Gen_Context *ctx);
 
 static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
 {
-  static_assert(__expr_kind_count == 4, "introduced more expr kinds");
+  static_assert(__expr_kind_count == 6, "introduced more expr kinds");
   switch (expr->kind) {
-  case EXPR_ATOM: {
-    Token token = expr->atom;
-    switch (token.kind) {
-    case TOKEN_ID:
-      return id_to_arg(token.str, token.start, result, sp, ctx);
-    case TOKEN_STR:
-      result->kind = ARG_LIT_STR;
-      result->str_label = compile_strlit(ctx->prog, token.str);
-      result->type = type_ptr((TypeExpr) {
-          .kind = TYPE_INT,
-          .size = 1,
-        });
-      return true;
-    case TOKEN_INT:
-      result->kind = ARG_LIT_INT;
-      result->num_int = sv_to_int(token.str);
-      result->type = (TypeExpr) {
-        .kind = TYPE_INT,
-        .size = 4,
-      };
-      return true;
-    case TOKEN_TRUE:
-      result->kind = ARG_LIT_INT;
-      result->num_int = 1;
-      result->type = type_bool();
-      return true;
-    case TOKEN_FALSE:
-      result->kind = ARG_LIT_INT;
-      result->num_int = 0;
-      result->type = type_bool();
-      return true;
-    default: UNREACHABLE("");
-    }
-  } break;
+  case EXPR_NAME:
+    return id_to_arg(expr->name, expr->loc, result, sp, ctx);
+  case EXPR_STR:
+    result->kind      = ARG_LIT_STR;
+    result->str_label = compile_strlit(ctx->prog, expr->str);
+    result->type      = expr->type;
+    return true;
+  case EXPR_INT:
+    result->kind      = ARG_LIT_INT;
+    result->num_int   = expr->integer;
+    result->type      = expr->type;
+    return true;
   case EXPR_INVOKE: {
     if (!expr_to_ir(expr, sp, ctx)) return false;
 
@@ -307,7 +285,7 @@ static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
 static bool expr_to_ir(Expr *expr, Scope *sp, Gen_Context *ctx)
 {
   Op op = { .loc = expr->loc };
-  static_assert(__expr_kind_count == 4, "introduced more expr kinds");
+  static_assert(__expr_kind_count == 6, "introduced more expr kinds");
   switch (expr->kind) {
   case EXPR_INVOKE: {
     if (!expr_to_arg(expr->invoke.fn, sp, ctx, &op.invoke.fn))
@@ -340,7 +318,10 @@ static bool expr_to_ir(Expr *expr, Scope *sp, Gen_Context *ctx)
     da_append(&ctx->fn->fn_body, op);
   } break;
   case EXPR_LAMBDA:
-  case EXPR_ATOM: break; // this doesn't need to generate an ir op currently.
+  case EXPR_STR:
+  case EXPR_NAME:
+  case EXPR_INT:
+    break; // this doesn't need to generate an ir op currently.
   default: UNREACHABLE("");
   }
   return true;
