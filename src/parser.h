@@ -110,8 +110,6 @@ typedef struct {
   size_t capacity;
 } OpList;
 
-Var *alloc_var(VarList *vars);
-
 struct Fn {
   String_Builder name;
   TypeExpr type;

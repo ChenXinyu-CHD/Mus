@@ -37,6 +37,8 @@ struct TypeExpr {
 };
 
 TypeExpr type_bool();
+TypeExpr type_unknown();
+TypeExpr type_int(bool sign, size_t size);
 TypeExpr type_fn(TypeExpr ret_type, TypeList arg_types, bool va_args);
 TypeExpr type_ptr(TypeExpr inner);
 
@@ -58,6 +60,16 @@ void destroy_type_expr(TypeExpr* type);
 TypeExpr type_bool()
 {
   return (TypeExpr) {.kind = TYPE_BOOL, .size = 1};
+}
+
+TypeExpr type_unknown()
+{
+  return (TypeExpr) {.kind = TYPE_UNKNOWN, .size = 0};
+}
+
+TypeExpr type_int(bool sign, size_t size)
+{
+  return (TypeExpr) {.kind = sign ? TYPE_INT : TYPE_UINT, .size = size};
 }
 
 TypeExpr type_ptr(TypeExpr inner)
@@ -118,16 +130,13 @@ TypeExpr type_clone(TypeExpr t)
 
 bool type_matched(TypeExpr *required, TypeExpr *actual)
 {
-  // TODO: check pointer type and function type
-  if (required->kind != actual->kind) {
-    return false;
-  }
-
   if (required->kind == TYPE_INT || required->kind == TYPE_UINT) {
-    return required->size >= actual->size;
+    if (required->size < actual->size) return false;
+    if (required->kind == TYPE_UINT && actual->kind == TYPE_INT) return false;
+    return true;
+  } else {
+    return type_eq(required, actual);
   }
-
-  return true;
 }
 
 bool type_eq(const TypeExpr *lhs, const TypeExpr *rhs)

@@ -57,11 +57,11 @@ static SymSearchResult sym_search(Scope *sp, String_View name)
   return (SymSearchResult) {NULL, NULL};
 }
 
-Var *alloc_var(VarList *vars)
+static Var *alloc_var(VarList *vars, TypeExpr type)
 {
   Var *var = arena_alloc(sizeof(Var));
   *var = (Var) {
-    .type = {.kind = TYPE_UNKNOWN},
+    .type = type_clone(type),
   };
   da_append(vars, var);
   return var;
@@ -187,6 +187,7 @@ static Fn *push_fn(Lambda* lambda, Gen_Context *ctx, Scope *sp)
   // default name of a function is defined here
   // and it may be override in stat_to_ir
   sb_appendf(&fn->name, ".lambda_%ld", ctx->known.count);
+  fn->type = type_of_fn(&lambda->ret_type, &lambda->args);
 
   fn->is_extern = lambda->is_extern;
   *ht_put(&ctx->known, fn) = (Fn_Ctx) {
@@ -224,10 +225,151 @@ static bool id_to_arg(String_View name, Cursor loc, Arg *arg, Scope *sp, Gen_Con
   return arg;
 }
 
+static bool invoke_available(Cursor loc, AST_Invoke *invoke, Scope *sp);
+
+static bool detect_binop_type(Expr *expr, Scope *sp, TypeExpr expected);
+
+static bool detect_expr_type(Expr *expr, Scope *sp, TypeExpr expected)
+{
+  if (expr->type.kind == TYPE_UNKNOWN) {
+    static_assert(__expr_kind_count == 6, "introduced more expr kinds");
+    switch (expr->kind) {
+    case EXPR_BINOP:
+      return detect_binop_type(expr, sp, expected);
+      break;
+    case EXPR_NAME: {
+      SymSearchResult r = sym_search(sp, expr->name);
+      if (r.scope == NULL) {
+        pcompile_info(expr->loc,
+                      "error: cannot find `"SV_Fmt"` in this scope\n",
+                      SV_Arg(expr->name));
+        return NULL;
+      }
+      expr->type = type_clone(r.value->type);
+    } break;
+    case EXPR_INVOKE:
+      if (!invoke_available(expr->loc, &expr->invoke, sp)) return false;
+      expr->type = type_clone(*expr->invoke.fn->type.fn_type.ret_type);
+      break;
+    case EXPR_INT:
+    case EXPR_STR:
+    case EXPR_LAMBDA:
+      assert(false && "these type must be known, it may be a bug in ast.h");
+      break;
+    default: UNREACHABLE("");
+    }
+  }
+
+  if (expected.kind == TYPE_INT || expected.kind == TYPE_UINT) {
+    if (expr->kind == EXPR_INT && expr->type.kind != TYPE_BOOL) {
+      expr->type = expected;
+    }
+  }
+
+  if (expected.kind != TYPE_UNKNOWN && !type_matched(&expected, &expr->type)) {
+    pcompile_info(expr->loc, "error: here expected a ");
+    dump_type_expr(&expected, stderr);
+    fprintf(stderr, ", but got ");
+    dump_type_expr(&expr->type, stderr);
+    fputc('\n', stderr);
+    return false;
+  } else {
+    return true;
+  }
+}
+
+static bool detect_binop_type(Expr *expr, Scope *sp, TypeExpr expected)
+{
+  assert(expr->kind == EXPR_BINOP && expr->type.kind == TYPE_UNKNOWN);
+  bool ok = true;
+
+  Expr *lhs = expr->binop.lhs;
+  Expr *rhs = expr->binop.rhs;
+
+  static_assert(__binop_kind_count == 11, "introduced more binop kinds");
+  switch(expr->binop.kind) {
+  case BINOP_ADD:
+  case BINOP_SUB:
+  case BINOP_MUL:
+  case BINOP_DIV:
+  case BINOP_MOD: {
+    if (!detect_expr_type(lhs, sp, expected)) ok = false;
+    if (!detect_expr_type(rhs, sp, expected)) ok = false;
+    size_t maxsize = lhs->type.size > rhs->type.size?
+      lhs->type.size : rhs->type.size;
+    bool sign = lhs->type.kind == TYPE_INT || rhs->type.kind == TYPE_INT;
+    expr->type = type_int(sign, maxsize);
+  } break;
+  case BINOP_EQ:
+  case BINOP_NEQ:
+  case BINOP_LS:
+  case BINOP_GT:
+  case BINOP_LE:
+  case BINOP_GE: {
+    if (!detect_expr_type(lhs, sp, type_unknown())) ok = false;
+    if (!detect_expr_type(rhs, sp, type_unknown())) ok = false;
+
+    if (lhs->type.kind != TYPE_INT && lhs->type.kind != TYPE_UINT) {
+      pcompile_info(lhs->loc, "error: only numbers are comparable, but got a ");
+      dump_type_expr(&lhs->type, stderr);
+      fputc('\n', stderr);
+      ok = false;
+    }
+
+    if (rhs->type.kind != TYPE_INT && rhs->type.kind != TYPE_UINT) {
+      pcompile_info(rhs->loc, "error: only numbers are comparable, but got a ");
+      dump_type_expr(&rhs->type, stderr);
+      fputc('\n', stderr);
+      ok = false;
+    }
+    expr->type = type_bool();
+  } break;
+  default: UNREACHABLE("");
+  }
+  return ok;
+}
+
+static bool invoke_available(Cursor loc, AST_Invoke *invoke, Scope *sp)
+{
+  if (!detect_expr_type(invoke->fn, sp, type_unknown())) return false;
+  if (invoke->fn->type.kind != TYPE_FN) {
+    pcompile_info(loc, "error: here expected a function but got ");
+    dump_type_expr(&invoke->fn->type, stderr);
+    fputc('\n', stderr);
+  }
+
+  FnType fn_type = invoke->fn->type.fn_type;
+  bool arg_matched = true;
+  if (fn_type.arg_types.count > invoke->args.count)
+    arg_matched = false;
+  if (!fn_type.va_args && fn_type.arg_types.count < invoke->args.count)
+    arg_matched = false;
+  if (!arg_matched) {
+    pcompile_info(loc,
+                  "error: this function expects %ld arguments, but provided %ld.\n",
+                  fn_type.arg_types.count,
+                  invoke->args.count);
+    return false;
+  }
+
+  bool ok = true;
+  for (size_t i = 0; i < invoke->args.count; ++ i) {
+    TypeExpr expect = type_unknown();
+    if (i < fn_type.arg_types.count)
+      expect = fn_type.arg_types.items[i];
+
+    if (!detect_expr_type(&invoke->args.items[i], sp, expect)) ok = false;
+  }
+  return ok;
+}
+
 static bool expr_to_ir(Expr *expr, Scope *sp, Gen_Context *ctx);
 
 static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
 {
+  result->loc  = expr->loc;
+  result->type = expr->type;
+
   static_assert(__expr_kind_count == 6, "introduced more expr kinds");
   switch (expr->kind) {
   case EXPR_NAME:
@@ -235,12 +377,10 @@ static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
   case EXPR_STR:
     result->kind      = ARG_LIT_STR;
     result->str_label = compile_strlit(ctx->prog, expr->str);
-    result->type      = expr->type;
     return true;
   case EXPR_INT:
     result->kind      = ARG_LIT_INT;
     result->num_int   = expr->integer;
-    result->type      = expr->type;
     return true;
   case EXPR_INVOKE: {
     if (!expr_to_ir(expr, sp, ctx)) return false;
@@ -251,33 +391,24 @@ static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
     op->invoke.ret_ignore = false;
     op->invoke.ret = (Arg) {
       .kind = ARG_VAR,
-      .type = {.kind = TYPE_UNKNOWN},
-      .var = alloc_var(&ctx->fn->vars),
+      .type = type_clone(expr->type),
+      .var = alloc_var(&ctx->fn->vars, expr->type),
     };
     *result = op->invoke.ret;
-  } break;
-  case EXPR_BINOP: {
+    return true;
+  } case EXPR_BINOP: {
     if (!expr_to_ir(expr, sp, ctx)) return false;
 
     Op *op = &da_last(&ctx->fn->fn_body);
     assert(op->kind == OP_BINOP);
 
     *result = op->binop.dst;
-  } break;
-  case EXPR_LAMBDA:
-    TypeList arg_types = {0};
-    da_foreach(Fn_Arg, arg, &expr->lambda.args) {
-      da_append(&arg_types, arg->type);
-    }
-
+    return true;
+  } case EXPR_LAMBDA: {
     result->kind = ARG_FN;
-    result->loc  = expr->loc;
-    result->type = type_fn(expr->lambda.ret_type,
-                           arg_types,
-                           expr->lambda.args.va);
     result->fn   = push_fn(&expr->lambda, ctx, sp);
-    break;
-  default: UNREACHABLE("");
+    return true;
+  } default: UNREACHABLE("");
   }
   return true;
 }
@@ -311,8 +442,8 @@ static bool expr_to_ir(Expr *expr, Scope *sp, Gen_Context *ctx)
 
     op.binop.dst = (Arg) {
       .kind = ARG_VAR,
-      .type = {.kind = TYPE_UNKNOWN},
-      .var = alloc_var(&ctx->fn->vars),
+      .type = type_clone(expr->type),
+      .var = alloc_var(&ctx->fn->vars, expr->type),
     };
 
     da_append(&ctx->fn->fn_body, op);
@@ -342,18 +473,7 @@ static size_t append_op_label(OpList *ops)
 
 static bool compiletime_eval_algebra(Arg lhs, Arg rhs, BinopKind op, Arg *val)
 {
-  if (lhs.kind != ARG_LIT_INT ||  lhs.type.kind != TYPE_INT) {
-    pcompile_info(lhs.loc, "error: lsh of %s is expected to be an integer\n", binop_name(op));
-    return false;
-  }
-  if (rhs.kind != ARG_LIT_INT || rhs.type.kind != TYPE_INT) {
-    pcompile_info(rhs.loc, "error: rsh of %s is expected to be an integer\n", binop_name(op));
-    return false;
-  }
-
   val->kind = ARG_LIT_INT;
-  size_t maxsize = lhs.type.size > rhs.type.size ? lhs.type.size : rhs.type.size;
-  val->type = (TypeExpr) {.kind = TYPE_INT, .size = maxsize};
   static_assert(__binop_kind_count == 11, "introduced more binop kinds");
   switch (op) {
   case BINOP_ADD:
@@ -378,13 +498,7 @@ static bool compiletime_eval_algebra(Arg lhs, Arg rhs, BinopKind op, Arg *val)
 
 static bool compiletime_eval_cmp(Arg lhs, Arg rhs, BinopKind op, Arg *val)
 {
-  if (!type_eq(&lhs.type, &rhs.type)) {
-    pcompile_info(lhs.loc, "error: the type lsh and rsh of %s should be in same type.\n", binop_name(op));
-    return false;
-  }
-
   val->kind = ARG_LIT_INT;
-  val->type = type_bool();
   static_assert(__binop_kind_count == 11, "introduced more binop kinds");
   switch (op) {
   case BINOP_EQ:
@@ -412,6 +526,7 @@ static bool compiletime_eval_cmp(Arg lhs, Arg rhs, BinopKind op, Arg *val)
 
 static bool expr_eval(Expr* expr, Scope *sp, Gen_Context *ctx, Arg *val)
 {
+  val->type = type_clone(expr->type);
   static_assert(__expr_kind_count == 6, "introduced more expr kinds");
   switch (expr->kind) {
   case EXPR_INVOKE:
@@ -419,29 +534,23 @@ static bool expr_eval(Expr* expr, Scope *sp, Gen_Context *ctx, Arg *val)
                   "error: invoking a function is not allowed in compile time\n");
     return false;
   case EXPR_INT:
-  case EXPR_NAME:
   case EXPR_STR:
   case EXPR_LAMBDA:
     return expr_to_arg(expr, sp, ctx, val);
+  case EXPR_NAME:
+    if (!expr_to_arg(expr, sp, ctx, val)) return false;
+    if (val->kind == ARG_VAR) {
+      pcompile_info(val->loc,
+                    "error: `"SV_Fmt"` is a runtime variable, which value is unkown at compiletime.\n",
+                    SV_Arg(expr->name));
+      return false;
+    }
+    return true;
   case EXPR_BINOP: {
     Arg lhs = {0};
     if (!expr_eval(expr->binop.lhs, sp, ctx, &lhs)) return false;
-    if (lhs.kind == ARG_VAR) {
-      assert(expr->binop.lhs->kind == EXPR_NAME);
-      pcompile_info(lhs.loc,
-                    "error: `"SV_Fmt"` is a runtime variable, which value is unkown at compiletime.\n",
-                    SV_Arg(expr->binop.lhs->name));
-      return false;
-    }
     Arg rhs = {0};
     if (!expr_eval(expr->binop.rhs, sp, ctx, &rhs)) return false;
-    if (rhs.kind == ARG_VAR) {
-      assert(expr->binop.rhs->kind == EXPR_NAME);
-      pcompile_info(rhs.loc,
-                    "error: `"SV_Fmt"` is a runtime variable, which value is unkown at compiletime.\n",
-                    SV_Arg(expr->binop.rhs->name));
-      return false;
-    }
 
     static_assert(__binop_kind_count == 11, "introduced more binop kinds");
     switch (expr->binop.kind) {
@@ -474,6 +583,8 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
   switch (stat->kind) {
   case STAT_INVOKE: {
     op.kind = OP_INVOKE;
+
+    if (!invoke_available(stat->loc, &stat->invoke, sp)) return false;
     if (!expr_to_arg(stat->invoke.fn, sp, ctx, &op.invoke.fn))
       return false;
 
@@ -488,6 +599,8 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
   } break;
   case STAT_RET: {
     op.kind = OP_RETURN;
+    if (!detect_expr_type(stat->ret_val, sp, *ctx->fn->type.fn_type.ret_type))
+      return false;
     if (!expr_to_arg(stat->ret_val, sp, ctx, &op.ret_val))
       return false;
     da_append(&ctx->fn->fn_body, op);
@@ -500,6 +613,7 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
   } break;
   case STAT_IF: {
     Arg cond = {0};
+    if (!detect_expr_type(stat->if_else.cond, sp, type_bool())) return false;
     if (!expr_to_arg(stat->if_else.cond, sp, ctx, &cond))
       return false;
 
@@ -529,14 +643,33 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
   } break;
   case STAT_ASSIGN: {
     op.kind = OP_SET_VAR;
+    if (!detect_expr_type(stat->assign.dst, sp, type_unknown())) return false;
     if (!expr_to_arg(stat->assign.dst, sp, ctx, &op.set_var.var))
       return false;
+
+    TypeExpr expected = stat->assign.dst->type;
+    assert(expected.kind != TYPE_UNKNOWN &&
+           "the type of the destination in assignment must be known, "
+           "this may be a bug in stat_to_ir ot detect_expr_type.");
+
+    if (!detect_expr_type(stat->assign.val, sp, expected)) return false;
     if (!expr_to_arg(stat->assign.val, sp, ctx, &op.set_var.val))
       return false;
     da_append(&ctx->fn->fn_body, op);
   } break;
   case STAT_DEF: {
-
+    if (stat->def.type.kind == TYPE_UNKNOWN) {
+      if (stat->def.val == NULL) {
+        pcompile_info(stat->loc,
+                      "error: the type of `"SV_Fmt"` is not provided\n",
+                      SV_Arg(stat->def.name));
+        return false;
+      }
+      if (!detect_expr_type(stat->def.val, sp, type_unknown())) return false;
+      stat->def.type = type_clone(stat->def.val->type);
+    } else if (stat->def.val != NULL) {
+      if (!detect_expr_type(stat->def.val, sp, stat->def.type)) return false;
+    }
     static_assert(__def_kind_count == 2,
                   "introduced more def kinds");
     switch (stat->def.kind) {
@@ -584,9 +717,8 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
       Arg *arg = scope_add(sp, stat->def.name, stat->loc);
       if (arg == NULL) return false;
       arg->kind = ARG_VAR;
-      arg->var  = alloc_var(&ctx->fn->vars);
+      arg->var  = alloc_var(&ctx->fn->vars, stat->def.type);
       arg->type = type_clone(stat->def.type);
-      arg->var->type = type_clone(stat->def.type);
 
       if (stat->def.val != NULL) {
         if (!id_to_arg(stat->def.name, stat->loc, &op.set_var.var, sp, ctx))
@@ -605,317 +737,6 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
   return true;
 }
 
-static bool detect_arg_type(Arg *arg) {
-  if (arg->type.kind != TYPE_UNKNOWN) return true;
-  if (arg->kind == ARG_NONE) return true;
-
-  TypeExpr *type = NULL;
-
-  static_assert(__arg_kind_count == 5, "introduced more arg kinds");
-  switch(arg->kind) {
-  case ARG_FN:
-    type = &arg->fn->type;
-    break;
-  case ARG_VAR:
-    type = &arg->var->type;
-    break;
-  default:
-    UNREACHABLE("detect_arg_type");
-  }
-
-  assert(type != NULL);
-  assert(type->kind != TYPE_UNKNOWN);
-  arg->type = type_clone(*type);
-  return true;
-}
-
-static bool detect_var_type(Arg *var, Arg *val)
-{
-  assert(val->type.kind != TYPE_UNKNOWN);
-  if (var->type.kind != TYPE_UNKNOWN) return true;
-
-  TypeExpr *var_type = NULL;
-  // not every arg type can occur in here
-  static_assert(__arg_kind_count == 5, "introduced more arg kinds");
-  switch (var->kind) {
-  case ARG_VAR:
-    var_type = &var->var->type;
-    break;
-  default: UNREACHABLE("fix_type_var");
-  }
-
-  if (var_type->kind == TYPE_UNKNOWN) {
-    *var_type = type_clone(val->type);
-  }
-
-  var->type = type_clone(val->type);
-  return true;
-}
-
-static bool detect_binop_dst_type(OpBinop *binop)
-{
-  Arg *lhs = &binop->lhs;
-  Arg *rhs = &binop->rhs;
-  Arg *dst = &binop->dst;
-
-  assert(lhs->type.kind != TYPE_UNKNOWN);
-  assert(rhs->type.kind != TYPE_UNKNOWN);
-  assert(dst->kind == ARG_VAR);
-
-  static_assert(__binop_kind_count == 11, "introduced more binop kinds");
-  switch (binop->kind) {
-  case BINOP_EQ:
-  case BINOP_NEQ:
-  case BINOP_LS:
-  case BINOP_GT:
-  case BINOP_LE:
-  case BINOP_GE:
-    if (!type_eq(&lhs->type, &rhs->type)) {
-      pcompile_info(lhs->loc,
-                    "error: lhs and rhs of operator `%s` "
-                    "is not same.\n",
-                    binop_name(binop->kind));
-      pcompile_info(lhs->loc, "info: lhs is in type ");
-      dump_type_expr(&lhs->type, stderr);
-      fprintf(stderr, "\n");
-
-      pcompile_info(rhs->loc, "info: rhs is in type ");
-      dump_type_expr(&rhs->type, stderr);
-      fprintf(stderr, "\n");
-      return false;
-    }
-
-    dst->var->type = type_bool();
-
-    break;
-  case BINOP_SUB:
-  case BINOP_ADD:
-  case BINOP_MUL:
-  case BINOP_DIV:
-  case BINOP_MOD:
-    if (lhs->type.kind != TYPE_INT && lhs->type.kind != TYPE_UINT) {
-      pcompile_info(lhs->loc,
-                    "error: lhs of operator `%s` "
-                    "is expected to be a integer, but bot a ",
-                    binop_name(binop->kind));
-      dump_type_expr(&lhs->type, stderr);
-      fprintf(stderr, "\n");
-      return false;
-    }
-
-    if (rhs->type.kind != TYPE_INT && rhs->type.kind != TYPE_UINT) {
-      pcompile_info(rhs->loc,
-                    "error: rhs of operator `%s` "
-                    "is expected to be a integer, but bot a ",
-                    binop_name(binop->kind));
-      dump_type_expr(&rhs->type, stderr);
-      fprintf(stderr, "\n");
-      return false;
-    }
-
-    if (!type_eq(&lhs->type, &rhs->type)) {
-      pcompile_info(lhs->loc,
-                    "error: lhs and rhs of operator `%s` "
-                    "is not same.\n",
-                    binop_name(binop->kind));
-      pcompile_info(lhs->loc, "info: lhs is in type ");
-      dump_type_expr(&lhs->type, stderr);
-      fprintf(stderr, "\n");
-
-      pcompile_info(rhs->loc, "info: rhs is in type ");
-      dump_type_expr(&rhs->type, stderr);
-      fprintf(stderr, "\n");
-      return false;
-    }
-
-    dst->type = type_clone(lhs->type);
-    dst->var->type = type_clone(lhs->type);
-
-    break;
-  default:
-    UNREACHABLE("");
-  }
-
-  return true;
-}
-
-// TODO: detect types at ast level
-// this can do more things in binop and assignment
-// and solve the bug in var.mus
-static bool detect_all_unknown_type(Program *prog)
-{
-  da_foreach (Fn*, fn_ptr, &prog->fn_list) {
-    Fn *fn = *fn_ptr;
-    da_foreach (Op, op, &fn->fn_body) {
-      static_assert(__op_kind_count == 7, "introduced more op kinds");
-      switch (op->kind) {
-      case OP_RETURN:
-        if (!detect_arg_type(&op->ret_val)) return false;
-        break;
-      case OP_SET_VAR:
-        if (!detect_arg_type(&op->set_var.val)) return false;
-        if (!detect_var_type(&op->set_var.var, &op->set_var.val)) return false;
-        break;
-      case OP_INVOKE: {
-        if (!detect_arg_type(&op->invoke.fn)) return false;
-        da_foreach (Arg, arg, &op->invoke.args) {
-          if (!detect_arg_type(arg)) return false;
-        }
-
-        if (!op->invoke.ret_ignore) {
-          assert(op->invoke.ret.kind == ARG_VAR);
-          Var *ret = op->invoke.ret.var;
-          TypeExpr *ret_type = op->invoke.fn.type.fn_type.ret_type;
-
-          assert(ret_type->kind != TYPE_UNKNOWN);
-          ret->type = type_clone(*ret_type);
-        }
-      } break;
-      case OP_BINOP:
-        if (!detect_arg_type(&op->binop.lhs)) return false;
-        if (!detect_arg_type(&op->binop.rhs)) return false;
-        if (!detect_binop_dst_type(&op->binop)) return false;
-        break;
-      case OP_JMP_ELSE:
-        if (!detect_arg_type(&op->jmp.cond)) return false;
-        break;
-      case OP_JMP:
-      case OP_LABEL:
-        // nothing to do because these op have no arguments.
-        break;
-      default: UNREACHABLE("op");
-      }
-    }
-  }
-  return true;
-}
-
-static bool check_type(Program *prog)
-{
-  da_foreach (Fn *, fn_ptr, &prog->fn_list) {
-    Fn *fn = *fn_ptr;
-    TypeExpr *fn_type = &fn->type;
-
-    assert(fn_type->kind == TYPE_FN);
-    da_foreach (Op, op, &fn->fn_body) {
-      static_assert(__op_kind_count == 7, "introduced more op kinds");
-      switch (op->kind) {
-      case OP_RETURN: {
-        TypeExpr *ret_type = &op->ret_val.type;
-        if (!type_matched(fn_type->fn_type.ret_type, ret_type)) {
-          pcompile_info(op->loc,
-                        "error: the return type of this function "
-                        "is required to be ");
-          dump_type_expr(fn_type->fn_type.ret_type, stderr);
-          fprintf(stderr, ", but got ");
-          dump_type_expr(ret_type, stderr);
-          fputc('\n', stderr);
-          return false;
-        }
-      } break;
-      case OP_SET_VAR:
-        if (!type_matched(&op->set_var.var.type, &op->set_var.val.type)) {
-          pcompile_info(op->loc,
-                        "error: incompatible types when assigning to type \"");
-          dump_type_expr(&op->set_var.var.type, stderr);
-          fprintf(stderr, "\" from type \"");
-          dump_type_expr(&op->set_var.val.type, stderr);
-          fprintf(stderr, "\"\n");
-          return false;
-        }
-
-        break;
-      case OP_INVOKE: {
-        // TODO: report a better error message.
-        if (op->invoke.fn.type.kind != TYPE_FN) {
-          pcompile_info(op->loc, "error: try to invoke an uncallable value\n");
-          return false;
-        }
-        TypeExpr *invoked_type = &op->invoke.fn.type;
-        TypeList *expected_types = &invoked_type->fn_type.arg_types;
-
-        bool size_matched = invoked_type->fn_type.va_args?
-          expected_types->count <= op->invoke.args.count:
-          expected_types->count == op->invoke.args.count;
-        if (!size_matched) {
-          pcompile_info(op->loc,
-                        "error: this function expected %ld arguments, but got %ld arguments\n",
-                        expected_types->count, op->invoke.args.count);
-          return false;
-        }
-
-        assert(expected_types->count <= op->invoke.args.count);
-        for (size_t i = 0; i < expected_types->count; ++i) {
-          TypeExpr *expected = &expected_types->items[i];
-          TypeExpr *actual = &op->invoke.args.items[i].type;
-          if (!type_matched(expected, actual)) {
-            pcompile_info(op->loc, "error: the %ld-th argument is expected to be ", i);
-            dump_type_expr(expected, stderr);
-            fprintf(stderr, ", but got ");
-            dump_type_expr(actual, stderr);
-            fputc('\n', stderr);
-            return false;
-          }
-        }
-      } break;
-      case OP_JMP_ELSE: {
-        TypeExpr *cond_type = &op->jmp.cond.type;
-        if (cond_type->kind != TYPE_BOOL) {
-          pcompile_info(op->loc,
-                        "error: the condition of 'if' statement "
-                        "is required to be 'bool'");
-          fprintf(stderr, ", but got ");
-          dump_type_expr(cond_type, stderr);
-          fputc('\n', stderr);
-          return false;
-        }
-      } break;
-      case OP_BINOP:
-        // the type of dst is detected in detect_all_unknown_type
-        // and if it could be detected successfully, it must be available
-        // thus, it doesn't need additional checks.
-      case OP_LABEL:
-      case OP_JMP:
-        // These op has no args
-        break;
-      default: UNREACHABLE("op");
-      }
-    }
-  }
-  return true;
-}
-
-static bool check_fn_returned(Program *prog)
-{
-  da_foreach(Fn *, fn_ptr, &prog->fn_list) {
-    Fn *fn = *fn_ptr;
-    bool returned = false;
-    da_foreach(Op, op, &fn->fn_body) {
-      static_assert(__op_kind_count == 7, "introduced more op kinds");
-      switch(op->kind) {
-      case OP_RETURN:
-        returned = true;
-        break;
-      default: break;
-      }
-    }
-
-    if (!returned) {
-      assert(fn->type.kind == TYPE_FN);
-      if (fn->type.fn_type.ret_type->kind != TYPE_VOID) {
-        pcompile_info(fn->loc, "error: this function is never returned\n");
-        return false;
-      } else {
-        Op op = {
-          .kind = OP_RETURN,
-        };
-        da_append(&fn->fn_body, op);
-      }
-    }
-  }
-  return true;
-}
-
 static bool gen_ir_fn(Fn *fn, Gen_Context *ctx)
 {
   ctx->fn = fn;
@@ -928,22 +749,24 @@ static bool gen_ir_fn(Fn *fn, Gen_Context *ctx)
   Lambda *lambda = fn_ctx->fn;
 
   fn->loc = lambda->loc;
-  fn->type.kind = TYPE_FN;
   da_foreach(Fn_Arg, arg, &lambda->args) {
     Arg *value = scope_add(fn_ctx->sp, arg->name, arg->loc);
     if (value == NULL) return false;
 
     value->kind = ARG_VAR;
-    value->var  = alloc_var(&ctx->fn->vars);
-    value->var->type = type_clone(arg->type);
-
-    da_append(&fn->type.fn_type.arg_types, type_clone(arg->type));
+    value->var  = alloc_var(&ctx->fn->vars, arg->type);
+    value->type = type_clone(arg->type);
   }
-  fn->type.fn_type.ret_type = arena_alloc(sizeof(TypeExpr));
-  *fn->type.fn_type.ret_type = type_clone(lambda->ret_type);
 
   da_foreach (Stat, stat, &lambda->body) {
     if (!stat_to_ir(stat, fn_ctx->sp, ctx)) return false;
+  }
+
+  if (fn->fn_body.count == 0 || da_last(&fn->fn_body).kind != OP_RETURN) {
+    da_append(&fn->fn_body, ((Op) {
+        .kind = OP_RETURN,
+        .ret_val = {.kind = ARG_NONE},
+        }));
   }
 
   for (size_t i = 0; i < fn->vars.count; ++i) {
@@ -982,9 +805,6 @@ Program *compile_program(Lexer *l)
 
   Program *prog = gen_ir(&stats);
   if (prog == NULL)                   return NULL;
-  if (!detect_all_unknown_type(prog)) return NULL;
-  if (!check_type(prog))              return NULL;
-  if (!check_fn_returned(prog))       return NULL;
 
   return prog;
 }

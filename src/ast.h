@@ -74,6 +74,8 @@ typedef struct {
   Stat_List body;
 } Lambda;
 
+TypeExpr type_of_fn(TypeExpr *ret, Fn_Arg_List *args);
+
 struct Expr {
   Expr_Kind kind;
   Cursor loc;
@@ -275,21 +277,31 @@ static bool compile_fn_sign(Lexer *l, TypeExpr *ret, Fn_Arg_List *args)
   return true;
 }
 
+TypeExpr type_of_fn(TypeExpr *ret, Fn_Arg_List *args)
+{
+  TypeExpr type = {
+    .kind = TYPE_FN,
+    .fn_type = {
+      .ret_type = arena_alloc(sizeof(*ret)),
+      .va_args  = args->va,
+    }
+  };
+
+  *type.fn_type.ret_type = type_clone(*ret);
+  da_foreach(Fn_Arg, arg, args) {
+    da_append(&type.fn_type.arg_types, arg->type);
+  }
+  return type;
+}
+
 static bool compile_type_fn(Lexer *l, TypeExpr *type)
 {
   assert(l->current.kind == TOKEN_FN);
 
-  type->kind = TYPE_FN;
-  type->fn_type.ret_type = arena_calloc(1, sizeof(TypeExpr));
-
+  TypeExpr ret_type = {0};
   Fn_Arg_List args = {0};
-  if (!compile_fn_sign(l, type->fn_type.ret_type, &args)) return false;
-
-  type->fn_type.arg_types = (TypeList) {0};
-  type->fn_type.va_args   = args.va;
-  da_foreach(Fn_Arg, arg, &args) {
-    da_append(&type->fn_type.arg_types, arg->type);
-  }
+  if (!compile_fn_sign(l, &ret_type, &args)) return false;
+  *type = type_of_fn(&ret_type, &args);
 
   return true;
 }
@@ -333,18 +345,12 @@ static Expr *expr_atom(Token token)
   case TOKEN_STR:
     expr->kind = EXPR_STR;
     expr->str  = token.str;
-    expr->type = type_ptr((TypeExpr) {
-        .kind = TYPE_INT,
-        .size = 1,
-      });
+    expr->type = type_ptr(type_int(true, 1));
     return expr;
   case TOKEN_INT:
     expr->kind    = EXPR_INT;
     expr->integer = sv_to_int(token.str);
-    expr->type    = (TypeExpr) {
-      .kind = TYPE_INT,
-      .size = 4,
-    };
+    expr->type    = type_int(true, 4);
     return expr;
   case TOKEN_TRUE:
     expr->kind    = EXPR_INT;
@@ -441,7 +447,8 @@ static Expr *compile_lambda(Lexer *l)
   *expr = (Expr) {
     .kind = EXPR_LAMBDA,
     .loc = lambda.loc,
-    .lambda = lambda
+    .lambda = lambda,
+    .type = type_of_fn(&lambda.ret_type, &lambda.args)
   };
 
   return expr;

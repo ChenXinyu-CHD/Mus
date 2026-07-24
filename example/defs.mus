@@ -1,4 +1,4 @@
-let printf = fn(&i32, ...) -> i32 @extern
+let printf = fn(&i8, ...) -> i32 @extern
 
 let main = fn() -> i32 {
     let foo = 2
