@@ -94,8 +94,6 @@ struct Expr {
 };
 
 Expr *compile_expr(Lexer *l);
-Expr *expr_eval(Expr* expr);
-
 typedef enum {
   STAT_EMPTY = 0,
   STAT_INVOKE,
@@ -544,70 +542,6 @@ Expr *compile_expr(Lexer *l)
   // INVOKE :: EXPR ( ARGS )
   // ARGS   :: EXPR | EXPR , ARGS
   return compile_cmp(l);
-}
-
-Expr *expr_eval(Expr* expr)
-{
-  static_assert(__expr_kind_count == 6, "introduced more expr kinds");
-  switch (expr->kind) {
-  case EXPR_INVOKE:
-    pcompile_info(expr->loc,
-                  "error: invoking a function is not allowed in compile time\n");
-    return NULL;
-  case EXPR_INT:
-  case EXPR_NAME:
-  case EXPR_STR:
-  case EXPR_LAMBDA:
-    return expr;
-  case EXPR_BINOP: {
-    Expr *lhs = expr_eval(expr->binop.lhs);
-    Expr *rhs = expr_eval(expr->binop.rhs);
-
-    Expr *result = arena_alloc(sizeof(result));
-    result->loc  = expr->loc;
-
-    UNUSED(lhs);
-    UNUSED(rhs);
-    static_assert(__binop_kind_count == 11, "introduced more binop kinds");
-    switch (expr->binop.kind) {
-    case BINOP_ADD:
-      TODO("");
-      break;
-    case BINOP_SUB:
-      TODO("");
-      break;
-    case BINOP_MUL:
-      TODO("");
-      break;
-    case BINOP_DIV:
-      TODO("");
-      break;
-    case BINOP_MOD:
-      TODO("");
-      break;
-    case BINOP_EQ:
-      TODO("");
-      break;
-    case BINOP_NEQ:
-      TODO("");
-      break;
-    case BINOP_LS:
-      TODO("");
-      break;
-    case BINOP_GT:
-      TODO("");
-      break;
-    case BINOP_LE:
-      TODO("");
-      break;
-    case BINOP_GE:
-      TODO("");
-      break;
-    default: UNREACHABLE("");
-    }
-    return result;
-  } default: UNREACHABLE("");
-  }
 }
 
 static Stat *compile_def(Lexer *l, Def_Kind kind)

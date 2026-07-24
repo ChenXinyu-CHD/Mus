@@ -340,6 +340,133 @@ static size_t append_op_label(OpList *ops)
   return label;
 }
 
+static bool compiletime_eval_algebra(Arg lhs, Arg rhs, BinopKind op, Arg *val)
+{
+  if (lhs.kind != ARG_LIT_INT ||  lhs.type.kind != TYPE_INT) {
+    pcompile_info(lhs.loc, "error: lsh of %s is expected to be an integer\n", binop_name(op));
+    return false;
+  }
+  if (rhs.kind != ARG_LIT_INT || rhs.type.kind != TYPE_INT) {
+    pcompile_info(rhs.loc, "error: rsh of %s is expected to be an integer\n", binop_name(op));
+    return false;
+  }
+
+  val->kind = ARG_LIT_INT;
+  size_t maxsize = lhs.type.size > rhs.type.size ? lhs.type.size : rhs.type.size;
+  val->type = (TypeExpr) {.kind = TYPE_INT, .size = maxsize};
+  static_assert(__binop_kind_count == 11, "introduced more binop kinds");
+  switch (op) {
+  case BINOP_ADD:
+    val->num_int = lhs.num_int + rhs.num_int;
+    break;
+  case BINOP_SUB:
+    val->num_int = lhs.num_int - rhs.num_int;
+    break;
+  case BINOP_MUL:
+    val->num_int = lhs.num_int * rhs.num_int;
+    break;
+  case BINOP_DIV:
+    val->num_int = lhs.num_int / rhs.num_int;
+    break;
+  case BINOP_MOD:
+    val->num_int = lhs.num_int % rhs.num_int;
+    break;
+  default: UNREACHABLE("compiletime_eval_binop");
+  }
+  return true;
+}
+
+static bool compiletime_eval_cmp(Arg lhs, Arg rhs, BinopKind op, Arg *val)
+{
+  if (!type_eq(&lhs.type, &rhs.type)) {
+    pcompile_info(lhs.loc, "error: the type lsh and rsh of %s should be in same type.\n", binop_name(op));
+    return false;
+  }
+
+  val->kind = ARG_LIT_INT;
+  val->type = type_bool();
+  static_assert(__binop_kind_count == 11, "introduced more binop kinds");
+  switch (op) {
+  case BINOP_EQ:
+    val->num_int = lhs.num_int == rhs.num_int ? 1 : 0;
+    break;
+  case BINOP_NEQ:
+    val->num_int = lhs.num_int != rhs.num_int ? 1 : 0;
+    break;
+  case BINOP_LS:
+    val->num_int = lhs.num_int <  rhs.num_int ? 1 : 0;
+    break;
+  case BINOP_GT:
+    val->num_int = lhs.num_int >  rhs.num_int ? 1 : 0;
+    break;
+  case BINOP_LE:
+    val->num_int = lhs.num_int <= rhs.num_int ? 1 : 0;
+    break;
+  case BINOP_GE:
+    val->num_int = lhs.num_int >= rhs.num_int ? 1 : 0;
+    break;
+  default: UNREACHABLE("compiletime_eval_binop");
+  }
+  return true;
+}
+
+static bool expr_eval(Expr* expr, Scope *sp, Gen_Context *ctx, Arg *val)
+{
+  static_assert(__expr_kind_count == 6, "introduced more expr kinds");
+  switch (expr->kind) {
+  case EXPR_INVOKE:
+    pcompile_info(expr->loc,
+                  "error: invoking a function is not allowed in compile time\n");
+    return false;
+  case EXPR_INT:
+  case EXPR_NAME:
+  case EXPR_STR:
+  case EXPR_LAMBDA:
+    return expr_to_arg(expr, sp, ctx, val);
+  case EXPR_BINOP: {
+    Arg lhs = {0};
+    if (!expr_eval(expr->binop.lhs, sp, ctx, &lhs)) return false;
+    if (lhs.kind == ARG_VAR) {
+      assert(expr->binop.lhs->kind == EXPR_NAME);
+      pcompile_info(lhs.loc,
+                    "error: `"SV_Fmt"` is a runtime variable, which value is unkown at compiletime.\n",
+                    SV_Arg(expr->binop.lhs->name));
+      return false;
+    }
+    Arg rhs = {0};
+    if (!expr_eval(expr->binop.rhs, sp, ctx, &rhs)) return false;
+    if (rhs.kind == ARG_VAR) {
+      assert(expr->binop.rhs->kind == EXPR_NAME);
+      pcompile_info(rhs.loc,
+                    "error: `"SV_Fmt"` is a runtime variable, which value is unkown at compiletime.\n",
+                    SV_Arg(expr->binop.rhs->name));
+      return false;
+    }
+
+    static_assert(__binop_kind_count == 11, "introduced more binop kinds");
+    switch (expr->binop.kind) {
+    case BINOP_ADD:
+    case BINOP_SUB:
+    case BINOP_MUL:
+    case BINOP_DIV:
+    case BINOP_MOD:
+      return compiletime_eval_algebra(lhs, rhs, expr->binop.kind, val);
+      break;
+    case BINOP_EQ:
+    case BINOP_NEQ:
+    case BINOP_LS:
+    case BINOP_GT:
+    case BINOP_LE:
+    case BINOP_GE:
+      return compiletime_eval_cmp(lhs, rhs, expr->binop.kind, val);
+      break;
+    default: UNREACHABLE("");
+    }
+    return true;
+  } default: UNREACHABLE("");
+  }
+}
+
 static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
 {
   Op op = { .loc = stat->loc };
@@ -377,6 +504,7 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
       return false;
 
     size_t jmp_else = append_op(&ctx->fn->fn_body, (Op) {
+        .loc = stat->if_else.cond->loc,
         .kind = OP_JMP_ELSE,
         .jmp = {.cond = cond},
       });
@@ -415,12 +543,12 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
     case DEF_LET: {
       assert(stat->def.val != NULL);
 
-      Expr *expr = expr_eval(stat->def.val);
-      if (expr == NULL) return false;
+      Arg val = {0};
+      if (!expr_eval(stat->def.val, sp, ctx, &val)) return false;
 
       Arg *arg = scope_add(sp, stat->def.name, stat->loc);
       if (arg == NULL) return false;
-      if (!expr_to_arg(expr, sp, ctx, arg)) return false;
+      *arg = val;
 
       // only global `let` bindings and external function need a meaningful name.
       // TODO: make functions have multiple names.
@@ -439,9 +567,7 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
       // and will never work in `car printf = fn(&i32, ...)->i32 @extern`
       // or in `(fn(&i32, ...)->i32 @extern)("hello, world\n")`.
       // `let printf: fn(&i32, ...) @extern` may be a better solusion.
-      if (expr->kind == EXPR_LAMBDA && (ctx->fn == NULL || expr->lambda.is_extern)) {
-        assert(arg->kind == ARG_FN);
-
+      if (arg->kind == ARG_FN && (ctx->fn == NULL || arg->fn->is_extern)) {
         String_Builder name = {0};
         sb_append_sv(&name, stat->def.name);
         arg->fn->name = name;
@@ -553,8 +679,8 @@ static bool detect_binop_dst_type(OpBinop *binop)
       dump_type_expr(&lhs->type, stderr);
       fprintf(stderr, "\n");
 
-      pcompile_info(lhs->loc, "info: rhs is in type ");
-      dump_type_expr(&lhs->type, stderr);
+      pcompile_info(rhs->loc, "info: rhs is in type ");
+      dump_type_expr(&rhs->type, stderr);
       fprintf(stderr, "\n");
       return false;
     }
@@ -596,8 +722,8 @@ static bool detect_binop_dst_type(OpBinop *binop)
       dump_type_expr(&lhs->type, stderr);
       fprintf(stderr, "\n");
 
-      pcompile_info(lhs->loc, "info: rhs is in type ");
-      dump_type_expr(&lhs->type, stderr);
+      pcompile_info(rhs->loc, "info: rhs is in type ");
+      dump_type_expr(&rhs->type, stderr);
       fprintf(stderr, "\n");
       return false;
     }
@@ -605,7 +731,6 @@ static bool detect_binop_dst_type(OpBinop *binop)
     dst->type = type_clone(lhs->type);
     dst->var->type = type_clone(lhs->type);
 
-    return true;
     break;
   default:
     UNREACHABLE("");
@@ -640,7 +765,7 @@ static bool detect_all_unknown_type(Program *prog)
         if (!op->invoke.ret_ignore) {
           assert(op->invoke.ret.kind == ARG_VAR);
           Var *ret = op->invoke.ret.var;
-          TypeExpr *ret_type = fn->type.fn_type.ret_type;
+          TypeExpr *ret_type = op->invoke.fn.type.fn_type.ret_type;
 
           assert(ret_type->kind != TYPE_UNKNOWN);
           ret->type = type_clone(*ret_type);

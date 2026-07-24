@@ -1,0 +1,21 @@
+let printf = fn(&i32, ...) -> i32 @extern
+
+let main = fn() -> i32 {
+    let foo = 2
+    let bar = foo + foo * 2
+
+    let gt = fn() -> bool {
+        return foo > bar;
+    }
+
+    var baz = bar + foo
+
+    printf("foo = %d, bar = %d, baz = %d\n", foo, bar, baz);
+
+    if gt() {
+        printf("foo is greater than bar\n");
+    } else {
+        printf("foo is not greater than bar\n");
+    }
+    return 0
+}

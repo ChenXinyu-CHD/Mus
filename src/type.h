@@ -44,7 +44,7 @@ TypeExpr type_clone(TypeExpr t);
 
 void dump_type_expr(TypeExpr *type, FILE *stream);
 // return true if lhs is exactly equals to rhs.
-bool type_eq(const TypeExpr *lhs, TypeExpr *rhs);
+bool type_eq(const TypeExpr *lhs, const TypeExpr *rhs);
 bool type_matched(TypeExpr *required, TypeExpr *actual);
 
 void destroy_type_expr(TypeExpr* type);
@@ -130,7 +130,7 @@ bool type_matched(TypeExpr *required, TypeExpr *actual)
   return true;
 }
 
-bool type_eq(const TypeExpr *lhs, TypeExpr *rhs)
+bool type_eq(const TypeExpr *lhs, const TypeExpr *rhs)
 {
   static_assert(__type_kind_count == 7, "introduced more type kinds");
   if (lhs->kind != rhs->kind || lhs->size != rhs->size) return false;
