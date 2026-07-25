@@ -10,7 +10,7 @@
     (modify-syntax-entry ?\n ">" table)
     ;; Chars are the same as strings
     (modify-syntax-entry ?' "\"" table)
-    
+
     (modify-syntax-entry ?& "." table)
     (modify-syntax-entry ?% "." table)
     table))
@@ -21,7 +21,7 @@
     "i8" "i16" "i32" "i64"))
 
 (defun mus-keywords ()
-  '("fn" "var" "extern" "if" "else"))
+  '("fn" "var" "let" "extern" "if" "else" "return"))
 
 (defun mus-font-lock-keywords ()
   (list
@@ -104,4 +104,3 @@
 (add-to-list 'auto-mode-alist '("\\.mus\\'" . mus-mode))
 
 (provide 'mus-mode)
-
