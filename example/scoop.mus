@@ -18,5 +18,5 @@ let main = fn() -> i32
     return 0;
 }
 
-let printf = fn(fmt: &i8, ...) -> i32 @extern;
+let printf: fn(fmt: &i8, ...) -> i32 @extern;
 

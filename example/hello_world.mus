@@ -4,5 +4,5 @@ let main = fn() -> i64
   return 0
 }
 
-let printf = fn(fmt: &i8, ...) -> i32 @extern
+let printf: fn(fmt: &i8, ...) -> i32 @extern
 

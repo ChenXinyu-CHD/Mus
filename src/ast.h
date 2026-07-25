@@ -279,19 +279,11 @@ static bool compile_fn_sign(Lexer *l, TypeExpr *ret, Fn_Arg_List *args)
 
 TypeExpr type_of_fn(TypeExpr *ret, Fn_Arg_List *args)
 {
-  TypeExpr type = {
-    .kind = TYPE_FN,
-    .fn_type = {
-      .ret_type = arena_alloc(sizeof(*ret)),
-      .va_args  = args->va,
-    }
-  };
-
-  *type.fn_type.ret_type = type_clone(*ret);
+  TypeList arg_types = {0};
   da_foreach(Fn_Arg, arg, args) {
-    da_append(&type.fn_type.arg_types, arg->type);
+    da_append(&arg_types, arg->type);
   }
-  return type;
+  return type_fn(*ret, arg_types, args->va);
 }
 
 static bool compile_type_fn(Lexer *l, TypeExpr *type)
@@ -434,14 +426,10 @@ static Expr *compile_lambda(Lexer *l)
   Lambda lambda = {.loc = l->current.start};
   if (!compile_fn_sign(l, &lambda.ret_type, &lambda.args)) return NULL;
 
-  if (!prefetch_not_none(l)) return false;
-  if (l->current.kind == '{') {
-    if (!compile_block(l, &lambda.body)) return false;
-    lambda.is_extern = false;
-  } else if (l->current.kind == TOKEN_EXT) {
-    lambda.is_extern = true;
-    lexer_next(l);
-  }
+  if (!prefetch_expect_token(l, '{')) return false;
+
+  if (!compile_block(l, &lambda.body)) return false;
+  lambda.is_extern = false;
 
   Expr *expr = arena_alloc(sizeof(*expr));
   *expr = (Expr) {
@@ -551,6 +539,24 @@ Expr *compile_expr(Lexer *l)
   return compile_cmp(l);
 }
 
+Expr *lambda_of_type(TypeExpr *type, Cursor loc)
+{
+  Expr *expr = arena_calloc(1, sizeof(*expr));
+  expr->type = type_clone(*type);
+  expr->kind = EXPR_LAMBDA;
+  expr->loc  = loc;
+
+  expr->lambda.ret_type = type_clone(*type->fn_type.ret_type);
+  expr->lambda.args.va  = type->fn_type.va_args;
+  expr->lambda.loc      = loc;
+
+  da_foreach(TypeExpr, arg_type, &type->fn_type.arg_types) {
+    Fn_Arg arg = { .type = type_clone(*arg_type) };
+    da_append(&expr->lambda.args, arg);
+  }
+  return expr;
+}
+
 static Stat *compile_def(Lexer *l, Def_Kind kind)
 {
   assert(l->current.kind == (kind == DEF_LET ? TOKEN_LET : TOKEN_VAR));
@@ -584,6 +590,15 @@ static Stat *compile_def(Lexer *l, Def_Kind kind)
     stat->def.val = compile_expr(l);
     if (stat->def.val == NULL) {
       return NULL;
+    }
+  } else if (l->current.kind == TOKEN_EXT) {
+    lexer_next(l);
+
+    if (stat->def.type.kind == TYPE_FN) {
+      stat->def.val = lambda_of_type(&stat->def.type, stat->loc);
+      stat->def.val->lambda.is_extern = true;
+    } else {
+      TODO("support other kind of external stuff.");
     }
   }
 

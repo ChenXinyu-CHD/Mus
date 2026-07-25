@@ -1,5 +1,3 @@
-# extern printf: fn(&i8, ...):i64
-
 let main = fn() -> i64
 {
   # var v1 # this is not allowed currently, because its type is not provided
@@ -15,5 +13,5 @@ let main = fn() -> i64
   return 0
 }
 
-let printf = fn(&i8, ...) -> i64 @extern
+let printf: fn(&i8, ...) -> i64 @extern
 

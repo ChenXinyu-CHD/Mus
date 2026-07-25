@@ -694,12 +694,6 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
       // ```
       // the `main` function is expected to be a alian of `foo`
       // but currently, `main` is just not defined in assembly level.
-      // TODO: consider a better way to define a external function.
-      // `let printf = fn(&i32, ...)->i32 @extern` is so weird
-      // because `fn(&i32, ...)->i32 @extern` is not a valid lambda actually
-      // and will never work in `car printf = fn(&i32, ...)->i32 @extern`
-      // or in `(fn(&i32, ...)->i32 @extern)("hello, world\n")`.
-      // `let printf: fn(&i32, ...) @extern` may be a better solusion.
       if (arg->kind == ARG_FN && (ctx->fn == NULL || arg->fn->is_extern)) {
         String_Builder name = {0};
         sb_append_sv(&name, stat->def.name);

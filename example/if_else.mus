@@ -74,4 +74,4 @@ let loop = fn(i: i32, n: i32) -> void
     printf("i = %d\n", i);
 }
 
-let printf = fn(fmt: &i8, ...) -> i32 @extern
+let printf: fn(fmt: &i8, ...) -> i32 @extern

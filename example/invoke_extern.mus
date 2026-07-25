@@ -1,4 +1,4 @@
-let putchar = fn(i64) -> i64 @extern
+let putchar: fn(i64) -> i64 @extern
 
 let main = fn() -> i64
 {

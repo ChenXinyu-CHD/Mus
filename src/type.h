@@ -199,7 +199,7 @@ void dump_type_expr(TypeExpr *type, FILE *stream)
         fprintf(stream, ",...");
       }
     }
-    fprintf(stream, "):");
+    fprintf(stream, ")->");
     dump_type_expr(type->fn_type.ret_type, stream);
     break;
   case TYPE_PTR:
