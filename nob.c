@@ -41,7 +41,6 @@ int main(int argc, char **argv)
 {
   NOB_GO_REBUILD_URSELF(argc, argv);
 
-
   self = nob_shift(argv, argc);
 
   if (argc != 0) {
@@ -71,7 +70,7 @@ int main(int argc, char **argv)
   cmd_append(&cmd, cc, "-Wall", "-Wextra");
   cmd_append(&cmd, "-O0", "-ggdb");
   cmd_append(&cmd, "-I./3rd");
-  cmd_append(&cmd, "-o", "mcc", "src/mcc.c", "src/parser.c");
+  cmd_append(&cmd, "-o", "mcc", "src/mcc.c");
   if (!cmd_run(&cmd)) return 1;
 
   if (test || update_test) {

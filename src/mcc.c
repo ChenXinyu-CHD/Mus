@@ -5,7 +5,7 @@
 #include "3rd_wrapper.h"
 
 #include "lexer.h"
-#include "parser.h"
+#include "ir.h"
 
 void append_str_lit(String_Builder *sb, String_View str)
 {
@@ -506,6 +506,9 @@ int main(int argc, char **argv)
 
   return result;
 }
+
+#define MCC_IR_IMPLEMENTATION
+#include "ir.h"
 
 #define MCC_LEXER_IMPLEMENTATION
 #include "lexer.h"
