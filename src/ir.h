@@ -758,10 +758,14 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
   } break;
   case STAT_RET: {
     op.kind = OP_RETURN;
-    if (!detect_expr_type(stat->ret_val, sp, *ctx->fn->type.fn_type.ret_type))
-      return false;
-    if (!expr_to_arg(stat->ret_val, sp, ctx, &op.ret_val))
-      return false;
+    if (stat->ret_val != NULL) {
+      if (!detect_expr_type(stat->ret_val, sp, *ctx->fn->type.fn_type.ret_type))
+        return false;
+      if (!expr_to_arg(stat->ret_val, sp, ctx, &op.ret_val))
+        return false;
+    } else {
+      op.ret_val = (Arg) {.kind = ARG_NONE};
+    }
     da_append(&ctx->fn->fn_body, op);
   } break;
   case STAT_BLOCK: {

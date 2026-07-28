@@ -643,8 +643,12 @@ Stat *compile_stat(Lexer *l)
     stat = arena_alloc(sizeof(*stat));
     stat->kind = STAT_RET;
 
-    stat->ret_val = compile_expr(l);
-    if (stat->ret_val == NULL) return NULL;
+    if (l->current.kind == ';' || l->current.kind == '}') {
+      stat->ret_val = NULL;
+    } else {
+      stat->ret_val = compile_expr(l);
+      if (stat->ret_val == NULL) return NULL;
+    }
   } else {
     Expr *expr = compile_expr(l);
     if (expr == NULL) return NULL;

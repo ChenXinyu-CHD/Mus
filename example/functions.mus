@@ -1,17 +1,22 @@
 let printf: fn(fmt: &i8, ...) -> i32 @extern
 
-let foo = fn(a: i32, b: i32) -> i32
-{
+let foo = fn(a: i32, b: i32) -> i32 {
     return a
 }
 
-let bar = fn(a: i32, b: i32) -> i32
-{
+let bar = fn(a: i32, b: i32) -> i32 {
     return b
 }
 
-let main = fn() -> i32
-{
+let ret_none = fn(cond: bool) -> void {
+    if cond {
+        printf("ok\n")
+        return
+    } else return;
+    printf("error\n");
+}
+
+let main = fn() -> i32 {
     var v1 = foo(69, 420);
     var v2 = bar(69, 420);
 
@@ -23,6 +28,9 @@ let main = fn() -> i32
         return a + b
     }
     printf("baz(v1, v2) = %d\n", baz(v1, v2));
+
+    ret_none(true);
+    ret_none(false);
 
     return 0;
 }
