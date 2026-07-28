@@ -1,6 +1,6 @@
 let printf: fn(&i8, ...) -> i32 @extern
 
-let main = fn() -> i32 {
+let foo = fn() -> i32 {
     let foo = 2
     let bar = foo + foo * 2
 
@@ -19,3 +19,6 @@ let main = fn() -> i32 {
     }
     return 0
 }
+
+let main = foo;
+

@@ -12,6 +12,7 @@
 typedef enum {
   ARG_NONE = 0,
   ARG_FN,
+  ARG_EXT,
   ARG_VAR,
   ARG_LIT_INT,
   ARG_LIT_STR,
@@ -42,6 +43,7 @@ typedef struct {
     int num_int;
     Fn *fn;
     Var *var;
+    String_View ext;
     size_t str_label;
   };
 } Arg;
@@ -111,10 +113,23 @@ typedef struct {
 } OpList;
 
 struct Fn {
+  // functions have multiple names.
+  // consider this case:
+  // ```
+  // let foo = fn () -> i32 {
+  //    printf("foo\n");
+  // }
+  // let main = foo;
+  // ```
+  // `main` function is expected to be a alian of `foo` in assembly level.
+  struct {
+    String_Builder *items;
+    size_t count;
+    size_t capacity;
+  } names;
   TypeExpr type;
   Cursor loc;
 
-  bool is_extern;
   OpList fn_body;
   VarList vars;
 };
@@ -126,7 +141,7 @@ typedef struct {
 } FnList;
 
 typedef struct {
-  Ht(String_View, Fn*) fns;
+  FnList fn_list;
   struct {
     String_View *items;
     size_t count;
@@ -209,13 +224,16 @@ static Var *alloc_var(VarList *vars, TypeExpr type)
 
 static void dump_arg(String_Builder *sb, Arg *arg)
 {
-  static_assert(__arg_kind_count == 5, "introduced more arg kinds");
+  static_assert(__arg_kind_count == 6, "introduced more arg kinds");
   switch(arg->kind) {
   case ARG_NONE:
     sb_appendf(sb, "None");
     break;
   case ARG_FN:
-    sb_appendf(sb, SV_Fmt, SV_Arg(sb_to_sv(arg->fn->name)));
+    sb_appendf(sb, SV_Fmt, SV_Arg(sb_to_sv(da_first(&arg->fn->names))));
+    break;
+  case ARG_EXT:
+    sb_appendf(sb, SV_Fmt, SV_Arg(arg->ext));
     break;
   case ARG_VAR:
     sb_appendf(sb, "var[%ld]", arg->var->id);
@@ -325,11 +343,12 @@ static Fn *push_fn(Lambda* lambda, Gen_Context *ctx, Scope *sp)
   da_append(&ctx->ungenerated, fn);
 
   // default name of a function is defined here
-  // and it may be override in stat_to_ir
-  sb_appendf(&fn->name, ".lambda_%ld", ctx->known.count);
+  // and stat_to_ir may generate the other names for it
+  String_Builder name = {0};
+  sb_appendf(&name, ".lambda_%ld", ctx->known.count);
+  da_append(&fn->names, name);
   fn->type = type_of_fn(&lambda->ret_type, &lambda->args);
 
-  fn->is_extern = lambda->is_extern;
   *ht_put(&ctx->known, fn) = (Fn_Ctx) {
     .fn = lambda,
     .sp = new_scope(sp),
@@ -814,30 +833,28 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
                   "introduced more def kinds");
     switch (stat->def.kind) {
     case DEF_LET: {
-      assert(stat->def.val != NULL);
-
       Arg val = {0};
-      if (!expr_eval(stat->def.val, sp, ctx, &val)) return false;
+      if (stat->def.is_extern) {
+        assert(stat->def.val == NULL);
+        val = (Arg) {
+          .kind = ARG_EXT,
+          .type = type_clone(stat->def.type),
+          .ext  = stat->def.name,
+        };
+      } else {
+        assert(stat->def.val != NULL);
+        if (!expr_eval(stat->def.val, sp, ctx, &val)) return false;
+      }
 
       Arg *arg = scope_add(sp, stat->def.name, stat->loc);
       if (arg == NULL) return false;
       *arg = val;
 
-      // only global `let` bindings and external function need a meaningful name.
-      // TODO: make functions have multiple names.
-      // consider this case:
-      // ```
-      // let foo = fn () -> i32 {
-      //    printf("foo\n");
-      // }
-      // let main = foo;
-      // ```
-      // the `main` function is expected to be a alian of `foo`
-      // but currently, `main` is just not defined in assembly level.
-      if (arg->kind == ARG_FN && (ctx->fn == NULL || arg->fn->is_extern)) {
+      // only global `let` bindings and need a meaningful name.
+      if (arg->kind == ARG_FN && ctx->fn == NULL) {
         String_Builder name = {0};
         sb_append_sv(&name, stat->def.name);
-        arg->fn->name = name;
+        da_append(&arg->fn->names, name);
       }
     } break;
     case DEF_VAR: {
@@ -874,8 +891,6 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
 static bool gen_ir_fn(Fn *fn, Gen_Context *ctx)
 {
   ctx->fn = fn;
-
-  if (fn->is_extern) return true;
 
   Fn_Ctx *fn_ctx = ht_find(&ctx->known, fn);
   assert(fn_ctx != NULL);

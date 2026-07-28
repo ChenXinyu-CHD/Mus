@@ -24,17 +24,13 @@ String_Builder gen_code_ir(const Program *prog)
 
   sb_appendf(&sb, "\n");
 
-  for (size_t i = 0; i < prog->fn_list.count; ++i) {
-    Fn* fn = prog->fn_list.items[i];
-    String_View fn_name = sb_to_sv(fn->name);
-    //    String_View fn_name = sym_name(prog->global, fn);
-    if (fn_name.count != 0) {
+  da_foreach(Fn *, fn, &prog->fn_list) {
+    da_foreach(String_Builder, name, &(*fn)->names) {
+      String_View fn_name = sb_to_sv(*name);
       sb_appendf(&sb, SV_Fmt":\n", SV_Arg(fn_name));
     }
 
-    sb_appendf(&sb, ".fn_%ld:\n", i);
-
-    da_foreach (Op, op, &fn->fn_body) {
+    da_foreach (Op, op, &(*fn)->fn_body) {
       if (op->kind != OP_LABEL) {
         sb_appendf(&sb, "    ");
       }
@@ -134,7 +130,7 @@ static void rbp_offset2rax(String_Builder *sb, size_t size, ptrdiff_t offset)
 
 static void arg2rax(String_Builder *sb, Arg *arg)
 {
-  static_assert(__arg_kind_count == 5, "introduced more arg kinds");
+  static_assert(__arg_kind_count == 6, "introduced more arg kinds");
   switch (arg->kind) {
   case ARG_NONE:
     sb_appendf(sb, "    mov %%rax, %%rax\n");
@@ -144,9 +140,14 @@ static void arg2rax(String_Builder *sb, Arg *arg)
     rbp_offset2rax(sb, var->type.size, var->offset);
   } break;
   case ARG_FN: {
-    String_View name = sb_to_sv(arg->fn->name);
+    assert(arg->fn->names.count != 0);
+    String_View name = sb_to_sv(da_first(&arg->fn->names));
     sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %%rax\n",
                SV_Arg(name));
+  } break;
+  case ARG_EXT: {
+    sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %%rax\n",
+               SV_Arg(arg->ext));
   } break;
   case ARG_LIT_INT:
     sb_appendf(sb, "    movq $%d, %%rax\n", arg->num_int);
@@ -177,10 +178,12 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
     Fn *fn = prog->fn_list.items[fn_i];
 
     //    String_View fn_name = sym_name(prog->global, fn);
-    String_View fn_name = sb_to_sv(fn->name);
-    sb_appendf(&sb, "    .globl  "SV_Fmt"\n", SV_Arg(fn_name));
-    sb_appendf(&sb, "    .type  "SV_Fmt", @function\n", SV_Arg(fn_name));
-    sb_appendf(&sb, SV_Fmt":\n", SV_Arg(fn_name));
+    da_foreach(String_Builder, name, &fn->names) {
+      String_View fn_name = sb_to_sv(*name);
+      sb_appendf(&sb, "    .globl  "SV_Fmt"\n", SV_Arg(fn_name));
+      sb_appendf(&sb, "    .type  "SV_Fmt", @function\n", SV_Arg(fn_name));
+      sb_appendf(&sb, SV_Fmt":\n", SV_Arg(fn_name));
+    }
 
     sb_appendf(&sb, "    pushq %%rbp\n");
     sb_appendf(&sb, "    movq  %%rsp, %%rbp\n");

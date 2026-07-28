@@ -70,7 +70,6 @@ typedef struct {
   TypeExpr ret_type;
   Fn_Arg_List args;
 
-  bool is_extern;
   Stat_List body;
 } Lambda;
 
@@ -120,6 +119,7 @@ struct Def {
   String_View name;
   TypeExpr type;
   Expr *val;
+  bool is_extern;
 };
 
 struct Stat {
@@ -429,7 +429,6 @@ static Expr *compile_lambda(Lexer *l)
   if (!prefetch_expect_token(l, '{')) return false;
 
   if (!compile_block(l, &lambda.body)) return false;
-  lambda.is_extern = false;
 
   Expr *expr = arena_alloc(sizeof(*expr));
   *expr = (Expr) {
@@ -593,13 +592,7 @@ static Stat *compile_def(Lexer *l, Def_Kind kind)
     }
   } else if (l->current.kind == TOKEN_EXT) {
     lexer_next(l);
-
-    if (stat->def.type.kind == TYPE_FN) {
-      stat->def.val = lambda_of_type(&stat->def.type, stat->loc);
-      stat->def.val->lambda.is_extern = true;
-    } else {
-      TODO("support other kind of external stuff.");
-    }
+    stat->def.is_extern = true;
   }
 
   return stat;
