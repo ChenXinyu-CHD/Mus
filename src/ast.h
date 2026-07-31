@@ -457,7 +457,7 @@ static Expr *compile_simple_expr(Lexer *l)
 
   if (expr == NULL) return NULL;
 
-  if (!prefetch_not_none(l)) return NULL;
+  lexer_next(l);
   while (l->current.kind == '(') {
     Expr_List args = {0};
     if (!compile_invoke_args(l, &args)) return NULL;

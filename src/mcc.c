@@ -54,8 +54,25 @@ bool build_ir(const char *filename, const Program *prog)
   return success;
 }
 
-static char *param_regs[] = {
-  "%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"
+typedef enum {
+  RAX,
+  RBX,
+  RCX,
+  RDX,
+  RSI,
+  RDI,
+  R8,
+  R9,
+  R10,
+  R11,
+  R12,
+  R13,
+  R14,
+  R15,
+} x64_reg;
+
+static x64_reg param_regs[] = {
+  RDI, RSI, RDX, RCX, R8, R9
 };
 
 #define PARAM_REGS_CNT ARRAY_LEN(param_regs)
@@ -69,6 +86,7 @@ static void build_var_offset_x86_64_gas(VarList *vars, size_t arg_count)
   vars->memsize = 0;
   for (size_t i = 0; i < reg_args; ++i) {
     Var *arg = vars->items[i];
+    assert(!arg->is_global);
     size_t size = arg->type.size;
     assert(size != 0);
     vars->memsize = (vars->memsize + size - 1) / size * size + size;
@@ -77,6 +95,7 @@ static void build_var_offset_x86_64_gas(VarList *vars, size_t arg_count)
 
   for (size_t i = reg_args; i < vars->count; ++i) {
     Var *var = vars->items[i];
+    assert(!var->is_global);
     size_t size = var->type.size;
     assert(size != 0);
     vars->memsize = (vars->memsize + size - 1) / size * size + size;
@@ -85,78 +104,84 @@ static void build_var_offset_x86_64_gas(VarList *vars, size_t arg_count)
   vars->memsize = (vars->memsize + 15) / 16 * 16;
 }
 
-static void rax2rbp_offset(String_Builder *sb, size_t size, ptrdiff_t offset)
-{
-  switch (size) {
-  case 1:
-    sb_appendf(sb, "    movb %%al, %ld(%%rbp)\n", offset);
-    break;
-  case 2:
-    sb_appendf(sb, "    movw %%ax, %ld(%%rbp)\n", offset);
-    break;
-  case 4:
-    sb_appendf(sb, "    movl %%eax, %ld(%%rbp)\n", offset);
-    break;
-  case 8:
-    sb_appendf(sb, "    movq %%rax, %ld(%%rbp)\n", offset);
-    break;
-  default:
-    UNREACHABLE("");
-  }
-}
+static const char *regs[][9] = {
+  { [1] = "%al",   [2] = "%ax",   [4] = "%eax",  [8] = "%rax" },
+  { [1] = "%bl",   [2] = "%bx",   [4] = "%ebx",  [8] = "%rbx" },
+  { [1] = "%cl",   [2] = "%cx",   [4] = "%ecx",  [8] = "%rcx" },
+  { [1] = "%dl",   [2] = "%dx",   [4] = "%edx",  [8] = "%rdx" },
+  { [1] = "%sil",  [2] = "%si",   [4] = "%esi",  [8] = "%rsi" },
+  { [1] = "%dil",  [2] = "%di",   [4] = "%edi",  [8] = "%rdi" },
+  { [1] = "%r8b",  [2] = "%r8w",  [4] = "%r8d",  [8] = "%r8"  },
+  { [1] = "%r9b",  [2] = "%r9w",  [4] = "%r9d",  [8] = "%r9"  },
+  { [1] = "%r10b", [2] = "%r10w", [4] = "%r10d", [8] = "%r10" },
+  { [1] = "%r11b", [2] = "%r11w", [4] = "%r11d", [8] = "%r11" },
+  { [1] = "%r12b", [2] = "%r12w", [4] = "%r12d", [8] = "%r12" },
+  { [1] = "%r13b", [2] = "%r13w", [4] = "%r13d", [8] = "%r13" },
+  { [1] = "%r14b", [2] = "%r14w", [4] = "%r14d", [8] = "%r14" },
+  { [1] = "%r15b", [2] = "%r15w", [4] = "%r15d", [8] = "%r15" },
+};
 
-static void rbp_offset2rax(String_Builder *sb, size_t size, ptrdiff_t offset)
-{
-  if (size != 8) {
-    sb_appendf(sb, "    xor %%rax, %%rax\n");
-  }
-  switch (size) {
-  case 1:
-    sb_appendf(sb, "    movb %ld(%%rbp), %%al\n", offset);
-    break;
-  case 2:
-    sb_appendf(sb, "    movw %ld(%%rbp), %%ax\n", offset);
-    break;
-  case 4:
-    sb_appendf(sb, "    movl %ld(%%rbp), %%eax\n", offset);
-    break;
-  case 8:
-    sb_appendf(sb, "    movq %ld(%%rbp), %%rax\n", offset);
-    break;
-  default:
-    UNREACHABLE("");
-  }
-}
+static const char* mov_cmd[9] = {
+  [1] = "movb",
+  [2] = "movw",
+  [4] = "movl",
+  [8] = "movq",
+};
 
-static void arg2rax(String_Builder *sb, Arg *arg)
+static void arg2reg(String_Builder *sb, Arg *arg, x64_reg reg)
 {
   static_assert(__arg_kind_count == 6, "introduced more arg kinds");
   switch (arg->kind) {
   case ARG_NONE:
-    sb_appendf(sb, "    mov %%rax, %%rax\n");
+    UNREACHABLE("the argument cannot be none");
     break;
   case ARG_VAR: {
     Var *var = arg->var;
-    rbp_offset2rax(sb, var->type.size, var->offset);
+    assert(var->type.size <= 8 && mov_cmd[var->type.size] != NULL);
+    const char *mov = mov_cmd[var->type.size];
+    const char *r   = regs[reg][var->type.size];
+    if (var->is_global) {
+      sb_appendf(sb, "    %s "SV_Fmt"(%%rip), %s\n",
+                 mov, SV_Arg(var->name), r);
+    } else {
+      sb_appendf(sb, "    xor %s, %s\n",
+                 regs[reg][8], regs[reg][8]);
+      sb_appendf(sb, "    %s %ld(%%rbp), %s\n",
+                 mov, var->offset, r);
+    }
   } break;
   case ARG_FN: {
     assert(arg->fn->names.count != 0);
     String_View name = sb_to_sv(da_first(&arg->fn->names));
-    sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %%rax\n",
-               SV_Arg(name));
+    sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %s\n",
+               SV_Arg(name), regs[reg][8]);
   } break;
   case ARG_EXT: {
-    sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %%rax\n",
-               SV_Arg(arg->ext));
+    sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %s\n",
+               SV_Arg(arg->ext), regs[reg][8]);
   } break;
   case ARG_LIT_INT:
-    sb_appendf(sb, "    movq $%d, %%rax\n", arg->num_int);
+    sb_appendf(sb, "    movq $%d, %s\n", arg->num_int, regs[reg][8]);
     break;
   case ARG_LIT_STR:
-    sb_appendf(sb, "    leaq .S_%ld(%%rip), %%rax\n", arg->str_label);
+    sb_appendf(sb, "    leaq .S_%ld(%%rip), %s\n", arg->str_label, regs[reg][8]);
     break;
   default:
     UNREACHABLE("");
+  }
+}
+
+void store(String_Builder *sb, x64_reg reg, Var* var)
+{
+  assert(var->type.size <= 8 && mov_cmd[var->type.size] != NULL);
+  const char *mov = mov_cmd[var->type.size];
+  const char *r   = regs[reg][var->type.size];
+  if (var->is_global) {
+    sb_appendf(sb, "    %s %s, "SV_Fmt"(%%rip)\n",
+               mov, r, SV_Arg(var->name));
+  } else {
+    sb_appendf(sb, "    %s %s, %ld(%%rbp)\n",
+               mov, r, var->offset);
   }
 }
 
@@ -164,13 +189,43 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
 {
   String_Builder sb = {0};
 
-  sb_appendf(&sb, "    .text\n");
   sb_appendf(&sb, "    .section .rodata\n");
   for (size_t i = 0; i < prog->str_lits.count; ++i) {
     sb_appendf(&sb, ".S_%ld:\n", i);
     sb_appendf(&sb, "    .string ");
     append_str_lit(&sb, prog->str_lits.items[i]);
     da_append(&sb, '\n');
+  }
+
+  sb_appendf(&sb, "    .bss\n");
+  da_foreach(Var *, p, &prog->vars) {
+    Var *var = *p;
+    assert(var->is_global);
+    if (var->init_value.kind == ARG_NONE) {
+      sb_appendf(&sb, "    .globl "SV_Fmt"\n", SV_Arg(var->name));
+      sb_appendf(&sb, "    .bss\n");
+      sb_appendf(&sb, "    .align %ld\n", var->type.size);
+      sb_appendf(&sb, "    .type "SV_Fmt", @object\n", SV_Arg(var->name));
+      sb_appendf(&sb, "    .size "SV_Fmt", %ld\n", SV_Arg(var->name), var->type.size);
+      sb_appendf(&sb, ""SV_Fmt":\n", SV_Arg(var->name));
+      sb_appendf(&sb, "    .zero %ld\n", var->type.size);
+    } else {
+      sb_appendf(&sb, "    .globl "SV_Fmt"\n", SV_Arg(var->name));
+      sb_appendf(&sb, "    .data\n");
+      sb_appendf(&sb, "    .align %ld\n", var->type.size);
+      sb_appendf(&sb, "    .type "SV_Fmt", @object\n", SV_Arg(var->name));
+      sb_appendf(&sb, "    .size "SV_Fmt", %ld\n", SV_Arg(var->name), var->type.size);
+      sb_appendf(&sb, ""SV_Fmt":\n", SV_Arg(var->name));
+      switch (var->type.size) {
+      case 1: sb_appendf(&sb, "    .byte ");  break;
+      case 2: sb_appendf(&sb, "    .value "); break;
+      case 4: sb_appendf(&sb, "    .long ");  break;
+      case 8: sb_appendf(&sb, "    .quad ");  break;
+      default: UNREACHABLE("");
+      }
+      dump_arg(&sb, &var->init_value);
+      sb_appendf(&sb, "\n");
+    }
   }
 
   sb_appendf(&sb, "    .text\n");
@@ -194,9 +249,8 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
 
     for (size_t i = 0; i < PARAM_REGS_CNT; ++i) {
       if (i >= fn->type.fn_type.arg_types.count) break;
-      sb_appendf(&sb, "    movq %s, %%rax\n", param_regs[i]);
       Var *arg = fn->vars.items[i];
-      rax2rbp_offset(&sb, arg->type.size, arg->offset);
+      store(&sb, param_regs[i], arg);
     }
 
     for (size_t op_idx = 0; op_idx < fn->fn_body.count; ++op_idx) {
@@ -207,31 +261,52 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
       switch(op->kind) {
       case OP_INVOKE: {
         for (int i = op->invoke.args.count - 1; i >= 0; --i) {
-          arg2rax(&sb, &op->invoke.args.items[i]);
           if ((size_t)i > PARAM_REGS_CNT) {
+            arg2reg(&sb, &op->invoke.args.items[i], RAX);
             sb_appendf(&sb, "    pushq %%rax\n");
           } else {
-            sb_appendf(&sb, "    movq %%rax, %s\n", param_regs[i]);
+            arg2reg(&sb, &op->invoke.args.items[i], param_regs[i]);
           }
         }
-        arg2rax(&sb, &op->invoke.fn);
-        sb_appendf(&sb, "    call *%%rax\n");
+
+        switch (op->invoke.fn.kind) {
+        case ARG_VAR:
+          arg2reg(&sb, &op->invoke.fn, RAX);
+          sb_appendf(&sb, "    call *%%rax\n");
+          break;
+        case ARG_FN: {
+          assert(op->invoke.fn.fn->names.count != 0);
+          String_View name = sb_to_sv(da_first(&op->invoke.fn.fn->names));
+          sb_appendf(&sb, "    call "SV_Fmt"@PLT\n",
+                     SV_Arg(name));
+        } break;
+        case ARG_EXT: {
+          sb_appendf(&sb, "    call "SV_Fmt"@PLT\n",
+                     SV_Arg(op->invoke.fn.ext));
+        } break;
+        case ARG_NONE:
+        case ARG_LIT_INT:
+        case ARG_LIT_STR:
+          UNREACHABLE("this argument is not callable");
+        default:
+          UNREACHABLE("unkown argument");
+        }
 
         if (!op->invoke.ret_ignore) {
           assert(op->invoke.ret.kind == ARG_VAR);
-          Var *ret = op->invoke.ret.var;
-          rax2rbp_offset(&sb, ret->type.size, ret->offset);
+          store(&sb, RAX, op->invoke.ret.var);
         }
       } break;
       case OP_RETURN:
-        arg2rax(&sb, &op->ret_val);
+        if (op->ret_val.kind != ARG_NONE) {
+          arg2reg(&sb, &op->ret_val, RAX);
+        }
         sb_appendf(&sb, "    leave\n");
         sb_appendf(&sb, "    ret\n");
         break;
       case OP_BINOP: {
-        arg2rax(&sb, &op->binop.rhs);
-        sb_appendf(&sb, "    movq %%rax, %%rbx\n");
-        arg2rax(&sb, &op->binop.lhs);
+        arg2reg(&sb, &op->binop.lhs, RAX);
+        arg2reg(&sb, &op->binop.rhs, RBX);
 
         static_assert(__binop_kind_count == 11, "introduced more binop kinds");
         switch (op->binop.kind) {
@@ -293,19 +368,19 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
 
         assert(op->binop.dst.kind == ARG_VAR);
         Var *var = op->binop.dst.var;
-        rax2rbp_offset(&sb, var->type.size, var->offset);
+        store(&sb, RAX, var);
       }  break;
       case OP_SET_VAR: {
-        arg2rax(&sb, &op->set_var.val);
+        arg2reg(&sb, &op->set_var.val, RAX);
         assert(op->set_var.var.kind == ARG_VAR);
         Var *var = op->set_var.var.var;
-        rax2rbp_offset(&sb, var->type.size, var->offset);
+        store(&sb, RAX, var);
       } break;
       case OP_JMP:
         sb_appendf(&sb, "    jmp .fn_%ld.label_%ld\n", fn_i, op->jmp.label);
         break;
       case OP_JMP_ELSE:
-        arg2rax(&sb, &op->jmp.cond);
+        arg2reg(&sb, &op->jmp.cond, RAX);
         sb_appendf(&sb, "    cmp $0, %%rax\n");
         sb_appendf(&sb, "    je .fn_%ld.label_%ld\n", fn_i, op->jmp.label);
         break;

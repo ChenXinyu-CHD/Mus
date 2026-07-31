@@ -4,14 +4,27 @@ let main = fn() -> i64
   var v2: i32
   var v3 = 1
 
-  printf("v2 = %ld, v3 = %ld\n", v2, v3);
+  printf("v2 = %d, v3 = %d\n", v2, v3);
 
   v2 = v3
   v3 = v2 + v3
-  printf("v2 = %ld, v3 = %ld\n", v2, v3);
+  printf("v2 = %d, v3 = %d\n", v2, v3);
+
+  printf("v4 = %d, v5 = %d\n", v4, v5);
+  v4 = v2;
+  v5 = v3;
+  printf("v4 = %d, v5 = %d\n", v4, v5);
+
+  v6(v7);
 
   return 0
 }
 
+var v4 = 1 + 2;
+var v5: i32;
+
 let printf: fn(&i8, ...) -> i64 @extern
+
+var v6 = printf;
+var v7 = "hello, world\n"
 

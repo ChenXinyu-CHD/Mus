@@ -20,12 +20,7 @@ typedef enum {
 } ArgKind;
 
 typedef struct Fn Fn;
-typedef struct {
-  TypeExpr type;
-  size_t id;
-
-  ptrdiff_t offset;
-} Var;
+typedef struct Var Var;
 
 typedef struct {
   Var **items;
@@ -43,16 +38,31 @@ typedef struct {
     int num_int;
     Fn *fn;
     Var *var;
+    // TODO: support external variables
     String_View ext;
     size_t str_label;
   };
 } Arg;
+
+void dump_arg(String_Builder *sb, Arg *arg);
 
 typedef struct {
   Arg *items;
   size_t count;
   size_t capacity;
 } ArgList;
+
+struct Var {
+  TypeExpr type;
+  size_t id;
+  // mainly used for global variables
+  // the name of local variable is meaningless in assembly level
+  String_View name;
+  Arg init_value;
+  bool is_global;
+
+  ptrdiff_t offset;
+};
 
 typedef enum {
   OP_INVOKE = 0,
@@ -142,6 +152,7 @@ typedef struct {
 
 typedef struct {
   FnList fn_list;
+  VarList vars;
   struct {
     String_View *items;
     size_t count;
@@ -212,17 +223,20 @@ static SymSearchResult sym_search(Scope *sp, String_View name)
   return (SymSearchResult) {NULL, NULL};
 }
 
-static Var *alloc_var(VarList *vars, TypeExpr type)
+static Var *alloc_var(VarList *vars, String_View name, TypeExpr type, bool is_global)
 {
   Var *var = arena_alloc(sizeof(Var));
   *var = (Var) {
-    .type = type_clone(type),
+    .name      = name,
+    .id        = vars->count,
+    .type      = type_clone(type),
+    .is_global = is_global,
   };
   da_append(vars, var);
   return var;
 }
 
-static void dump_arg(String_Builder *sb, Arg *arg)
+void dump_arg(String_Builder *sb, Arg *arg)
 {
   static_assert(__arg_kind_count == 6, "introduced more arg kinds");
   switch(arg->kind) {
@@ -366,11 +380,12 @@ static bool id_to_arg(String_View name, Cursor loc, Arg *arg, Scope *sp, Gen_Con
     return NULL;
   }
 
-  if (r.value->kind == ARG_VAR) {
+  if (r.value->kind == ARG_VAR && !r.value->var->is_global) {
     if (!contains(ctx->fn->vars.items, ctx->fn->vars.count, r.value->var)) {
-      // TODO: support global variables
       pcompile_info(loc,
-                    "error: try to visit a nonlocal variable\n");
+                    "error: `"SV_Fmt"` is not visible in this scope"
+                    "because this language does not support closure.\n",
+                    SV_Arg(name));
       pcompile_info(r.value->loc,
                     "info: `"SV_Fmt"` is defined in here\n",
                     SV_Arg(name));
@@ -551,7 +566,7 @@ static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
     op->invoke.ret = (Arg) {
       .kind = ARG_VAR,
       .type = type_clone(expr->type),
-      .var = alloc_var(&ctx->fn->vars, expr->type),
+      .var = alloc_var(&ctx->fn->vars, SVLIT(""), expr->type, false),
     };
     *result = op->invoke.ret;
     return true;
@@ -602,7 +617,7 @@ static bool expr_to_ir(Expr *expr, Scope *sp, Gen_Context *ctx)
     op.binop.dst = (Arg) {
       .kind = ARG_VAR,
       .type = type_clone(expr->type),
-      .var = alloc_var(&ctx->fn->vars, expr->type),
+      .var = alloc_var(&ctx->fn->vars, SVLIT(""), expr->type, false),
     };
 
     da_append(&ctx->fn->fn_body, op);
@@ -862,20 +877,30 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
       }
     } break;
     case DEF_VAR: {
-      if (ctx->fn == NULL) TODO("implement global variables");
+      bool is_global = ctx->fn == NULL;
+      VarList *vars = is_global?
+        &ctx->prog->vars:
+        &ctx->fn->vars;
+      Var *var = alloc_var(vars, stat->def.name, stat->def.type, is_global);
       if (stat->def.val != NULL) {
-        op.kind = OP_SET_VAR;
-        if (!expr_to_arg(stat->def.val, sp, ctx, &op.set_var.val))
-          return false;
+        if (ctx->fn != NULL) { // local vars
+          if (!expr_to_arg(stat->def.val, sp, ctx, &var->init_value))
+            return false;
+        } else {               // global vars
+          if (!expr_eval(stat->def.val, sp, ctx, &var->init_value))
+            return false;
+        }
       }
 
       Arg *arg = scope_add(sp, stat->def.name, stat->loc);
       if (arg == NULL) return false;
       arg->kind = ARG_VAR;
-      arg->var  = alloc_var(&ctx->fn->vars, stat->def.type);
+      arg->var  = var;
       arg->type = type_clone(stat->def.type);
 
-      if (stat->def.val != NULL) {
+      if (stat->def.val != NULL && ctx->fn != NULL) {
+        op.kind = OP_SET_VAR;
+        op.set_var.val = var->init_value;
         if (!id_to_arg(stat->def.name, stat->loc, &op.set_var.var, sp, ctx))
           return false;
         da_append(&ctx->fn->fn_body, op);
@@ -907,7 +932,7 @@ static bool gen_ir_fn(Fn *fn, Gen_Context *ctx)
     if (value == NULL) return false;
 
     value->kind = ARG_VAR;
-    value->var  = alloc_var(&ctx->fn->vars, arg->type);
+    value->var  = alloc_var(&ctx->fn->vars, SVLIT(""), arg->type, false);
     value->type = type_clone(arg->type);
   }
 
@@ -922,9 +947,6 @@ static bool gen_ir_fn(Fn *fn, Gen_Context *ctx)
         }));
   }
 
-  for (size_t i = 0; i < fn->vars.count; ++i) {
-    fn->vars.items[i]->id = i;
-  }
   return true;
 }
 
