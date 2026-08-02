@@ -21,7 +21,8 @@
     "i8" "i16" "i32" "i64"))
 
 (defun mus-keywords ()
-  '("fn" "var" "let" "extern" "if" "else" "return"))
+  '("fn" "var" "let" "extern" "if" "else" "return"
+    "true" "false" "for" "while" "loop"))
 
 (defun mus-font-lock-keywords ()
   (list

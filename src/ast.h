@@ -102,6 +102,8 @@ typedef enum {
   STAT_ASSIGN,
   STAT_BLOCK,
   STAT_IF,
+  STAT_FOR,
+  STAT_BREAK,
   STAT_DEF,
   __stat_kind_count,
 } Stat_Kind;
@@ -139,11 +141,17 @@ struct Stat {
       Stat *on_true;
       Stat *on_false;
     } if_else;
+    struct {
+      Stat *init;
+      Expr *cond;
+      Stat *update;
+      Stat *body;
+    } for_loop;
   };
 };
 
-Stat *compile_stat(Lexer *l);
-bool compile_block(Lexer *l, Stat_List *block);
+Stat *compile_stat(Lexer *l, bool breakable);
+bool compile_block(Lexer *l, Stat_List *block, bool breakable);
 
 bool compile_file(Lexer *l, Stat_List *file);
 
@@ -428,7 +436,7 @@ static Expr *compile_lambda(Lexer *l)
 
   if (!prefetch_expect_token(l, '{')) return false;
 
-  if (!compile_block(l, &lambda.body)) return false;
+  if (!compile_block(l, &lambda.body, false)) return false;
 
   Expr *expr = arena_alloc(sizeof(*expr));
   *expr = (Expr) {
@@ -556,9 +564,16 @@ Expr *lambda_of_type(TypeExpr *type, Cursor loc)
   return expr;
 }
 
-static Stat *compile_def(Lexer *l, Def_Kind kind)
+static Stat *compile_def(Lexer *l)
 {
-  assert(l->current.kind == (kind == DEF_LET ? TOKEN_LET : TOKEN_VAR));
+  Def_Kind kind;
+  if (l->current.kind == TOKEN_LET) {
+    kind = DEF_LET;
+  } else if (l->current.kind == TOKEN_VAR) {
+    kind = DEF_VAR;
+  } else {
+    UNREACHABLE("this statement is not a def. It must be checked outside.");
+  }
   if (!prefetch_not_none(l)) return NULL;
 
   Stat *stat = arena_calloc(1, sizeof(*stat));
@@ -598,50 +613,179 @@ static Stat *compile_def(Lexer *l, Def_Kind kind)
   return stat;
 }
 
-Stat *compile_stat(Lexer *l)
+static Stat *compile_if_else(Lexer *l, bool breakable)
+{
+  assert(l->current.kind == TOKEN_IF);
+  Cursor loc = l->current.start;
+  if (!prefetch_not_none(l)) return NULL;
+
+  Stat *stat = arena_alloc(sizeof(*stat));
+  stat->kind = STAT_IF;
+  stat->loc  = loc;
+
+  stat->if_else.cond = compile_expr(l);
+  if (stat->if_else.cond == NULL) return NULL;
+
+  stat->if_else.on_true = compile_stat(l, breakable);
+  if (stat->if_else.on_true == NULL) return NULL;
+
+  stat->if_else.on_false = NULL;
+  if (l->current.kind == TOKEN_ELSE) {
+    if (!prefetch_not_none(l)) return NULL;
+    stat->if_else.on_false = compile_stat(l, breakable);
+    if (stat->if_else.on_false == NULL) return NULL;
+  }
+  return stat;
+}
+
+static Stat *compile_simple_stat(Lexer *l)
+{
+  Cursor loc = l->current.start;
+  Expr *expr = compile_expr(l);
+  if (expr == NULL) return NULL;
+
+  if (l->current.kind == '=') {
+    Stat *stat = arena_alloc(sizeof(*stat));
+    stat->kind = STAT_ASSIGN;
+    stat->loc  = loc;
+    stat->assign.dst = expr;
+
+    if (!prefetch_not_none(l)) return NULL;
+    stat->assign.val = compile_expr(l);
+    if (stat->assign.val == NULL) return NULL;
+    return stat;
+  } else if (expr->kind == EXPR_INVOKE) {
+    Stat *stat = arena_alloc(sizeof(*stat));
+    stat->kind = STAT_INVOKE;
+    stat->loc  = loc;
+    stat->invoke = expr->invoke;
+    return stat;
+  } else {
+    pcompile_info(expr->loc,
+                  "error: expect a statement, but got an expression.\n");
+    return NULL;
+  }
+}
+
+static Stat *empty_stat(Cursor loc)
+{
+  Stat *stat = arena_calloc(1, sizeof(*stat));
+  stat->kind = STAT_EMPTY;
+  stat->loc  = loc;
+  return stat;
+}
+
+static Stat *compile_loop_init(Lexer *l)
 {
   Stat *stat = NULL;
-  Cursor loc = l->current.start;
+  if (l->current.kind == ';') {
+    stat = empty_stat(l->current.start);
+  } else if (l->current.kind == TOKEN_VAR) {
+    stat = compile_def(l);
+  } else {
+    stat = compile_simple_stat(l);
+  }
+  if (stat != NULL) {
+    if (!expect_token(l, ';')) return NULL;
+    if (!prefetch_not_none(l)) return NULL;
+  }
+  return stat;
+}
 
+static Expr *compile_loop_cond(Lexer *l)
+{
+  Expr *expr = NULL;
+  if (l->current.kind == ';') {
+    expr = expr_atom((Token) {.kind = TOKEN_TRUE, .start = l->current.start});
+  } else {
+    expr = compile_expr(l);
+  }
+  if (expr != NULL) {
+    if (!expect_token(l, ';')) return NULL;
+    if (!prefetch_not_none(l)) return NULL;
+  }
+  return expr;
+}
+
+static Stat *compile_loop_update(Lexer *l)
+{
   if (l->current.kind == '{') {
+    return empty_stat(l->current.start);
+  } else {
+    return compile_simple_stat(l);
+  }
+}
+
+static Stat *compile_loops(Lexer *l)
+{
+  Token token = l->current;
+  assert(token.kind == TOKEN_FOR  ||
+         token.kind == TOKEN_LOOP ||
+         token.kind == TOKEN_WHILE);
+  if (!prefetch_not_none(l)) return NULL;
+  Stat *stat = arena_alloc(sizeof(*stat));
+
+  stat->kind = STAT_FOR;
+  if (token.kind == TOKEN_FOR) {
+    stat->for_loop.init = compile_loop_init(l);
+    if (stat->for_loop.init == NULL) return NULL;
+
+    stat->for_loop.cond = compile_loop_cond(l);
+    if (stat->for_loop.cond == NULL) return NULL;
+
+    stat->for_loop.update = compile_loop_update(l);
+    if (stat->for_loop.update == NULL) return NULL;
+
+    stat->for_loop.body = compile_stat(l, true);
+    if (stat->for_loop.body == NULL) return NULL;
+  } else if (token.kind == TOKEN_WHILE) {
+    stat->for_loop.cond = compile_expr(l);
+    if (stat->for_loop.cond == NULL) return NULL;
+
+    stat->for_loop.body = compile_stat(l, true);
+    if (stat->for_loop.body == NULL) return NULL;
+  } else {
+    stat->for_loop.body = compile_stat(l, true);
+    if (stat->for_loop.body == NULL) return NULL;
+  }
+  stat->loc = token.start;
+  return stat;
+}
+
+Stat *compile_stat(Lexer *l, bool breakable)
+{
+  Stat *stat = NULL;
+  Token token = l->current;
+
+  // empty statment is allowed
+  if (token.kind == ';') {
+    lexer_next(l);
+    return empty_stat(l->current.start);
+  }
+
+  if (token.kind == '{') {
     stat = arena_alloc(sizeof(*stat));
     stat->kind = STAT_BLOCK;
-    stat->loc  = loc;
+    stat->loc  = token.start;
 
-    if (!compile_block(l, &stat->block)) return NULL;
+    if (!compile_block(l, &stat->block, breakable)) return NULL;
     return stat;
+  } else if (token.kind == TOKEN_IF) {
+    return compile_if_else(l, breakable);
+  } else if (token.kind == TOKEN_FOR || token.kind == TOKEN_WHILE || token.kind == TOKEN_LOOP) {
+    return compile_loops(l);
   }
 
   // simple statement
-  if (l->current.kind == TOKEN_LET) {
-    stat = compile_def(l, DEF_LET);
+  if (token.kind == TOKEN_LET || token.kind == TOKEN_VAR) {
+    stat = compile_def(l);
     if (stat == NULL) return NULL;
-  } else if (l->current.kind == TOKEN_VAR) {
-    stat = compile_def(l, DEF_VAR);
-    if (stat == NULL) return NULL;
-  } else if (l->current.kind == TOKEN_IF) {
-    if (!prefetch_not_none(l)) return NULL;
-
-    stat = arena_alloc(sizeof(*stat));
-    stat->kind = STAT_IF;
-
-    stat->if_else.cond = compile_expr(l);
-    if (stat->if_else.cond == NULL) return NULL;
-
-    stat->if_else.on_true = compile_stat(l);
-    if (stat->if_else.on_true == NULL) return NULL;
-
-    stat->if_else.on_false = NULL;
-    if (l->current.kind == TOKEN_ELSE) {
-      if (!prefetch_not_none(l)) return NULL;
-      stat->if_else.on_false = compile_stat(l);
-      if (stat->if_else.on_false == NULL) return NULL;
-    }
-  } else if (l->current.kind == TOKEN_RET) {
+  } else if (token.kind == TOKEN_RET) {
     if (!prefetch_not_none(l)) return NULL;
 
     stat = arena_alloc(sizeof(*stat));
     stat->kind = STAT_RET;
+    stat->loc = token.start;
 
     if (l->current.kind == ';' || l->current.kind == '}') {
       stat->ret_val = NULL;
@@ -649,27 +793,16 @@ Stat *compile_stat(Lexer *l)
       stat->ret_val = compile_expr(l);
       if (stat->ret_val == NULL) return NULL;
     }
-  } else {
-    Expr *expr = compile_expr(l);
-    if (expr == NULL) return NULL;
-
-    if (l->current.kind == '=') {
-      stat = arena_alloc(sizeof(*stat));
-      stat->kind = STAT_ASSIGN;
-      stat->assign.dst = expr;
-
-      if (!prefetch_not_none(l)) return NULL;
-      stat->assign.val = compile_expr(l);
-      if (stat->assign.val == NULL) return NULL;
-    } else if (expr->kind == EXPR_INVOKE) {
-      stat = arena_alloc(sizeof(*stat));
-      stat->kind = STAT_INVOKE;
-      stat->invoke = expr->invoke;
-    } else {
-      pcompile_info(stat->loc,
-                    "error: expect a statement, but got an expression.\n");
-      return NULL;
+  } else if (token.kind == TOKEN_BREAK) {
+    if (!breakable) {
+      pcompile_info(token.start, "error: `break` is not allowed here.\n");
     }
+    if (!prefetch_not_none(l)) return NULL;
+    stat = arena_alloc(sizeof(*stat));
+    stat->kind = STAT_BREAK;
+    stat->loc  = token.start;
+  } else {
+    stat = compile_simple_stat(l);
   }
 
   // a simple statment can be followed with an optional ';'
@@ -682,18 +815,16 @@ Stat *compile_stat(Lexer *l)
   if (l->current.kind == ';') {
     lexer_next(l);
   }
-
-  stat->loc = loc;
   return stat;
 }
 
-bool compile_block(Lexer *l, Stat_List *block)
+bool compile_block(Lexer *l, Stat_List *block, bool breakable)
 {
   assert(l->current.kind == '{');
   if (!prefetch_not_none(l)) return false;
 
   while (l->current.kind != '}') {
-    Stat *s = compile_stat(l);
+    Stat *s = compile_stat(l, breakable);
     if (s == NULL) return false;
     da_append(block, *s);
   }
@@ -707,7 +838,7 @@ bool compile_file(Lexer *l, Stat_List *stats)
   if (!prefetch_not_none(l)) return false;
 
   while (l->current.kind != TOKEN_EOF && l->current.kind != TOKEN_ERR) {
-    Stat *s = compile_stat(l);
+    Stat *s = compile_stat(l, false);
     if (s == NULL) return false;
     da_append(stats, *s);
   }

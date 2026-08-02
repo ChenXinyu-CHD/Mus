@@ -42,6 +42,10 @@ typedef enum {
   TOKEN_FALSE,
   TOKEN_IF,
   TOKEN_ELSE,
+  TOKEN_FOR,
+  TOKEN_WHILE,
+  TOKEN_LOOP,
+  TOKEN_BREAK,
   TOKEN_EOF,
 
   // operators
@@ -185,7 +189,7 @@ String_View sv_between_cs(String_Builder sb, Cursor begin, Cursor end)
   };
 }
 
-static_assert(__token_kind_count == 128 + 30, "introduced more token kinds");
+static_assert(__token_kind_count == 128 + 34, "introduced more token kinds");
 static struct {
   int kind;
   char *str;
@@ -198,6 +202,10 @@ static struct {
   {.str = "let",     .print_name = "let",     .kind = TOKEN_LET},
   {.str = "if",      .print_name = "if",      .kind = TOKEN_IF},
   {.str = "else",    .print_name = "else",    .kind = TOKEN_ELSE},
+  {.str = "for",     .print_name = "for",     .kind = TOKEN_FOR},
+  {.str = "loop",    .print_name = "loop",    .kind = TOKEN_LOOP},
+  {.str = "while",   .print_name = "while",   .kind = TOKEN_WHILE},
+  {.str = "break",   .print_name = "break",   .kind = TOKEN_BREAK},
   {.str = "true",    .print_name = "true",    .kind = TOKEN_TRUE},
   {.str = "false",   .print_name = "false",   .kind = TOKEN_FALSE},
   // multi-charactor operators

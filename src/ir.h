@@ -289,7 +289,7 @@ void dump_op(String_Builder *sb, Op *op)
   case OP_SET_VAR:
     dump_arg(sb, &op->set_var.var);
     sb_appendf(sb, " = ");
-    dump_arg(sb, &op->set_var.var);
+    dump_arg(sb, &op->set_var.val);
     break;
   case OP_BINOP:
     dump_arg(sb, &op->binop.dst);
@@ -349,6 +349,11 @@ typedef struct {
 
   FnList ungenerated;
   Known_Fn known;
+  struct {
+    size_t *items;
+    size_t count;
+    size_t capacity;
+  } breaks;
 } Gen_Context;
 
 static Fn *push_fn(Lambda* lambda, Gen_Context *ctx, Scope *sp)
@@ -753,7 +758,7 @@ static bool expr_eval(Expr* expr, Scope *sp, Gen_Context *ctx, Arg *val)
 static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
 {
   Op op = { .loc = stat->loc };
-  static_assert(__stat_kind_count == 7, "introduced more stat kinds");
+  static_assert(__stat_kind_count == 9, "introduced more stat kinds");
   switch (stat->kind) {
   case STAT_INVOKE: {
     op.kind = OP_INVOKE;
@@ -818,6 +823,54 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
       size_t end_label = append_op_label(&ctx->fn->fn_body);
       ctx->fn->fn_body.items[jmp_end].jmp.label = end_label;
     }
+  } break;
+  case STAT_FOR: {
+    Scope *new_sp = new_scope(sp);
+    if (stat->for_loop.init != NULL) {
+      if (!stat_to_ir(stat->for_loop.init, new_sp, ctx)) return false;
+    }
+
+    size_t loop_label = append_op_label(&ctx->fn->fn_body);
+
+    size_t break_begin = ctx->breaks.count;
+    if (stat->for_loop.cond != NULL) {
+      if (!detect_expr_type(stat->for_loop.cond, new_sp, type_bool()))
+        return false;
+      Arg cond = {0};
+      if (!expr_to_arg(stat->for_loop.cond, new_sp, ctx, &cond)) return false;
+
+      size_t jmp_break = append_op(&ctx->fn->fn_body, (Op) {
+          .kind = OP_JMP_ELSE,
+          .jmp = {.cond = cond},
+        });
+      da_append(&ctx->breaks, jmp_break);
+    }
+
+    assert(stat->for_loop.body != NULL);
+    if (!stat_to_ir(stat->for_loop.body, new_sp, ctx)) return false;
+
+    if (stat->for_loop.update != NULL) {
+      if (!stat_to_ir(stat->for_loop.update, new_sp, ctx)) return false;
+    }
+
+    append_op(&ctx->fn->fn_body, (Op) {
+        .kind = OP_JMP,
+        .jmp = {.label = loop_label},
+      });
+    size_t break_label = append_op_label(&ctx->fn->fn_body);
+    for (size_t i = break_begin; i < ctx->breaks.count; ++i) {
+      size_t break_jmp = ctx->breaks.items[i];
+      Op *op = &ctx->fn->fn_body.items[break_jmp];
+      assert(op->kind == OP_JMP || op->kind == OP_JMP_ELSE);
+      op->jmp.label = break_label;
+    }
+    ctx->breaks.count = break_begin;
+  } break;
+  case STAT_BREAK: {
+    size_t break_jmp = append_op(&ctx->fn->fn_body, (Op) {
+        .kind = OP_JMP,
+      });
+    da_append(&ctx->breaks, break_jmp);
   } break;
   case STAT_ASSIGN: {
     op.kind = OP_SET_VAR;
@@ -939,6 +992,7 @@ static bool gen_ir_fn(Fn *fn, Gen_Context *ctx)
   da_foreach (Stat, stat, &lambda->body) {
     if (!stat_to_ir(stat, fn_ctx->sp, ctx)) return false;
   }
+  assert(ctx->breaks.count == 0);
 
   if (fn->fn_body.count == 0 || da_last(&fn->fn_body).kind != OP_RETURN) {
     da_append(&fn->fn_body, ((Op) {
