@@ -12,7 +12,7 @@ let main = fn() -> i32 {
 
     printf("square:\n");
     for var i: i64 = 2; i < 1000000; i = i * i
-        printf("%d\n", i);
+        printf("%ld\n", i);
 
     printf("fact1:\n");
     var n = 1

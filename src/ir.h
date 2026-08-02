@@ -501,6 +501,17 @@ static bool detect_binop_type(Expr *expr, Scope *sp, TypeExpr expected)
       fputc('\n', stderr);
       ok = false;
     }
+
+    if (!type_eq(&lhs->type, &rhs->type)) {
+      TypeKind kind = lhs->type.kind == TYPE_UINT && rhs->type.kind == TYPE_UINT?
+        TYPE_UINT : TYPE_INT;
+      size_t size = lhs->type.size > rhs->type.size?
+        lhs->type.size : rhs->type.size;
+      TypeExpr cast = {.kind = kind, .size = size};
+
+      if (!detect_expr_type(lhs, sp, cast)) ok = false;
+      if (!detect_expr_type(rhs, sp, cast)) ok = false;
+    }
     expr->type = type_bool();
   } break;
   default: UNREACHABLE("");

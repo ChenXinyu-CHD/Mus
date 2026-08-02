@@ -1,10 +1,12 @@
 on true, without else: ok
 on false, with else: ok
 on false, without else: ok
+== : ok
+!= : ok
 > : ok
+< : ok
 >= : ok
 <= : ok
-< : ok
 block on true, without else:ok
 block on true, with else:ok
 block on false, with else:ok

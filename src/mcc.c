@@ -121,15 +121,17 @@ static const char *regs[][9] = {
   { [1] = "%r15b", [2] = "%r15w", [4] = "%r15d", [8] = "%r15" },
 };
 
-static const char* mov_cmd[9] = {
-  [1] = "movb",
-  [2] = "movw",
-  [4] = "movl",
-  [8] = "movq",
+static const char cmd_suff[9] = {
+  [1] = 'b',
+  [2] = 'w',
+  [4] = 'l',
+  [8] = 'q',
 };
 
-static void arg2reg(String_Builder *sb, Arg *arg, x64_reg reg)
+static size_t arg2reg(String_Builder *sb, Arg *arg, x64_reg reg)
 {
+  size_t size = arg->type.size;
+  assert(size <= 8);
   static_assert(__arg_kind_count == 6, "introduced more arg kinds");
   switch (arg->kind) {
   case ARG_NONE:
@@ -137,54 +139,71 @@ static void arg2reg(String_Builder *sb, Arg *arg, x64_reg reg)
     break;
   case ARG_VAR: {
     Var *var = arg->var;
-    assert(var->type.size <= 8 && mov_cmd[var->type.size] != NULL);
-    const char *mov = mov_cmd[var->type.size];
-    const char *r   = regs[reg][var->type.size];
+    assert(var->type.size <= 8 && cmd_suff[var->type.size] != 0);
+    const char  s = cmd_suff[var->type.size];
+    const char *r = regs[reg][var->type.size];
     if (var->is_global) {
-      sb_appendf(sb, "    %s "SV_Fmt"(%%rip), %s\n",
-                 mov, SV_Arg(var->name), r);
+      sb_appendf(sb, "    mov%c "SV_Fmt"(%%rip), %s\n",
+                 s, SV_Arg(var->name), r);
     } else {
-      sb_appendf(sb, "    xor %s, %s\n",
-                 regs[reg][8], regs[reg][8]);
-      sb_appendf(sb, "    %s %ld(%%rbp), %s\n",
-                 mov, var->offset, r);
+      sb_appendf(sb, "    mov%c %ld(%%rbp), %s\n",
+                 s, var->offset, r);
+    }
+    if (var->type.size != size) {
+      assert(size > var->type.size);
+      if (arg->type.kind == TYPE_INT) {
+        sb_appendf(sb, "    movs%c%c %s, %s",
+                   s, cmd_suff[size], r, regs[reg][size]);
+      } else if (arg->type.kind == TYPE_UINT) {
+        sb_appendf(sb, "    movz%c%c %s, %s",
+                   s, cmd_suff[size], r, regs[reg][size]);
+      } else {
+        UNREACHABLE("only integers can be cast");
+      }
     }
   } break;
   case ARG_FN: {
     assert(arg->fn->names.count != 0);
     String_View name = sb_to_sv(da_first(&arg->fn->names));
     sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %s\n",
-               SV_Arg(name), regs[reg][8]);
+               SV_Arg(name), regs[reg][size]);
   } break;
   case ARG_EXT: {
     sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %s\n",
-               SV_Arg(arg->ext), regs[reg][8]);
+               SV_Arg(arg->ext), regs[reg][size]);
   } break;
-  case ARG_LIT_INT:
-    sb_appendf(sb, "    movq $%d, %s\n", arg->num_int, regs[reg][8]);
-    break;
+  case ARG_LIT_INT: {
+    sb_appendf(sb, "    mov%c $%d, %s\n",
+               cmd_suff[size],
+               arg->num_int, regs[reg][size]);
+  } break;
   case ARG_LIT_STR:
-    sb_appendf(sb, "    leaq .S_%ld(%%rip), %s\n", arg->str_label, regs[reg][8]);
+    sb_appendf(sb, "    leaq .S_%ld(%%rip), %s\n", arg->str_label, regs[reg][size]);
     break;
   default:
     UNREACHABLE("");
   }
+  return size;
 }
 
 void store(String_Builder *sb, x64_reg reg, Var* var)
 {
-  assert(var->type.size <= 8 && mov_cmd[var->type.size] != NULL);
-  const char *mov = mov_cmd[var->type.size];
+  assert(var->type.size <= 8 && cmd_suff[var->type.size] != 0);
+  const char  s = cmd_suff[var->type.size];
   const char *r   = regs[reg][var->type.size];
   if (var->is_global) {
-    sb_appendf(sb, "    %s %s, "SV_Fmt"(%%rip)\n",
-               mov, r, SV_Arg(var->name));
+    sb_appendf(sb, "    mov%c %s, "SV_Fmt"(%%rip)\n",
+               s, r, SV_Arg(var->name));
   } else {
-    sb_appendf(sb, "    %s %s, %ld(%%rbp)\n",
-               mov, r, var->offset);
+    sb_appendf(sb, "    mov%c %s, %ld(%%rbp)\n",
+               s, r, var->offset);
   }
 }
 
+// references:
+// -- Instructions: https://www.felixcloutier.com/x86/
+// -- x86 flags : https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/x86-architecture?source=recommendations#x86-flags
+// -- regiters : https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/x64-architecture
 String_Builder gen_code_x86_64_gas(const Program *prog)
 {
   String_Builder sb = {0};
@@ -305,63 +324,68 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         sb_appendf(&sb, "    ret\n");
         break;
       case OP_BINOP: {
-        arg2reg(&sb, &op->binop.lhs, RAX);
-        arg2reg(&sb, &op->binop.rhs, RBX);
+        size_t sizel = arg2reg(&sb, &op->binop.lhs, RAX);
+        size_t sizer = arg2reg(&sb, &op->binop.rhs, RBX);
+        if (sizel != sizer) {
+          pcompile_info(op->loc, "sizel = %ld, sizer = %ld\n", sizel, sizer);
+        }
+        assert(sizel == sizer);
+        char s = cmd_suff[sizel];
 
         static_assert(__binop_kind_count == 11, "introduced more binop kinds");
         switch (op->binop.kind) {
         case BINOP_ADD:
-          sb_appendf(&sb, "    addq %%rbx, %%rax\n");
+          sb_appendf(&sb, "    add%c %s, %s\n",
+                     s, regs[RBX][sizer], regs[RAX][sizel]);
           break;
         case BINOP_SUB:
-          sb_appendf(&sb, "    subq %%rbx, %%rax\n");
+          sb_appendf(&sb, "    sub%c %s, %s\n",
+                     s, regs[RBX][sizer], regs[RAX][sizel]);
           break;
         case BINOP_MUL:
-          sb_appendf(&sb, "    mulq %%rbx\n");
+          sb_appendf(&sb, "    mul%c %s\n",
+                     s, regs[RBX][sizer]);
           break;
         case BINOP_DIV:
-          sb_appendf(&sb, "    divq %%rbx\n");
+          sb_appendf(&sb, "    div%c %s\n",
+                     s, regs[RBX][sizer]);
           break;
         case BINOP_MOD:
-          sb_appendf(&sb, "    divq %%rbx\n");
-          sb_appendf(&sb, "    movq %%rdx, %%rax\n");
+          sb_appendf(&sb, "    div%c %s\n",
+                     s, regs[RBX][sizer]);
+          sb_appendf(&sb, "    mov%c %s, %s\n",
+                     s, regs[RDX][sizer], regs[RAX][sizel]);
           break;
         case BINOP_EQ:
-          sb_appendf(&sb, "    cmp %%rbx, %%rax\n");
-          sb_appendf(&sb, "    movq $0, %%rax\n");
-          sb_appendf(&sb, "    movq $1, %%rbx\n");
-          sb_appendf(&sb, "    cmoveq %%rbx, %%rax\n");
+          sb_appendf(&sb, "    cmp %s, %s\n",
+                     regs[RBX][sizer], regs[RAX][sizel]);
+          sb_appendf(&sb, "    sete %%al\n");
           break;
         case BINOP_NEQ:
-          sb_appendf(&sb, "    cmp %%rbx, %%rax\n");
-          sb_appendf(&sb, "    movq $0, %%rax\n");
-          sb_appendf(&sb, "    movq $1, %%rbx\n");
-          sb_appendf(&sb, "    cmovneq %%rbx, %%rax\n");
+          sb_appendf(&sb, "    cmp %s, %s\n",
+                     regs[RBX][sizer], regs[RAX][sizel]);
+          sb_appendf(&sb, "    setne %%al\n");
           break;
           // TODO: add support for unsigned integers
         case BINOP_LS:
-          sb_appendf(&sb, "    cmp %%rbx, %%rax\n");
-          sb_appendf(&sb, "    movq $0, %%rax\n");
-          sb_appendf(&sb, "    movq $1, %%rbx\n");
-          sb_appendf(&sb, "    cmovlq %%rbx, %%rax\n");
+          sb_appendf(&sb, "    cmp %s, %s\n",
+                     regs[RBX][sizer], regs[RAX][sizel]);
+          sb_appendf(&sb, "    setl %%al\n");
           break;
         case BINOP_GT:
-          sb_appendf(&sb, "    cmp %%rbx, %%rax\n");
-          sb_appendf(&sb, "    movq $0, %%rax\n");
-          sb_appendf(&sb, "    movq $1, %%rbx\n");
-          sb_appendf(&sb, "    cmovgq %%rbx, %%rax\n");
+          sb_appendf(&sb, "    cmp %s, %s\n",
+                     regs[RBX][sizer], regs[RAX][sizel]);
+          sb_appendf(&sb, "    setg %%al\n");
           break;
         case BINOP_LE:
-          sb_appendf(&sb, "    cmp %%rbx, %%rax\n");
-          sb_appendf(&sb, "    movq $0, %%rax\n");
-          sb_appendf(&sb, "    movq $1, %%rbx\n");
-          sb_appendf(&sb, "    cmovleq %%rbx, %%rax\n");
+          sb_appendf(&sb, "    cmp %s, %s\n",
+                     regs[RBX][sizer], regs[RAX][sizel]);
+          sb_appendf(&sb, "    setle %%al\n");
           break;
         case BINOP_GE:
-          sb_appendf(&sb, "    cmp %%rbx, %%rax\n");
-          sb_appendf(&sb, "    movq $0, %%rax\n");
-          sb_appendf(&sb, "    movq $1, %%rbx\n");
-          sb_appendf(&sb, "    cmovgeq %%rbx, %%rax\n");
+          sb_appendf(&sb, "    cmp %s, %s\n",
+                     regs[RBX][sizer], regs[RAX][sizel]);
+          sb_appendf(&sb, "    setge %%al\n");
           break;
         default: UNREACHABLE("");
         }
@@ -379,11 +403,11 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
       case OP_JMP:
         sb_appendf(&sb, "    jmp .fn_%ld.label_%ld\n", fn_i, op->jmp.label);
         break;
-      case OP_JMP_ELSE:
-        arg2reg(&sb, &op->jmp.cond, RAX);
-        sb_appendf(&sb, "    cmp $0, %%rax\n");
+      case OP_JMP_ELSE: {
+        size_t size = arg2reg(&sb, &op->jmp.cond, RAX);
+        sb_appendf(&sb, "    cmp $0, %s\n", regs[RAX][size]);
         sb_appendf(&sb, "    je .fn_%ld.label_%ld\n", fn_i, op->jmp.label);
-        break;
+      } break;
       case OP_LABEL:
         sb_appendf(&sb, ".fn_%ld.label_%ld:\n", fn_i, op_idx);
         break;

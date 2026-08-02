@@ -11,21 +11,29 @@ let main = fn() -> i32
     if false printf("error\n")
     printf("ok\n")
 
-    printf("> : ");
-    if 1 > 2 printf("error\n")
-    else     printf("ok\n")
-
-    printf(">= : ");
-    if 1 >= 2 printf("error\n")
+    printf("== : ");
+    if 1 == 2 printf("error\n")
     else      printf("ok\n")
 
-    printf("<= : ");
-    if 1 <= 2 printf("ok\n")
+    printf("!= : ");
+    if 1 != 2 printf("ok\n")
     else      printf("error\n")
 
+    printf("> : ");
+    if 0 > 1 - 2 printf("ok\n")
+    else         printf("error\n")
+
     printf("< : ");
-    if 1 < 2 printf("ok\n")
-    else     printf("error\n")
+    if 1 - 2 < 0 printf("ok\n")
+    else         printf("error\n")
+
+    printf(">= : ");
+    if 0 >= 0 printf("ok\n")
+    else      printf("error\n")
+
+    printf("<= : ");
+    if 0 <= 0 printf("ok\n")
+    else      printf("error\n")
 
     printf("block on true, without else:");
     if true {
