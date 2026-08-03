@@ -350,7 +350,7 @@ static Expr *expr_atom(Token token)
   case TOKEN_INT:
     expr->kind    = EXPR_INT;
     expr->integer = sv_to_int(token.str);
-    expr->type    = type_int(true, 4);
+    expr->type    = type_int(TYPE_INT, 4);
     return expr;
   case TOKEN_TRUE:
     expr->kind    = EXPR_INT;

@@ -190,7 +190,7 @@ void store(String_Builder *sb, x64_reg reg, Var* var)
 {
   assert(var->type.size <= 8 && cmd_suff[var->type.size] != 0);
   const char  s = cmd_suff[var->type.size];
-  const char *r   = regs[reg][var->type.size];
+  const char *r = regs[reg][var->type.size];
   if (var->is_global) {
     sb_appendf(sb, "    mov%c %s, "SV_Fmt"(%%rip)\n",
                s, r, SV_Arg(var->name));
@@ -324,68 +324,91 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         sb_appendf(&sb, "    ret\n");
         break;
       case OP_BINOP: {
-        size_t sizel = arg2reg(&sb, &op->binop.lhs, RAX);
-        size_t sizer = arg2reg(&sb, &op->binop.rhs, RBX);
-        if (sizel != sizer) {
-          pcompile_info(op->loc, "sizel = %ld, sizer = %ld\n", sizel, sizer);
-        }
-        assert(sizel == sizer);
-        char s = cmd_suff[sizel];
+        assert(type_eq(&op->binop.lhs.type, &op->binop.rhs.type));
+        TypeKind type_kind = op->binop.lhs.type.kind;
+        size_t   size      = op->binop.lhs.type.size;
+        arg2reg(&sb, &op->binop.lhs, RAX);
+        arg2reg(&sb, &op->binop.rhs, RBX);
+        char s = cmd_suff[size];
 
         static_assert(__binop_kind_count == 11, "introduced more binop kinds");
         switch (op->binop.kind) {
         case BINOP_ADD:
           sb_appendf(&sb, "    add%c %s, %s\n",
-                     s, regs[RBX][sizer], regs[RAX][sizel]);
+                     s, regs[RBX][size], regs[RAX][size]);
           break;
         case BINOP_SUB:
           sb_appendf(&sb, "    sub%c %s, %s\n",
-                     s, regs[RBX][sizer], regs[RAX][sizel]);
+                     s, regs[RBX][size], regs[RAX][size]);
           break;
         case BINOP_MUL:
           sb_appendf(&sb, "    mul%c %s\n",
-                     s, regs[RBX][sizer]);
+                     s, regs[RBX][size]);
           break;
         case BINOP_DIV:
           sb_appendf(&sb, "    div%c %s\n",
-                     s, regs[RBX][sizer]);
+                     s, regs[RBX][size]);
           break;
         case BINOP_MOD:
           sb_appendf(&sb, "    div%c %s\n",
-                     s, regs[RBX][sizer]);
+                     s, regs[RBX][size]);
           sb_appendf(&sb, "    mov%c %s, %s\n",
-                     s, regs[RDX][sizer], regs[RAX][sizel]);
+                     s, regs[RDX][size], regs[RAX][size]);
           break;
         case BINOP_EQ:
           sb_appendf(&sb, "    cmp %s, %s\n",
-                     regs[RBX][sizer], regs[RAX][sizel]);
+                     regs[RBX][size], regs[RAX][size]);
           sb_appendf(&sb, "    sete %%al\n");
           break;
         case BINOP_NEQ:
           sb_appendf(&sb, "    cmp %s, %s\n",
-                     regs[RBX][sizer], regs[RAX][sizel]);
+                     regs[RBX][size], regs[RAX][size]);
           sb_appendf(&sb, "    setne %%al\n");
           break;
           // TODO: add support for unsigned integers
         case BINOP_LS:
           sb_appendf(&sb, "    cmp %s, %s\n",
-                     regs[RBX][sizer], regs[RAX][sizel]);
-          sb_appendf(&sb, "    setl %%al\n");
+                     regs[RBX][size], regs[RAX][size]);
+          if (type_kind == TYPE_INT) {
+            sb_appendf(&sb, "    setl %%al\n");
+          } else if (type_kind == TYPE_UINT){
+            sb_appendf(&sb, "    setb %%al\n");
+          } else {
+            UNREACHABLE("unexpected type");
+          }
           break;
         case BINOP_GT:
           sb_appendf(&sb, "    cmp %s, %s\n",
-                     regs[RBX][sizer], regs[RAX][sizel]);
-          sb_appendf(&sb, "    setg %%al\n");
+                     regs[RBX][size], regs[RAX][size]);
+          if (type_kind == TYPE_INT) {
+            sb_appendf(&sb, "    setg %%al\n");
+          } else if (type_kind == TYPE_UINT){
+            sb_appendf(&sb, "    seta %%al\n");
+          } else {
+            UNREACHABLE("unexpected type");
+          }
           break;
         case BINOP_LE:
           sb_appendf(&sb, "    cmp %s, %s\n",
-                     regs[RBX][sizer], regs[RAX][sizel]);
-          sb_appendf(&sb, "    setle %%al\n");
+                     regs[RBX][size], regs[RAX][size]);
+          if (type_kind == TYPE_INT) {
+            sb_appendf(&sb, "    setle %%al\n");
+          } else if (type_kind == TYPE_UINT){
+            sb_appendf(&sb, "    setbe %%al\n");
+          } else {
+            UNREACHABLE("unexpected type");
+          }
           break;
         case BINOP_GE:
           sb_appendf(&sb, "    cmp %s, %s\n",
-                     regs[RBX][sizer], regs[RAX][sizel]);
-          sb_appendf(&sb, "    setge %%al\n");
+                     regs[RBX][size], regs[RAX][size]);
+          if (type_kind == TYPE_INT) {
+            sb_appendf(&sb, "    setge %%al\n");
+          } else if (type_kind == TYPE_UINT){
+            sb_appendf(&sb, "    setae %%al\n");
+          } else {
+            UNREACHABLE("unexpected type");
+          }
           break;
         default: UNREACHABLE("");
         }

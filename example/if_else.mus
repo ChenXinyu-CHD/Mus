@@ -1,5 +1,4 @@
-let main = fn() -> i32
-{
+let main = fn() -> i32 {
     printf("on true, without else: ");
     if true  printf("ok\n");
 
@@ -19,6 +18,8 @@ let main = fn() -> i32
     if 1 != 2 printf("ok\n")
     else      printf("error\n")
 
+    printf("signed int compare tests:\n");
+
     printf("> : ");
     if 0 > 1 - 2 printf("ok\n")
     else         printf("error\n")
@@ -28,12 +29,33 @@ let main = fn() -> i32
     else         printf("error\n")
 
     printf(">= : ");
-    if 0 >= 0 printf("ok\n")
-    else      printf("error\n")
+    if 0 >= 0 - 1 printf("ok\n")
+    else          printf("error\n")
 
     printf("<= : ");
-    if 0 <= 0 printf("ok\n")
-    else      printf("error\n")
+    if 0 - 1 <= 0 printf("ok\n")
+    else          printf("error\n")
+
+    printf("unsigned int compare tests:\n");
+
+    # overflow and yield a positive integer because it is unsigned
+    var u: u32 = 1 - 2;
+    printf("u = %u\n", u);
+    printf("> : ");
+    if 0 > u  printf("error\n")
+    else      printf("ok\n")
+
+    printf("< : ");
+    if u < 0 printf("error\n")
+    else     printf("ok\n")
+
+    printf(">= : ");
+    if 0 >= u printf("error\n")
+    else      printf("ok\n")
+
+    printf("<= : ");
+    if u <= 0 printf("error\n")
+    else      printf("ok\n")
 
     printf("block on true, without else:");
     if true {

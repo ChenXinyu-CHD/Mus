@@ -47,7 +47,6 @@ TypeExpr type_clone(TypeExpr t);
 void dump_type_expr(TypeExpr *type, FILE *stream);
 // return true if lhs is exactly equals to rhs.
 bool type_eq(const TypeExpr *lhs, const TypeExpr *rhs);
-bool type_matched(TypeExpr *required, TypeExpr *actual);
 
 void destroy_type_expr(TypeExpr* type);
 
@@ -126,17 +125,6 @@ TypeExpr type_clone(TypeExpr t)
   }
 
   return result;
-}
-
-bool type_matched(TypeExpr *required, TypeExpr *actual)
-{
-  if (required->kind == TYPE_INT || required->kind == TYPE_UINT) {
-    if (required->size < actual->size) return false;
-    if (required->kind == TYPE_UINT && actual->kind == TYPE_INT) return false;
-    return true;
-  } else {
-    return type_eq(required, actual);
-  }
 }
 
 bool type_eq(const TypeExpr *lhs, const TypeExpr *rhs)

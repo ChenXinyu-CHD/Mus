@@ -408,13 +408,20 @@ static bool invoke_available(Cursor loc, AST_Invoke *invoke, Scope *sp);
 
 static bool detect_binop_type(Expr *expr, Scope *sp, TypeExpr expected);
 
+static bool is_type_int(TypeKind kind)
+{
+  return kind == TYPE_UINT || kind == TYPE_INT;
+}
+
+// TODO: implement a better type checker, this one is too ugly
+// currently, intergers will be converted implicitly, and it is very dangerous.
 static bool detect_expr_type(Expr *expr, Scope *sp, TypeExpr expected)
 {
   if (expr->type.kind == TYPE_UNKNOWN) {
     static_assert(__expr_kind_count == 6, "introduced more expr kinds");
     switch (expr->kind) {
     case EXPR_BINOP:
-      return detect_binop_type(expr, sp, expected);
+      if (!detect_binop_type(expr, sp, expected)) return false;
       break;
     case EXPR_NAME: {
       SymSearchResult r = sym_search(sp, expr->name);
@@ -439,22 +446,31 @@ static bool detect_expr_type(Expr *expr, Scope *sp, TypeExpr expected)
     }
   }
 
-  if (expected.kind == TYPE_INT || expected.kind == TYPE_UINT) {
-    if (expr->kind == EXPR_INT && expr->type.kind != TYPE_BOOL) {
-      expr->type = expected;
+  if (is_type_int(expr->type.kind) && is_type_int(expected.kind)) {
+    TypeExpr *actual = &expr->type;
+    if (expr->kind == EXPR_INT) {
+      *actual = expected;
+    } else if (actual->size < expected.size) {
+      if (actual->kind == expected.kind || actual->kind == TYPE_UINT) {
+        *actual = expected;
+      }
     }
   }
 
-  if (expected.kind != TYPE_UNKNOWN && !type_matched(&expected, &expr->type)) {
+  if (expr->type.kind == TYPE_UNKNOWN) {
+    pcompile_info(expr->loc, "error: cannot detect the type of this expression\n");
+    return false;
+  }
+
+  if (expected.kind != TYPE_UNKNOWN && !type_eq(&expected, &expr->type)) {
     pcompile_info(expr->loc, "error: here expected a ");
     dump_type_expr(&expected, stderr);
     fprintf(stderr, ", but got ");
     dump_type_expr(&expr->type, stderr);
     fputc('\n', stderr);
     return false;
-  } else {
-    return true;
   }
+  return true;
 }
 
 static bool detect_binop_type(Expr *expr, Scope *sp, TypeExpr expected)
@@ -474,10 +490,34 @@ static bool detect_binop_type(Expr *expr, Scope *sp, TypeExpr expected)
   case BINOP_MOD: {
     if (!detect_expr_type(lhs, sp, expected)) ok = false;
     if (!detect_expr_type(rhs, sp, expected)) ok = false;
-    size_t maxsize = lhs->type.size > rhs->type.size?
-      lhs->type.size : rhs->type.size;
-    bool sign = lhs->type.kind == TYPE_INT || rhs->type.kind == TYPE_INT;
-    expr->type = type_int(sign, maxsize);
+
+    if (lhs->type.kind != TYPE_INT && lhs->type.kind != TYPE_UINT) {
+      pcompile_info(lhs->loc, "error: here expected an integer, but got a ");
+      dump_type_expr(&lhs->type, stderr);
+      fputc('\n', stderr);
+      ok = false;
+    }
+
+    if (rhs->type.kind != TYPE_INT && rhs->type.kind != TYPE_UINT) {
+      pcompile_info(rhs->loc, "error: here expected an integer, but got a ");
+      dump_type_expr(&rhs->type, stderr);
+      fputc('\n', stderr);
+      ok = false;
+    }
+
+    if (!is_type_int(expected.kind)) {
+      TypeKind kind = lhs->type.kind == TYPE_UINT || rhs->type.kind == TYPE_UINT?
+        TYPE_UINT : TYPE_INT;
+      size_t size = lhs->type.size > rhs->type.size?
+        lhs->type.size : rhs->type.size;
+      TypeExpr cast = {.kind = kind, .size = size};
+
+      if (!detect_expr_type(lhs, sp, cast)) ok = false;
+      if (!detect_expr_type(rhs, sp, cast)) ok = false;
+      expr->type = cast;
+    } else {
+      expr->type = expected;
+    }
   } break;
   case BINOP_EQ:
   case BINOP_NEQ:
@@ -503,7 +543,7 @@ static bool detect_binop_type(Expr *expr, Scope *sp, TypeExpr expected)
     }
 
     if (!type_eq(&lhs->type, &rhs->type)) {
-      TypeKind kind = lhs->type.kind == TYPE_UINT && rhs->type.kind == TYPE_UINT?
+      TypeKind kind = lhs->type.kind == TYPE_UINT || rhs->type.kind == TYPE_UINT?
         TYPE_UINT : TYPE_INT;
       size_t size = lhs->type.size > rhs->type.size?
         lhs->type.size : rhs->type.size;

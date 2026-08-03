@@ -3,6 +3,13 @@ on false, with else: ok
 on false, without else: ok
 == : ok
 != : ok
+signed int compare tests:
+> : ok
+< : ok
+>= : ok
+<= : ok
+unsigned int compare tests:
+u = 4294967295
 > : ok
 < : ok
 >= : ok
