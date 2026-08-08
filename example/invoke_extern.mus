@@ -1,12 +1,11 @@
-let putchar: fn(i64) -> i64 @extern
+let putchar: fn(i64) -> i64 @extern;
 
-let main = fn() -> i64
-{
-    putchar(72)   # H
-    putchar(101)  # e
-    putchar(108)  # l
-    putchar(108); # l
-    putchar(111)  # o
-    putchar(10)   # \n
-    return 0
-}
+let main = fn() -> i64 {
+    putchar(72);   # H
+    putchar(101);  # e
+    putchar(108);  # l
+    putchar(108);  # l
+    putchar(111);  # o
+    putchar(10);   # \n
+    return 0;
+};

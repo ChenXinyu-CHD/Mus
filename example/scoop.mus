@@ -1,11 +1,10 @@
-let main = fn() -> i32
-{
+let main = fn() -> i32 {
     let bar = fn() -> i32 {
         return 114514;
-    }
+    };
     let foo = fn() -> i32 {
         return bar();
-    }
+    };
     var a = foo();
     {
         printf("a = %d\n", a);
@@ -16,7 +15,7 @@ let main = fn() -> i32
     }
     printf("a = %d\n", a);
     return 0;
-}
+};
 
 let printf: fn(fmt: &i8, ...) -> i32 @extern;
 

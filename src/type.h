@@ -26,12 +26,17 @@ typedef struct {
   bool va_args;
 } FnType;
 
+typedef struct {
+  TypeExpr *inner;
+  bool mutable;
+} PtrType;
+
 struct TypeExpr {
   TypeKind kind;
   size_t size;
 
   union {
-    TypeExpr *ref_type;
+    PtrType ptr;
     FnType fn_type;
   };
 };
@@ -40,7 +45,7 @@ TypeExpr type_bool();
 TypeExpr type_unknown();
 TypeExpr type_int(bool sign, size_t size);
 TypeExpr type_fn(TypeExpr ret_type, TypeList arg_types, bool va_args);
-TypeExpr type_ptr(TypeExpr inner);
+TypeExpr type_ptr(TypeExpr inner, bool mutable);
 
 TypeExpr type_clone(TypeExpr t);
 
@@ -71,14 +76,17 @@ TypeExpr type_int(bool sign, size_t size)
   return (TypeExpr) {.kind = sign ? TYPE_INT : TYPE_UINT, .size = size};
 }
 
-TypeExpr type_ptr(TypeExpr inner)
+TypeExpr type_ptr(TypeExpr inner, bool mutable)
 {
   TypeExpr type = {
     .kind = TYPE_PTR,
     .size = 8,
-    .ref_type = arena_alloc(sizeof(TypeExpr))
+    .ptr = {
+      .inner = arena_alloc(sizeof(TypeExpr)),
+      .mutable = mutable,
+    }
   };
-  *type.ref_type = inner;
+  *type.ptr.inner = inner;
 
   return type;
 }
@@ -94,7 +102,7 @@ TypeExpr type_fn(TypeExpr ret_type, TypeList arg_types, bool va_args)
       .va_args = va_args,
     },
   };
-  *type.ref_type = ret_type;
+  *type.fn_type.ret_type = ret_type;
 
   return type;
 }
@@ -112,7 +120,7 @@ TypeExpr type_clone(TypeExpr t)
     result = t;
     break;
   case TYPE_PTR:
-    result = type_ptr(type_clone(*t.ref_type));
+    result = type_ptr(type_clone(*t.ptr.inner), t.ptr.mutable);
     break;
   case TYPE_FN: {
     TypeList arg_types = {0};
@@ -140,7 +148,8 @@ bool type_eq(const TypeExpr *lhs, const TypeExpr *rhs)
   case TYPE_UNKNOWN:
     return true;
   case TYPE_PTR:
-    return type_eq(lhs->ref_type, rhs->ref_type);
+    return lhs->ptr.mutable == rhs->ptr.mutable &&
+      type_eq(lhs->ptr.inner, rhs->ptr.inner);
   case TYPE_FN:
     if (lhs->fn_type.va_args != rhs->fn_type.va_args) return false;
 
@@ -191,8 +200,9 @@ void dump_type_expr(TypeExpr *type, FILE *stream)
     dump_type_expr(type->fn_type.ret_type, stream);
     break;
   case TYPE_PTR:
-    fprintf(stream, "*");
-    dump_type_expr(type->ref_type, stream);
+    fprintf(stream, "&");
+    if (type->ptr.mutable) fprintf(stream, "mut ");
+    dump_type_expr(type->ptr.inner, stream);
     break;
   default: UNREACHABLE("type");
   }

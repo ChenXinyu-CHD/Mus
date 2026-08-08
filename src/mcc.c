@@ -132,11 +132,40 @@ static size_t arg2reg(String_Builder *sb, Arg *arg, x64_reg reg)
 {
   size_t size = arg->type.size;
   assert(size <= 8);
-  static_assert(__arg_kind_count == 6, "introduced more arg kinds");
+  static_assert(__arg_kind_count == 8, "introduced more arg kinds");
   switch (arg->kind) {
   case ARG_NONE:
     UNREACHABLE("the argument cannot be none");
     break;
+  case ARG_REF_VAR: {
+    assert(arg->type.size == 8);
+    Var *var = arg->var;
+    const char  s = cmd_suff[arg->type.size];
+    const char *r = regs[reg][arg->type.size];
+    if (var->is_global) {
+      sb_appendf(sb, "    lea%c "SV_Fmt"(%%rip), %s\n",
+                 s, SV_Arg(var->name), r);
+    } else {
+      sb_appendf(sb, "    lea%c %ld(%%rbp), %s\n",
+                 s, var->offset, r);
+    }
+  } break;
+  case ARG_DREF: {
+    Var *var = arg->var;
+    const char  s = cmd_suff[var->type.size];
+    const char *r = regs[reg][var->type.size];
+    if (var->is_global) {
+      sb_appendf(sb, "    mov%c "SV_Fmt"(%%rip), %s\n",
+                 s, SV_Arg(var->name), r);
+    } else {
+      sb_appendf(sb, "    mov%c %ld(%%rbp), %s\n",
+                 s, var->offset, r);
+    }
+    const char  sd = cmd_suff[arg->type.size];
+    const char *rd = regs[reg][arg->type.size];
+    sb_appendf(sb, "    mov%c (%s), %s\n",
+               sd, r, rd);
+  } break;
   case ARG_VAR: {
     Var *var = arg->var;
     assert(var->type.size <= 8 && cmd_suff[var->type.size] != 0);
@@ -198,6 +227,25 @@ void store(String_Builder *sb, x64_reg reg, Var* var)
     sb_appendf(sb, "    mov%c %s, %ld(%%rbp)\n",
                s, r, var->offset);
   }
+}
+
+void load(String_Builder *sb, Var *var, x64_reg reg) {
+  assert(var->type.size <= 8 && cmd_suff[var->type.size] != 0);
+  const char  s = cmd_suff[var->type.size];
+  const char *r = regs[reg][var->type.size];
+  if (var->is_global) {
+    sb_appendf(sb, "    mov%c "SV_Fmt"(%%rip), %s\n",
+               s, SV_Arg(var->name), r);
+  } else {
+    sb_appendf(sb, "    mov%c %ld(%%rbp), %s\n",
+               s, var->offset, r);
+  }
+}
+
+void ref_store(String_Builder *sb, x64_reg dst, x64_reg src, size_t size)
+{
+  sb_appendf(sb, "    mov%c %s, (%s)\n",
+             cmd_suff[size], regs[src][size], regs[dst][8]);
 }
 
 // references:
@@ -419,9 +467,20 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
       }  break;
       case OP_SET_VAR: {
         arg2reg(&sb, &op->set_var.val, RAX);
-        assert(op->set_var.var.kind == ARG_VAR);
-        Var *var = op->set_var.var.var;
-        store(&sb, RAX, var);
+        switch (op->set_var.var.kind) {
+        case ARG_VAR: {
+          Var *var = op->set_var.var.var;
+          store(&sb, RAX, var);
+        } break;
+        case ARG_DREF: {
+          Var *var = op->set_var.var.var;
+          assert(var->type.kind == TYPE_PTR);
+          load(&sb, var, RBX);
+          ref_store(&sb, RBX, RAX, var->type.ptr.inner->size);
+        } break;
+        default:
+          UNREACHABLE("");
+        }
       } break;
       case OP_JMP:
         sb_appendf(&sb, "    jmp .fn_%ld.label_%ld\n", fn_i, op->jmp.label);

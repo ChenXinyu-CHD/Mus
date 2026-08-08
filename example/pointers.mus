@@ -1,0 +1,25 @@
+let printf: fn(&i8, ...) -> i32 @extern;
+
+let main = fn() -> i32 {
+    var x1: i32 = 1;
+    var x2: i32 = 2;
+    var x3: i32 = 3;
+    printf("x1 = %d, x2 = %d, x3 = %d\n", x1, x2, x3);
+
+    var xp: &mut i32 = &mut x1;
+    *xp = 4;
+    xp = &mut x2;
+    *xp = 5;
+    xp = &mut x3;
+    *xp = 6;
+    printf("x1 = %d, x2 = %d, x3 = %d\n", x1, x2, x3);
+
+    var xpc: &i32 = &x3;
+    printf("x3 = %d\n", *xpc);
+    xpc = &x2;
+    printf("x2 = %d\n", *xpc);
+    xpc = &x1;
+    printf("x1 = %d\n", *xpc);
+
+    return 0;
+};

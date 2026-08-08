@@ -30,12 +30,13 @@ typedef enum {
   TOKEN_ID = 128,
   TOKEN_STR,
   TOKEN_INT,
+
+  // keywords
   TOKEN_VAR,
   TOKEN_LET,
   TOKEN_FN,
   TOKEN_RET,
   TOKEN_EXT,
-  TOKEN_ERR,
   TOKEN_DOTS,
   TOKEN_BOOL,
   TOKEN_TRUE,
@@ -46,7 +47,7 @@ typedef enum {
   TOKEN_WHILE,
   TOKEN_LOOP,
   TOKEN_BREAK,
-  TOKEN_EOF,
+  TOKEN_MUT,
 
   // operators
   TOKEN_EQ,
@@ -65,6 +66,10 @@ typedef enum {
   TOKEN_I32,
   TOKEN_I64,
   TOKEN_VOID,
+
+  // special tokens
+  TOKEN_ERR,
+  TOKEN_EOF,
   __token_kind_count,
 } TokenKind;
 
@@ -136,7 +141,6 @@ void pcompile_info(Cursor cs, const char* fmt, ...)
   va_end(args);
 }
 
-
 char cs_getc(String_Builder sb, Cursor c)
 {
   size_t pos = cs_pos(c);
@@ -189,7 +193,7 @@ String_View sv_between_cs(String_Builder sb, Cursor begin, Cursor end)
   };
 }
 
-static_assert(__token_kind_count == 128 + 34, "introduced more token kinds");
+static_assert(__token_kind_count == 128 + 35, "introduced more token kinds");
 static struct {
   int kind;
   char *str;
@@ -208,6 +212,7 @@ static struct {
   {.str = "break",   .print_name = "break",   .kind = TOKEN_BREAK},
   {.str = "true",    .print_name = "true",    .kind = TOKEN_TRUE},
   {.str = "false",   .print_name = "false",   .kind = TOKEN_FALSE},
+  {.str = "mut",     .print_name = "mut",     .kind = TOKEN_MUT},
   // multi-charactor operators
   {.str = "==",  .print_name = "'=='",  .kind = TOKEN_EQ},
   {.str = "!=",  .print_name = "'!='",  .kind = TOKEN_NEQ},
@@ -223,6 +228,7 @@ static struct {
   {.str = "}", .print_name = "'}'", .kind = '}'},
   {.str = ";", .print_name = "';'", .kind = ';'},
   {.str = ",", .print_name = "','", .kind = ','},
+  {.str = ".", .print_name = "'.'", .kind = '.'},
   {.str = "=", .print_name = "'='", .kind = '='},
   {.str = "&", .print_name = "'&'", .kind = '&'},
   {.str = "+", .print_name = "'+'", .kind = '+'},

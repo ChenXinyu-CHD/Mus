@@ -14,6 +14,8 @@ typedef enum {
   ARG_FN,
   ARG_EXT,
   ARG_VAR,
+  ARG_REF_VAR,
+  ARG_DREF,
   ARG_LIT_INT,
   ARG_LIT_STR,
   __arg_kind_count,
@@ -238,13 +240,19 @@ static Var *alloc_var(VarList *vars, String_View name, TypeExpr type, bool is_gl
 
 void dump_arg(String_Builder *sb, Arg *arg)
 {
-  static_assert(__arg_kind_count == 6, "introduced more arg kinds");
+  static_assert(__arg_kind_count == 8, "introduced more arg kinds");
   switch(arg->kind) {
   case ARG_NONE:
     sb_appendf(sb, "None");
     break;
   case ARG_FN:
     sb_appendf(sb, SV_Fmt, SV_Arg(sb_to_sv(da_first(&arg->fn->names))));
+    break;
+  case ARG_REF_VAR:
+    sb_appendf(sb, "&var[%ld]", arg->var->id);
+    break;
+  case ARG_DREF:
+    sb_appendf(sb, "*var[%ld]", arg->var->id);
     break;
   case ARG_EXT:
     sb_appendf(sb, SV_Fmt, SV_Arg(arg->ext));
@@ -418,8 +426,22 @@ static bool is_type_int(TypeKind kind)
 static bool detect_expr_type(Expr *expr, Scope *sp, TypeExpr expected)
 {
   if (expr->type.kind == TYPE_UNKNOWN) {
-    static_assert(__expr_kind_count == 6, "introduced more expr kinds");
+    static_assert(__expr_kind_count == 8, "introduced more expr kinds");
     switch (expr->kind) {
+    case EXPR_REF:
+      if (!detect_expr_type(expr->ref.inner, sp, type_unknown())) return false;
+      expr->type = type_ptr(expr->ref.inner->type, expr->ref.mutable);
+      break;
+    case EXPR_DREF:
+      if (!detect_expr_type(expr->deref, sp, type_unknown())) return false;
+      if (expr->deref->type.kind != TYPE_PTR) {
+        pcompile_info(expr->loc,
+                      "error: this expression is not a pointer, "
+                      "and cannot be dereferenced.\n");
+        return false;
+      }
+      expr->type = type_clone(*expr->deref->type.ptr.inner);
+      break;
     case EXPR_BINOP:
       if (!detect_binop_type(expr, sp, expected)) return false;
       break;
@@ -600,9 +622,25 @@ static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
   result->loc  = expr->loc;
   result->type = expr->type;
 
-  static_assert(__expr_kind_count == 6, "introduced more expr kinds");
+  static_assert(__expr_kind_count == 8, "introduced more expr kinds");
   switch (expr->kind) {
-  case EXPR_NAME:
+  case EXPR_DREF: {
+    Arg inner = {0};
+    if (!expr_to_arg(expr->deref, sp, ctx, &inner)) return false;
+    assert(inner.kind == ARG_VAR);
+    *result = inner;
+    result->kind = ARG_DREF;
+    result->type = expr->type;
+    return true;
+  } case EXPR_REF: {
+    Arg inner = {0};
+    if (!expr_to_arg(expr->ref.inner, sp, ctx, &inner)) return false;
+    assert(inner.kind == ARG_VAR);
+    *result = inner;
+    result->kind = ARG_REF_VAR;
+    result->type = expr->type;
+    return true;
+  } case EXPR_NAME:
     return id_to_arg(expr->name, expr->loc, result, sp, ctx);
   case EXPR_STR:
     result->kind      = ARG_LIT_STR;
@@ -646,8 +684,12 @@ static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
 static bool expr_to_ir(Expr *expr, Scope *sp, Gen_Context *ctx)
 {
   Op op = { .loc = expr->loc };
-  static_assert(__expr_kind_count == 6, "introduced more expr kinds");
+  static_assert(__expr_kind_count == 8, "introduced more expr kinds");
   switch (expr->kind) {
+  case EXPR_REF:
+    TODO("");
+  case EXPR_DREF:
+    TODO("");
   case EXPR_INVOKE: {
     if (!expr_to_arg(expr->invoke.fn, sp, ctx, &op.invoke.fn))
       return false;
@@ -757,8 +799,12 @@ static bool compiletime_eval_cmp(Arg lhs, Arg rhs, BinopKind op, Arg *val)
 static bool expr_eval(Expr* expr, Scope *sp, Gen_Context *ctx, Arg *val)
 {
   val->type = type_clone(expr->type);
-  static_assert(__expr_kind_count == 6, "introduced more expr kinds");
+  static_assert(__expr_kind_count == 8, "introduced more expr kinds");
   switch (expr->kind) {
+  case EXPR_DREF:
+    TODO("");
+  case EXPR_REF:
+    TODO("");
   case EXPR_INVOKE:
     pcompile_info(expr->loc,
                   "error: invoking a function is not allowed in compile time\n");

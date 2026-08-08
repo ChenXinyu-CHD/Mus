@@ -12,6 +12,8 @@ typedef enum {
   EXPR_LAMBDA,
   EXPR_INVOKE,
   EXPR_BINOP,
+  EXPR_REF,
+  EXPR_DREF,
   __expr_kind_count
 } Expr_Kind;
 
@@ -91,6 +93,11 @@ struct Expr {
       Expr *lhs;
       Expr *rhs;
     } binop;
+    struct {
+      bool mutable;
+      Expr *inner;
+    } ref;
+    Expr *deref;
   };
 };
 
@@ -228,9 +235,14 @@ static bool compile_type_expr(Lexer *l, TypeExpr *type)
     return compile_type_fn(l, type);
   case '&': {
     if (!prefetch_not_none(l)) return false;
-    TypeExpr ref_type;
-    if (!compile_type_expr(l, &ref_type)) return false;
-    *type = type_ptr(ref_type);
+    bool mutable = false;
+    if (l->current.kind == TOKEN_MUT) {
+      if (!prefetch_not_none(l)) return false;
+      mutable = true;
+    }
+    TypeExpr inner;
+    if (!compile_type_expr(l, &inner)) return false;
+    *type = type_ptr(inner, mutable);
     return true;
   }
   default:
@@ -340,12 +352,12 @@ static Expr *expr_atom(Token token)
   Expr *expr = arena_alloc(sizeof(*expr));
   expr->loc  = token.start;
 
-  static_assert(__expr_kind_count == 6, "introduced more expr kinds");
+  static_assert(__expr_kind_count == 8, "introduced more expr kinds");
   switch (token.kind) {
   case TOKEN_STR:
     expr->kind = EXPR_STR;
     expr->str  = token.str;
-    expr->type = type_ptr(type_int(true, 1));
+    expr->type = type_ptr(type_int(true, 1), false);
     return expr;
   case TOKEN_INT:
     expr->kind    = EXPR_INT;
@@ -459,13 +471,36 @@ static Expr *compile_simple_expr(Lexer *l)
     if (!prefetch_not_none(l))  return NULL;
     expr = compile_expr(l);
     if (!expect_token(l, ')'))  return NULL;
+    if (!prefetch_not_none(l)) return NULL;
+  } else if (l->current.kind == '&') {
+    if (!prefetch_not_none(l))  return NULL;
+    bool mutable = false;
+    if (l->current.kind == TOKEN_MUT) {
+      if (!prefetch_not_none(l)) return NULL;
+      mutable = true;
+    }
+    Expr *inner = compile_simple_expr(l);
+    if (inner == NULL) return NULL;
+
+    expr = arena_alloc(sizeof(*expr));
+    expr->kind = EXPR_REF;
+    expr->ref.mutable = mutable;
+    expr->ref.inner = inner;
+  } else if (l->current.kind == '*') {
+    if (!prefetch_not_none(l))  return NULL;
+    Expr *inner = compile_simple_expr(l);
+    if (inner == NULL) return NULL;
+
+    expr = arena_alloc(sizeof(*expr));
+    expr->kind  = EXPR_DREF;
+    expr->deref = inner;
   } else {
     expr = expr_atom(l->current);
+    if (!prefetch_not_none(l)) return NULL;
   }
 
   if (expr == NULL) return NULL;
 
-  lexer_next(l);
   while (l->current.kind == '(') {
     Expr_List args = {0};
     if (!compile_invoke_args(l, &args)) return NULL;
@@ -661,8 +696,8 @@ static Stat *compile_simple_stat(Lexer *l)
     stat->invoke = expr->invoke;
     return stat;
   } else {
-    pcompile_info(expr->loc,
-                  "error: expect a statement, but got an expression.\n");
+    pcompile_info(l->current.start,
+                  "error: unexpected stuff in a statement.\n");
     return NULL;
   }
 }
@@ -787,7 +822,7 @@ Stat *compile_stat(Lexer *l, bool breakable)
     stat->kind = STAT_RET;
     stat->loc = token.start;
 
-    if (l->current.kind == ';' || l->current.kind == '}') {
+    if (l->current.kind == ';') {
       stat->ret_val = NULL;
     } else {
       stat->ret_val = compile_expr(l);
@@ -805,16 +840,9 @@ Stat *compile_stat(Lexer *l, bool breakable)
     stat = compile_simple_stat(l);
   }
 
-  // a simple statment can be followed with an optional ';'
-  // This makes "if true foo(); else bar();" acceptable
-  // because 'foo();' is a single statement
-  // insteed of a function call followed by a empty statement.
-  // "if true ;; else foo()" is not acceptable
-  // because both ';' are two empty statement
-  // because they are not followed by a simple statement
-  if (l->current.kind == ';') {
-    lexer_next(l);
-  }
+  // a simple statment must be followed with an optional ';'
+  if (!expect_token(l, ';')) return false;
+  lexer_next(l);
   return stat;
 }
 

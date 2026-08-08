@@ -7,34 +7,34 @@ let main = fn() -> i32 {
     else     printf("ok\n");
 
     printf("on false, without else: ");
-    if false printf("error\n")
-    printf("ok\n")
+    if false printf("error\n");
+    printf("ok\n");
 
     printf("== : ");
-    if 1 == 2 printf("error\n")
-    else      printf("ok\n")
+    if 1 == 2 printf("error\n");
+    else      printf("ok\n");
 
     printf("!= : ");
-    if 1 != 2 printf("ok\n")
-    else      printf("error\n")
+    if 1 != 2 printf("ok\n");
+    else      printf("error\n");
 
     printf("signed int compare tests:\n");
 
     printf("> : ");
-    if 0 > 1 - 2 printf("ok\n")
-    else         printf("error\n")
+    if 0 > 1 - 2 printf("ok\n");
+    else         printf("error\n");
 
     printf("< : ");
-    if 1 - 2 < 0 printf("ok\n")
-    else         printf("error\n")
+    if 1 - 2 < 0 printf("ok\n");
+    else         printf("error\n");
 
     printf(">= : ");
-    if 0 >= 0 - 1 printf("ok\n")
-    else          printf("error\n")
+    if 0 >= 0 - 1 printf("ok\n");
+    else          printf("error\n");
 
     printf("<= : ");
-    if 0 - 1 <= 0 printf("ok\n")
-    else          printf("error\n")
+    if 0 - 1 <= 0 printf("ok\n");
+    else          printf("error\n");
 
     printf("unsigned int compare tests:\n");
 
@@ -42,20 +42,20 @@ let main = fn() -> i32 {
     var u: u32 = 1 - 2;
     printf("u = %u\n", u);
     printf("> : ");
-    if 0 > u  printf("error\n")
-    else      printf("ok\n")
+    if 0 > u  printf("error\n");
+    else      printf("ok\n");
 
     printf("< : ");
-    if u < 0 printf("error\n")
-    else     printf("ok\n")
+    if u < 0 printf("error\n");
+    else     printf("ok\n");
 
     printf(">= : ");
-    if 0 >= u printf("error\n")
-    else      printf("ok\n")
+    if 0 >= u printf("error\n");
+    else      printf("ok\n");
 
     printf("<= : ");
-    if u <= 0 printf("error\n")
-    else      printf("ok\n")
+    if u <= 0 printf("error\n");
+    else      printf("ok\n");
 
     printf("block on true, without else:");
     if true {
@@ -89,19 +89,17 @@ let main = fn() -> i32 {
 
     recurse(0, n);
 
-    return 0
-}
+    return 0;
+};
 
-let fact = fn(n: i32) -> i32
-{
+let fact = fn(n: i32) -> i32 {
     if n == 0 return 1;
     else      return n * fact(n - 1);
-}
+};
 
-let recurse = fn(i: i32, n: i32) -> void
-{
+let recurse = fn(i: i32, n: i32) -> void {
     if i != n recurse(i + 1, n);
     printf("i = %d\n", i);
-}
+};
 
-let printf: fn(fmt: &i8, ...) -> i32 @extern
+let printf: fn(fmt: &i8, ...) -> i32 @extern;

@@ -1,6 +1,6 @@
 # this should fail because main redefined
 
-let main = fn() -> i64 {}
-let main = fn() -> i32 {}
-let foo = fn() -> void {}
-let bar = fn() -> void {}
+let main = fn() -> i64 {};
+let main = fn() -> i32 {};
+let foo = fn() -> void {};
+let bar = fn() -> void {};

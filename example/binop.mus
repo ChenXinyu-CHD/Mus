@@ -1,7 +1,6 @@
 let printf: fn(fmt: &i8, ...) -> i32 @extern;
 
-let main = fn() -> i64
-{
+let main = fn() -> i64 {
     var i = 34;
     printf("%ld\n", 35 - i + 420);
     printf("%ld\n", 1 + 2 * 3);
@@ -9,4 +8,5 @@ let main = fn() -> i64
     printf("%ld\n", 5 % 2);
     printf("%ld\n", 5 / 2);
     return 0;
-}
+};
+

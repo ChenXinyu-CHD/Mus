@@ -1,14 +1,14 @@
-let printf: fn(&i8, ...) -> i32 @extern
+let printf: fn(&i8, ...) -> i32 @extern;
 
 let foo = fn() -> i32 {
-    let foo = 2
-    let bar = foo + foo * 2
+    let foo = 2;
+    let bar = foo + foo * 2;
 
     let gt = fn() -> bool {
         return foo > bar;
-    }
+    };
 
-    var baz = bar + foo
+    var baz = bar + foo;
 
     printf("foo = %d, bar = %d, baz = %d\n", foo, bar, baz);
 
@@ -17,8 +17,8 @@ let foo = fn() -> i32 {
     } else {
         printf("foo is not greater than bar\n");
     }
-    return 0
-}
+    return 0;
+};
 
 let main = foo;
 
