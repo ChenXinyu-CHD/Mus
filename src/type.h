@@ -41,9 +41,10 @@ struct TypeExpr {
   };
 };
 
-TypeExpr type_bool();
-TypeExpr type_unknown();
-TypeExpr type_int(bool sign, size_t size);
+#define type_bool()    ((TypeExpr) {.kind = TYPE_BOOL,    .size = 1})
+#define type_unknown() ((TypeExpr) {.kind = TYPE_UNKNOWN, .size = 0})
+#define type_void()    ((TypeExpr) {.kind = TYPE_VOID,    .size = 0})
+#define type_int(k, s) ((TypeExpr) {.kind = k,            .size = s})
 TypeExpr type_fn(TypeExpr ret_type, TypeList arg_types, bool va_args);
 TypeExpr type_ptr(TypeExpr inner, bool mutable);
 
@@ -60,21 +61,6 @@ void destroy_type_expr(TypeExpr* type);
 #ifdef MCC_TYPE_IMPLEMENTATION
 
 #include "3rd_wrapper.h"
-
-TypeExpr type_bool()
-{
-  return (TypeExpr) {.kind = TYPE_BOOL, .size = 1};
-}
-
-TypeExpr type_unknown()
-{
-  return (TypeExpr) {.kind = TYPE_UNKNOWN, .size = 0};
-}
-
-TypeExpr type_int(bool sign, size_t size)
-{
-  return (TypeExpr) {.kind = sign ? TYPE_INT : TYPE_UINT, .size = size};
-}
 
 TypeExpr type_ptr(TypeExpr inner, bool mutable)
 {

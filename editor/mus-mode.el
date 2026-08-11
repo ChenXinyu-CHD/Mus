@@ -22,7 +22,7 @@
 
 (defun mus-keywords ()
   '("fn" "var" "let" "extern" "if" "else" "return"
-    "true" "false" "for" "while" "loop"))
+    "true" "false" "for" "while" "loop" "break"))
 
 (defun mus-font-lock-keywords ()
   (list

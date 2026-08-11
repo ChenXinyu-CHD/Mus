@@ -173,43 +173,43 @@ static struct {
 } internal_types[] = {
   {
     .token = TOKEN_VOID,
-    .type = { .kind = TYPE_VOID, .size = 0, },
+    .type = type_void(),
   },
   {
     .token = TOKEN_BOOL,
-    .type = { .kind = TYPE_BOOL, .size = 1, },
+    .type = type_bool(),
   },
   {
     .token = TOKEN_U8,
-    .type = { .kind = TYPE_UINT, .size = 1, },
+    .type = type_int(TYPE_UINT, 1),
   },
   {
     .token = TOKEN_U16,
-    .type = { .kind = TYPE_UINT, .size = 2, },
+    .type = type_int(TYPE_UINT, 2),
   },
   {
     .token = TOKEN_U32,
-    .type = { .kind = TYPE_UINT, .size = 4, },
+    .type = type_int(TYPE_UINT, 4),
   },
   {
     .token = TOKEN_U64,
-    .type = { .kind = TYPE_UINT, .size = 8, },
+    .type = type_int(TYPE_UINT, 8),
   },
   {
     .token = TOKEN_I8,
-    .type = { .kind = TYPE_INT, .size = 1, },
+    .type = type_int(TYPE_INT, 1),
   },
   {
     .token = TOKEN_I16,
-    .type = { .kind = TYPE_INT, .size = 2, },
+    .type = type_int(TYPE_INT, 2),
   },
   {
     .token = TOKEN_I32,
-    .type = { .kind = TYPE_INT, .size = 4, },
+    .type = type_int(TYPE_INT, 4),
   },
   {
     .token = TOKEN_I64,
-    .type = { .kind = TYPE_INT, .size = 8, },
+    .type = type_int(TYPE_INT, 8),
   }
 };
 
@@ -357,12 +357,12 @@ static Expr *expr_atom(Token token)
   case TOKEN_STR:
     expr->kind = EXPR_STR;
     expr->str  = token.str;
-    expr->type = type_ptr(type_int(true, 1), false);
+    expr->type = type_ptr(type_int(TYPE_INT, 1), false);
     return expr;
   case TOKEN_INT:
     expr->kind    = EXPR_INT;
     expr->integer = sv_to_int(token.str);
-    expr->type    = type_int(TYPE_INT, 4);
+    expr->type    = type_unknown();
     return expr;
   case TOKEN_TRUE:
     expr->kind    = EXPR_INT;
@@ -473,6 +473,7 @@ static Expr *compile_simple_expr(Lexer *l)
     if (!expect_token(l, ')'))  return NULL;
     if (!prefetch_not_none(l)) return NULL;
   } else if (l->current.kind == '&') {
+    Cursor loc = l->current.start;
     if (!prefetch_not_none(l))  return NULL;
     bool mutable = false;
     if (l->current.kind == TOKEN_MUT) {
@@ -481,17 +482,24 @@ static Expr *compile_simple_expr(Lexer *l)
     }
     Expr *inner = compile_simple_expr(l);
     if (inner == NULL) return NULL;
+    if (inner->kind != EXPR_NAME && inner->kind != EXPR_DREF) {
+      pcompile_info(inner->loc, "error: this cannot be referenced.\n");
+      return false;
+    }
 
     expr = arena_alloc(sizeof(*expr));
+    expr->loc = loc;
     expr->kind = EXPR_REF;
     expr->ref.mutable = mutable;
     expr->ref.inner = inner;
   } else if (l->current.kind == '*') {
+    Cursor loc = l->current.start;
     if (!prefetch_not_none(l))  return NULL;
     Expr *inner = compile_simple_expr(l);
     if (inner == NULL) return NULL;
 
     expr = arena_alloc(sizeof(*expr));
+    expr->loc = loc;
     expr->kind  = EXPR_DREF;
     expr->deref = inner;
   } else {

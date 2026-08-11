@@ -421,8 +421,17 @@ static bool is_type_int(TypeKind kind)
   return kind == TYPE_UINT || kind == TYPE_INT;
 }
 
-// TODO: implement a better type checker, this one is too ugly
-// currently, intergers will be converted implicitly, and it is very dangerous.
+static void detect_intlit_type(Expr *expr, TypeExpr expected)
+{
+  assert(expr->kind == EXPR_INT);
+  if (expr->type.kind != TYPE_UNKNOWN) return;
+  if (is_type_int(expected.kind)) {
+    expr->type = expected;
+  } else {
+    expr->type = type_int(TYPE_INT, 4);
+  }
+}
+
 static bool detect_expr_type(Expr *expr, Scope *sp, TypeExpr expected)
 {
   if (expr->type.kind == TYPE_UNKNOWN) {
@@ -460,22 +469,13 @@ static bool detect_expr_type(Expr *expr, Scope *sp, TypeExpr expected)
       expr->type = type_clone(*expr->invoke.fn->type.fn_type.ret_type);
       break;
     case EXPR_INT:
+      detect_intlit_type(expr, expected);
+      break;
     case EXPR_STR:
     case EXPR_LAMBDA:
       assert(false && "these type must be known, it may be a bug in ast.h");
       break;
     default: UNREACHABLE("");
-    }
-  }
-
-  if (is_type_int(expr->type.kind) && is_type_int(expected.kind)) {
-    TypeExpr *actual = &expr->type;
-    if (expr->kind == EXPR_INT) {
-      *actual = expected;
-    } else if (actual->size < expected.size) {
-      if (actual->kind == expected.kind || actual->kind == TYPE_UINT) {
-        *actual = expected;
-      }
     }
   }
 
@@ -495,51 +495,111 @@ static bool detect_expr_type(Expr *expr, Scope *sp, TypeExpr expected)
   return true;
 }
 
+static bool is_compiletime_binop(Expr *expr) {
+  if (expr->kind != EXPR_BINOP) return false;
+  Expr *lhs = expr->binop.lhs;
+  Expr *rhs = expr->binop.rhs;
+  return
+    (lhs->kind == EXPR_INT || is_compiletime_binop(lhs)) &&
+    (rhs->kind == EXPR_INT || is_compiletime_binop(rhs));
+}
+
+static bool detect_compiletime_binop_type(Expr *expr, TypeExpr expected)
+{
+  if (expr->kind == EXPR_INT) {
+    detect_intlit_type(expr, expr->type);
+    return true;
+  }
+
+  assert(is_compiletime_binop(expr));
+  Expr *lhs = expr->binop.lhs;
+  Expr *rhs = expr->binop.rhs;
+  bool ok = true;
+  switch(expr->binop.kind) {
+  case BINOP_MUL:
+  case BINOP_DIV:
+  case BINOP_MOD:
+  case BINOP_ADD:
+  case BINOP_SUB:
+    expr->type = is_type_int(expected.kind) ? expected : type_int(TYPE_INT, 4);
+    if (!detect_compiletime_binop_type(lhs, expr->type)) ok = false;
+    if (!detect_compiletime_binop_type(rhs, expr->type)) ok = false;
+    break;
+  case BINOP_EQ:
+  case BINOP_NEQ:
+  case BINOP_LS:
+  case BINOP_GT:
+  case BINOP_LE:
+  case BINOP_GE:
+    expr->type = type_bool();
+    if (!detect_compiletime_binop_type(lhs, type_unknown())) ok = false;
+    if (!detect_compiletime_binop_type(rhs, type_unknown())) ok = false;
+    break;
+  default: UNREACHABLE("");
+  }
+  if (!type_eq(&lhs->type, &rhs->type)) {
+    pcompile_info(expr->loc,
+                  "error: operator %s between type ",
+                  binop_name(expr->binop.kind));
+    dump_type_expr(&lhs->type, stderr);
+    fprintf(stderr, " and ");
+    dump_type_expr(&rhs->type, stderr);
+    fprintf(stderr, " are not supported.\n");
+    return false;
+  }
+  return ok;
+}
+
 static bool detect_binop_type(Expr *expr, Scope *sp, TypeExpr expected)
 {
   assert(expr->kind == EXPR_BINOP && expr->type.kind == TYPE_UNKNOWN);
   bool ok = true;
 
+  if (is_compiletime_binop(expr)) {
+    return detect_compiletime_binop_type(expr, expected);
+  }
+
   Expr *lhs = expr->binop.lhs;
   Expr *rhs = expr->binop.rhs;
 
+  bool supported = false;
   static_assert(__binop_kind_count == 11, "introduced more binop kinds");
   switch(expr->binop.kind) {
-  case BINOP_ADD:
-  case BINOP_SUB:
   case BINOP_MUL:
   case BINOP_DIV:
   case BINOP_MOD: {
-    if (!detect_expr_type(lhs, sp, expected)) ok = false;
-    if (!detect_expr_type(rhs, sp, expected)) ok = false;
-
-    if (lhs->type.kind != TYPE_INT && lhs->type.kind != TYPE_UINT) {
-      pcompile_info(lhs->loc, "error: here expected an integer, but got a ");
-      dump_type_expr(&lhs->type, stderr);
-      fputc('\n', stderr);
-      ok = false;
-    }
-
-    if (rhs->type.kind != TYPE_INT && rhs->type.kind != TYPE_UINT) {
-      pcompile_info(rhs->loc, "error: here expected an integer, but got a ");
-      dump_type_expr(&rhs->type, stderr);
-      fputc('\n', stderr);
-      ok = false;
-    }
-
-    if (!is_type_int(expected.kind)) {
-      TypeKind kind = lhs->type.kind == TYPE_UINT || rhs->type.kind == TYPE_UINT?
-        TYPE_UINT : TYPE_INT;
-      size_t size = lhs->type.size > rhs->type.size?
-        lhs->type.size : rhs->type.size;
-      TypeExpr cast = {.kind = kind, .size = size};
-
-      if (!detect_expr_type(lhs, sp, cast)) ok = false;
-      if (!detect_expr_type(rhs, sp, cast)) ok = false;
-      expr->type = cast;
+    if (lhs->kind != EXPR_INT) {
+      if (!detect_expr_type(lhs, sp, type_unknown())) ok = false;
+      if (!detect_expr_type(rhs, sp, lhs->type)) ok = false;
     } else {
-      expr->type = expected;
+      if (!detect_expr_type(rhs, sp, type_unknown())) ok = false;
+      if (!detect_expr_type(lhs, sp, rhs->type)) ok = false;
     }
+    supported = is_type_int(lhs->type.kind) && type_eq(&lhs->type, &rhs->type);
+    expr->type = type_clone(lhs->type);
+  } break;
+  case BINOP_ADD:
+  case BINOP_SUB: {
+    if (lhs->kind != EXPR_INT) {
+      if (!detect_expr_type(lhs, sp, type_unknown())) ok = false;
+      if (lhs->type.kind == TYPE_PTR) {
+        if (!detect_expr_type(rhs, sp, type_unknown())) ok = false;
+      } else {
+        if (!detect_expr_type(rhs, sp, lhs->type)) ok = false;
+      }
+    } else {
+      if (!detect_expr_type(rhs, sp, type_unknown())) ok = false;
+      if (rhs->type.kind == TYPE_PTR) {
+        if (!detect_expr_type(lhs, sp, type_unknown())) ok = false;
+      } else {
+        if (!detect_expr_type(lhs, sp, rhs->type)) ok = false;
+      }
+    }
+    supported =
+      (is_type_int(lhs->type.kind) && type_eq(&lhs->type, &rhs->type)) ||
+      (is_type_int(lhs->type.kind) && rhs->type.kind == TYPE_PTR) ||
+      (lhs->type.kind == TYPE_PTR && is_type_int(rhs->type.kind));
+    expr->type = type_clone(lhs->type.kind == TYPE_PTR? lhs->type : rhs->type);
   } break;
   case BINOP_EQ:
   case BINOP_NEQ:
@@ -547,36 +607,27 @@ static bool detect_binop_type(Expr *expr, Scope *sp, TypeExpr expected)
   case BINOP_GT:
   case BINOP_LE:
   case BINOP_GE: {
-    if (!detect_expr_type(lhs, sp, type_unknown())) ok = false;
-    if (!detect_expr_type(rhs, sp, type_unknown())) ok = false;
-
-    if (lhs->type.kind != TYPE_INT && lhs->type.kind != TYPE_UINT) {
-      pcompile_info(lhs->loc, "error: only numbers are comparable, but got a ");
-      dump_type_expr(&lhs->type, stderr);
-      fputc('\n', stderr);
-      ok = false;
+    if (lhs->kind != EXPR_INT) {
+      if (!detect_expr_type(lhs, sp, type_unknown())) ok = false;
+      if (!detect_expr_type(rhs, sp, lhs->type)) ok = false;
+    } else {
+      if (!detect_expr_type(rhs, sp, type_unknown())) ok = false;
+      if (!detect_expr_type(lhs, sp, rhs->type)) ok = false;
     }
-
-    if (rhs->type.kind != TYPE_INT && rhs->type.kind != TYPE_UINT) {
-      pcompile_info(rhs->loc, "error: only numbers are comparable, but got a ");
-      dump_type_expr(&rhs->type, stderr);
-      fputc('\n', stderr);
-      ok = false;
-    }
-
-    if (!type_eq(&lhs->type, &rhs->type)) {
-      TypeKind kind = lhs->type.kind == TYPE_UINT || rhs->type.kind == TYPE_UINT?
-        TYPE_UINT : TYPE_INT;
-      size_t size = lhs->type.size > rhs->type.size?
-        lhs->type.size : rhs->type.size;
-      TypeExpr cast = {.kind = kind, .size = size};
-
-      if (!detect_expr_type(lhs, sp, cast)) ok = false;
-      if (!detect_expr_type(rhs, sp, cast)) ok = false;
-    }
+    supported = type_eq(&lhs->type, &rhs->type);
     expr->type = type_bool();
   } break;
   default: UNREACHABLE("");
+  }
+  if (!supported) {
+    pcompile_info(expr->loc,
+                  "error: operator %s between type ",
+                  binop_name(expr->binop.kind));
+    dump_type_expr(&lhs->type, stderr);
+    fprintf(stderr, " and ");
+    dump_type_expr(&rhs->type, stderr);
+    fprintf(stderr, " are not supported.\n");
+    return false;
   }
   return ok;
 }
@@ -635,10 +686,18 @@ static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
   } case EXPR_REF: {
     Arg inner = {0};
     if (!expr_to_arg(expr->ref.inner, sp, ctx, &inner)) return false;
-    assert(inner.kind == ARG_VAR);
-    *result = inner;
-    result->kind = ARG_REF_VAR;
-    result->type = expr->type;
+    if (inner.kind == ARG_VAR) {
+      *result = inner;
+      result->kind = ARG_REF_VAR;
+      result->type = expr->type;
+    } else if (inner.kind == ARG_DREF) {
+      *result = inner;
+      result->kind = ARG_VAR;
+      result->type = expr->type;
+    } else {
+      UNREACHABLE("epxr->ref.inner cannot be referenced, "
+                  "this may be a bug in ast.\n");
+    }
     return true;
   } case EXPR_NAME:
     return id_to_arg(expr->name, expr->loc, result, sp, ctx);
@@ -686,10 +745,6 @@ static bool expr_to_ir(Expr *expr, Scope *sp, Gen_Context *ctx)
   Op op = { .loc = expr->loc };
   static_assert(__expr_kind_count == 8, "introduced more expr kinds");
   switch (expr->kind) {
-  case EXPR_REF:
-    TODO("");
-  case EXPR_DREF:
-    TODO("");
   case EXPR_INVOKE: {
     if (!expr_to_arg(expr->invoke.fn, sp, ctx, &op.invoke.fn))
       return false;
@@ -724,6 +779,8 @@ static bool expr_to_ir(Expr *expr, Scope *sp, Gen_Context *ctx)
   case EXPR_STR:
   case EXPR_NAME:
   case EXPR_INT:
+  case EXPR_REF:
+  case EXPR_DREF:
     break; // this doesn't need to generate an ir op currently.
   default: UNREACHABLE("");
   }
@@ -972,6 +1029,13 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
   case STAT_ASSIGN: {
     op.kind = OP_SET_VAR;
     if (!detect_expr_type(stat->assign.dst, sp, type_unknown())) return false;
+    Expr *dst = stat->assign.dst;
+    bool ok = dst->kind == EXPR_NAME ||
+      (dst->kind == EXPR_DREF && dst->deref->type.ptr.mutable);
+    if (!ok) {
+      pcompile_info(dst->loc, "error: this is not assignable.\n");
+      return false;
+    }
     if (!expr_to_arg(stat->assign.dst, sp, ctx, &op.set_var.var))
       return false;
 

@@ -21,5 +21,12 @@ let main = fn() -> i32 {
     xpc = &x1;
     printf("x1 = %d\n", *xpc);
 
+    var str = "hello, world\n";
+    while *str != 0 {
+        let putchar: fn(i8) -> void @extern;
+        putchar(*str);
+        str = str + 1;
+    }
+
     return 0;
 };

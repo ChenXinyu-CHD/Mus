@@ -372,12 +372,22 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         sb_appendf(&sb, "    ret\n");
         break;
       case OP_BINOP: {
-        assert(type_eq(&op->binop.lhs.type, &op->binop.rhs.type));
         TypeKind type_kind = op->binop.lhs.type.kind;
-        size_t   size      = op->binop.lhs.type.size;
-        arg2reg(&sb, &op->binop.lhs, RAX);
-        arg2reg(&sb, &op->binop.rhs, RBX);
+        size_t   size      = op->binop.lhs.type.size > op->binop.rhs.type.size?
+          op->binop.lhs.type.size : op->binop.rhs.type.size;
         char s = cmd_suff[size];
+
+        if (op->binop.lhs.type.size < size) {
+          sb_appendf(&sb, "    xor%c %s, %s\n",
+                     s, regs[RAX][size], regs[RAX][size]);
+        }
+        arg2reg(&sb, &op->binop.lhs, RAX);
+
+        if (op->binop.rhs.type.size < size) {
+          sb_appendf(&sb, "    xor%c %s, %s\n",
+                     s, regs[RBX][size], regs[RBX][size]);
+        }
+        arg2reg(&sb, &op->binop.rhs, RBX);
 
         static_assert(__binop_kind_count == 11, "introduced more binop kinds");
         switch (op->binop.kind) {
