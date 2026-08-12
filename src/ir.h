@@ -195,7 +195,9 @@ static Arg *scope_add(Scope *sp, String_View name, Cursor loc)
     pcompile_info(loc,
                   "error: symbol "SV_Fmt" redefined in this scope\n",
                   SV_Arg(name));
-    // TODO: report where the symbol is first defined;
+    pcompile_info(value->loc,
+                  "info: "SV_Fmt" is first defined here.\n",
+                  SV_Arg(name));
     return NULL;
   } else {
     value = ht_put(&sp->values, name);
@@ -859,9 +861,10 @@ static bool expr_eval(Expr* expr, Scope *sp, Gen_Context *ctx, Arg *val)
   static_assert(__expr_kind_count == 8, "introduced more expr kinds");
   switch (expr->kind) {
   case EXPR_DREF:
-    TODO("");
   case EXPR_REF:
-    TODO("");
+    pcompile_info(expr->loc,
+                  "error: pointer is not allowed in compile time\n");
+    return false;
   case EXPR_INVOKE:
     pcompile_info(expr->loc,
                   "error: invoking a function is not allowed in compile time\n");

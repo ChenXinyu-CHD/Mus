@@ -423,7 +423,6 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
                      regs[RBX][size], regs[RAX][size]);
           sb_appendf(&sb, "    setne %%al\n");
           break;
-          // TODO: add support for unsigned integers
         case BINOP_LS:
           sb_appendf(&sb, "    cmp %s, %s\n",
                      regs[RBX][size], regs[RAX][size]);
