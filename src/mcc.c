@@ -414,8 +414,7 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         }
 
         if (!op->invoke.ret_ignore) {
-          assert(op->invoke.ret.kind == ARG_VAR);
-          store(&sb, RAX, op->invoke.ret.var);
+          X64_reg_to_vreg(&sb, RAX, map.items[op->invoke.ret.id]);
         }
       } break;
       case OP_RETURN:

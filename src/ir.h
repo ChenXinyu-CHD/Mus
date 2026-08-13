@@ -94,7 +94,7 @@ typedef struct {
   Arg fn;
   ArgList args;
   bool ret_ignore;
-  Arg ret;
+  Reg ret;
 } OpInvoke;
 
 typedef struct {
@@ -310,7 +310,7 @@ void dump_op(String_Builder *sb, Op *op)
   switch (op->kind) {
   case OP_INVOKE:
     if (!op->invoke.ret_ignore) {
-      dump_arg(sb, &op->invoke.ret);
+      dump_reg(sb, op->invoke.ret);
       sb_appendf(sb, " = ");
     }
     dump_arg(sb, &op->invoke.fn);
@@ -750,12 +750,12 @@ static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
     assert(op->kind == OP_INVOKE);
 
     op->invoke.ret_ignore = false;
-    op->invoke.ret = (Arg) {
-      .kind = ARG_VAR,
-      .type = type_clone(expr->type),
-      .var = alloc_var(&ctx->fn->vars, SVLIT(""), expr->type, false),
+    op->invoke.ret = alloc_reg(&ctx->fn->regs, expr->type);
+    *result = (Arg) {
+      .kind = ARG_REG,
+      .reg  = op->invoke.ret,
+      .type = op->invoke.ret.type,
     };
-    *result = op->invoke.ret;
     return true;
   } case EXPR_BINOP: {
     if (!expr_to_ir(expr, sp, ctx)) return false;
