@@ -13,6 +13,7 @@ typedef enum {
   ARG_NONE = 0,
   ARG_FN,
   ARG_EXT,
+  ARG_REG,
   ARG_VAR,
   ARG_REF_VAR,
   ARG_DREF,
@@ -23,6 +24,17 @@ typedef enum {
 
 typedef struct Fn Fn;
 typedef struct Var Var;
+
+typedef struct {
+  TypeExpr type;;
+  size_t id;
+} Reg;
+
+typedef struct {
+  Reg *items;
+  size_t count;
+  size_t capacity;
+} RegList;
 
 typedef struct {
   Var **items;
@@ -40,6 +52,7 @@ typedef struct {
     int num_int;
     Fn *fn;
     Var *var;
+    Reg reg;
     // TODO: support external variables
     String_View ext;
     size_t str_label;
@@ -93,7 +106,7 @@ typedef struct {
   BinopKind kind;
   Arg lhs;
   Arg rhs;
-  Arg dst;
+  Reg dst;
 } OpBinop;
 
 typedef struct {
@@ -144,6 +157,7 @@ struct Fn {
 
   OpList fn_body;
   VarList vars;
+  RegList regs;
 };
 
 typedef struct {
@@ -240,9 +254,24 @@ static Var *alloc_var(VarList *vars, String_View name, TypeExpr type, bool is_gl
   return var;
 }
 
+static Reg alloc_reg(RegList *regs, TypeExpr type)
+{
+  Reg reg = {
+    .id = regs->count,
+    .type = type,
+  };
+  da_append(regs, reg);
+  return reg;
+}
+
+static void dump_reg(String_Builder *sb, Reg reg)
+{
+  sb_appendf(sb, "reg[%ld]", reg.id);
+}
+
 void dump_arg(String_Builder *sb, Arg *arg)
 {
-  static_assert(__arg_kind_count == 8, "introduced more arg kinds");
+  static_assert(__arg_kind_count == 9, "introduced more arg kinds");
   switch(arg->kind) {
   case ARG_NONE:
     sb_appendf(sb, "None");
@@ -261,6 +290,9 @@ void dump_arg(String_Builder *sb, Arg *arg)
     break;
   case ARG_VAR:
     sb_appendf(sb, "var[%ld]", arg->var->id);
+    break;
+  case ARG_REG:
+    dump_reg(sb, arg->reg);
     break;
   case ARG_LIT_INT:
     sb_appendf(sb, "%d", arg->num_int);
@@ -302,7 +334,7 @@ void dump_op(String_Builder *sb, Op *op)
     dump_arg(sb, &op->set_var.val);
     break;
   case OP_BINOP:
-    dump_arg(sb, &op->binop.dst);
+    dump_reg(sb, op->binop.dst);
     sb_appendf(sb, " = ");
     dump_arg(sb, &op->binop.lhs);
     sb_appendf(sb, " %s ", binop_name(op->binop.kind));
@@ -731,7 +763,11 @@ static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
     Op *op = &da_last(&ctx->fn->fn_body);
     assert(op->kind == OP_BINOP);
 
-    *result = op->binop.dst;
+    *result = (Arg) {
+      .kind = ARG_REG,
+      .type = op->binop.dst.type,
+      .reg  = op->binop.dst,
+    };
     return true;
   } case EXPR_LAMBDA: {
     result->kind = ARG_FN;
@@ -769,12 +805,7 @@ static bool expr_to_ir(Expr *expr, Scope *sp, Gen_Context *ctx)
     if (!expr_to_arg(expr->binop.rhs, sp, ctx, &op.binop.rhs))
       return false;
 
-    op.binop.dst = (Arg) {
-      .kind = ARG_VAR,
-      .type = type_clone(expr->type),
-      .var = alloc_var(&ctx->fn->vars, SVLIT(""), expr->type, false),
-    };
-
+    op.binop.dst = alloc_reg(&ctx->fn->regs, expr->type);
     da_append(&ctx->fn->fn_body, op);
   } break;
   case EXPR_LAMBDA:
