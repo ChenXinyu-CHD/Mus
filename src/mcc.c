@@ -78,33 +78,6 @@ static X64RegKind param_regs[] = {
 
 #define PARAM_REGS_CNT ARRAY_LEN(param_regs)
 
-static void build_var_offset_x86_64_gas(VarList *vars, size_t arg_count, size_t mem_start)
-{
-  if (arg_count > PARAM_REGS_CNT)
-    TODO("support more than PARAM_REGS_CNT args");
-  size_t reg_args = arg_count < PARAM_REGS_CNT? arg_count: PARAM_REGS_CNT;
-
-  vars->memsize = mem_start;
-  for (size_t i = 0; i < reg_args; ++i) {
-    Var *arg = vars->items[i];
-    assert(!arg->is_global);
-    size_t size = arg->type.size;
-    assert(size != 0);
-    vars->memsize = (vars->memsize + size - 1) / size * size + size;
-    arg->offset = -vars->memsize;
-  }
-
-  for (size_t i = reg_args; i < vars->count; ++i) {
-    Var *var = vars->items[i];
-    assert(!var->is_global);
-    size_t size = var->type.size;
-    assert(size != 0);
-    vars->memsize = (vars->memsize + size - 1) / size * size + size;
-    var->offset = -vars->memsize;
-  }
-  vars->memsize = (vars->memsize + 15) / 16 * 16;
-}
-
 static const char *regs[][9] = {
   { [1] = "%al",   [2] = "%ax",   [4] = "%eax",  [8] = "%rax" },
   { [1] = "%bl",   [2] = "%bx",   [4] = "%ebx",  [8] = "%rbx" },
@@ -157,7 +130,16 @@ X64RegMap x64_reg_alloc(const RegList regs)
     };
     da_append(&map, vreg);
   }
+  map.memsize = (map.memsize + 15) / 16 * 16 + 16;
   return map;
+}
+
+void X64_lit_to_vreg(String_Builder *sb, X64VirtReg vreg, int64_t lit)
+{
+  assert(vreg.size == 1 || vreg.size == 2 || vreg.size == 4 || vreg.size == 8);
+  const char  s = cmd_suff[vreg.size];
+  sb_appendf(sb, "    mov%c $%ld, %d(%%rbp)\n",
+             s, lit, vreg.offset);
 }
 
 void X64_reg_to_vreg(String_Builder *sb, X64RegKind reg, X64VirtReg vreg)
@@ -182,7 +164,7 @@ static size_t arg2reg(String_Builder *sb, X64RegMap *map, Arg *arg, X64RegKind r
 {
   size_t size = arg->type.size;
   assert(size <= 8);
-  static_assert(__arg_kind_count == 9, "introduced more arg kinds");
+  static_assert(__arg_kind_count == 7, "introduced more arg kinds");
   switch (arg->kind) {
   case ARG_REG:
     X64_vreg_to_reg(sb, reg, map->items[arg->reg.id]);
@@ -190,59 +172,9 @@ static size_t arg2reg(String_Builder *sb, X64RegMap *map, Arg *arg, X64RegKind r
   case ARG_NONE:
     UNREACHABLE("the argument cannot be none");
     break;
-  case ARG_REF_VAR: {
-    assert(arg->type.size == 8);
-    Var *var = arg->var;
-    const char  s = cmd_suff[arg->type.size];
-    const char *r = regs[reg][arg->type.size];
-    if (var->is_global) {
-      sb_appendf(sb, "    lea%c "SV_Fmt"(%%rip), %s\n",
-                 s, SV_Arg(var->name), r);
-    } else {
-      sb_appendf(sb, "    lea%c %ld(%%rbp), %s\n",
-                 s, var->offset, r);
-    }
-  } break;
-  case ARG_DREF: {
-    Var *var = arg->var;
-    const char  s = cmd_suff[var->type.size];
-    const char *r = regs[reg][var->type.size];
-    if (var->is_global) {
-      sb_appendf(sb, "    mov%c "SV_Fmt"(%%rip), %s\n",
-                 s, SV_Arg(var->name), r);
-    } else {
-      sb_appendf(sb, "    mov%c %ld(%%rbp), %s\n",
-                 s, var->offset, r);
-    }
-    const char  sd = cmd_suff[arg->type.size];
-    const char *rd = regs[reg][arg->type.size];
-    sb_appendf(sb, "    mov%c (%s), %s\n",
-               sd, r, rd);
-  } break;
-  case ARG_VAR: {
-    Var *var = arg->var;
-    assert(var->type.size <= 8 && cmd_suff[var->type.size] != 0);
-    const char  s = cmd_suff[var->type.size];
-    const char *r = regs[reg][var->type.size];
-    if (var->is_global) {
-      sb_appendf(sb, "    mov%c "SV_Fmt"(%%rip), %s\n",
-                 s, SV_Arg(var->name), r);
-    } else {
-      sb_appendf(sb, "    mov%c %ld(%%rbp), %s\n",
-                 s, var->offset, r);
-    }
-    if (var->type.size != size) {
-      assert(size > var->type.size);
-      if (arg->type.kind == TYPE_INT) {
-        sb_appendf(sb, "    movs%c%c %s, %s",
-                   s, cmd_suff[size], r, regs[reg][size]);
-      } else if (arg->type.kind == TYPE_UINT) {
-        sb_appendf(sb, "    movz%c%c %s, %s",
-                   s, cmd_suff[size], r, regs[reg][size]);
-      } else {
-        UNREACHABLE("only integers can be cast");
-      }
-    }
+  case ARG_GLOBAL_VAR: {
+    sb_appendf(sb, "    leaq "SV_Fmt"@PLT(%%rip), %s\n",
+               SV_Arg(arg->var->name), regs[reg][8]);
   } break;
   case ARG_FN: {
     assert(arg->fn->names.count != 0);
@@ -268,37 +200,16 @@ static size_t arg2reg(String_Builder *sb, X64RegMap *map, Arg *arg, X64RegKind r
   return size;
 }
 
-void store(String_Builder *sb, X64RegKind reg, Var* var)
-{
-  assert(var->type.size <= 8 && cmd_suff[var->type.size] != 0);
-  const char  s = cmd_suff[var->type.size];
-  const char *r = regs[reg][var->type.size];
-  if (var->is_global) {
-    sb_appendf(sb, "    mov%c %s, "SV_Fmt"(%%rip)\n",
-               s, r, SV_Arg(var->name));
-  } else {
-    sb_appendf(sb, "    mov%c %s, %ld(%%rbp)\n",
-               s, r, var->offset);
-  }
-}
-
-void load(String_Builder *sb, Var *var, X64RegKind reg) {
-  assert(var->type.size <= 8 && cmd_suff[var->type.size] != 0);
-  const char  s = cmd_suff[var->type.size];
-  const char *r = regs[reg][var->type.size];
-  if (var->is_global) {
-    sb_appendf(sb, "    mov%c "SV_Fmt"(%%rip), %s\n",
-               s, SV_Arg(var->name), r);
-  } else {
-    sb_appendf(sb, "    mov%c %ld(%%rbp), %s\n",
-               s, var->offset, r);
-  }
-}
-
-void ref_store(String_Builder *sb, X64RegKind dst, X64RegKind src, size_t size)
+static void x64_store(String_Builder *sb, X64RegKind dst, X64RegKind src, size_t size)
 {
   sb_appendf(sb, "    mov%c %s, (%s)\n",
              cmd_suff[size], regs[src][size], regs[dst][8]);
+}
+
+static void x64_load(String_Builder *sb, X64RegKind dst, X64RegKind src, size_t size)
+{
+  sb_appendf(sb, "    mov%c (%s), %s\n",
+             cmd_suff[size], regs[src][8], regs[dst][size]);
 }
 
 // references:
@@ -320,7 +231,6 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
   sb_appendf(&sb, "    .bss\n");
   da_foreach(Var *, p, &prog->vars) {
     Var *var = *p;
-    assert(var->is_global);
     if (var->init_value.kind == ARG_NONE) {
       sb_appendf(&sb, "    .globl "SV_Fmt"\n", SV_Arg(var->name));
       sb_appendf(&sb, "    .bss\n");
@@ -365,21 +275,47 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
 
     assert(fn->type.kind == TYPE_FN);
     X64RegMap map = x64_reg_alloc(fn->regs);
-    build_var_offset_x86_64_gas(&fn->vars, fn->type.fn_type.arg_types.count, map.memsize);
-    sb_appendf(&sb, "    subq $%ld, %%rsp\n", fn->vars.memsize);
-
-    for (size_t i = 0; i < PARAM_REGS_CNT; ++i) {
-      if (i >= fn->type.fn_type.arg_types.count) break;
-      Var *arg = fn->vars.items[i];
-      store(&sb, param_regs[i], arg);
+    sb_appendf(&sb, "    subq $%ld, %%rsp\n", map.memsize);
+    for (size_t i = 0; i < fn->type.fn_type.arg_types.count; ++i) {
+      X64_reg_to_vreg(&sb, param_regs[i], map.items[i]);
     }
 
+    size_t rsp = map.memsize;
     for (size_t op_idx = 0; op_idx < fn->fn_body.count; ++op_idx) {
       Op *op = &fn->fn_body.items[op_idx];
       sb_appendf(&sb, "    // ");
       dump_op(&sb, op);
-      static_assert(__op_kind_count == 7, "introduced more op kinds");
+      static_assert(__op_kind_count == 11, "introduced more op kinds");
       switch(op->kind) {
+      case OP_SET_REG:
+        arg2reg(&sb, &map, &op->set_reg.arg, RAX);
+        X64_reg_to_vreg(&sb, RAX, map.items[op->set_reg.reg.id]);
+        break;
+      case OP_LOAD:
+        assert(op->load.src.type.size == 8);
+        assert(op->load.dst.type.size <= 8);
+        X64_vreg_to_reg(&sb, RAX, map.items[op->load.src.id]);
+        x64_load(&sb, RBX, RAX, op->load.dst.type.size);
+        X64_reg_to_vreg(&sb, RBX, map.items[op->load.dst.id]);
+        break;
+      case OP_STORE:
+        assert(op->store.reg.type.size == 8);
+        assert(op->store.arg.type.size <= 8);
+        X64_vreg_to_reg(&sb, RAX, map.items[op->store.reg.id]);
+        arg2reg(&sb, &map, &op->store.arg, RBX);
+        x64_store(&sb, RAX, RBX, op->store.arg.type.size);
+        break;
+      case OP_ALLOCA: {
+        assert(op->alloca.reg.type.size == 8);
+        sb_appendf(&sb, "    leaq -%ld(%%rbp), %%RAX\n", rsp);
+        size_t new_rsp = (rsp + op->alloca.memsize - 1) / 16 * 16 + 16;
+        sb_appendf(&sb, "    subq $%ld, %%rsp\n", new_rsp - rsp);
+        rsp = new_rsp;
+        X64_reg_to_vreg(&sb, RAX, map.items[op->alloca.reg.id]);
+      } break;
+      case OP_DEALLOC:
+        TODO("");
+        break;
       case OP_INVOKE: {
         for (int i = op->invoke.args.count - 1; i >= 0; --i) {
           if ((size_t)i > PARAM_REGS_CNT) {
@@ -391,7 +327,7 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
         }
 
         switch (op->invoke.fn.kind) {
-        case ARG_VAR:
+        case ARG_REG:
           arg2reg(&sb, &map, &op->invoke.fn, RAX);
           sb_appendf(&sb, "    call *%%rax\n");
           break;
@@ -525,23 +461,6 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
 
         X64_reg_to_vreg(&sb, RAX, map.items[op->binop.dst.id]);
       }  break;
-      case OP_SET_VAR: {
-        arg2reg(&sb, &map, &op->set_var.val, RAX);
-        switch (op->set_var.var.kind) {
-        case ARG_VAR: {
-          Var *var = op->set_var.var.var;
-          store(&sb, RAX, var);
-        } break;
-        case ARG_DREF: {
-          Var *var = op->set_var.var.var;
-          assert(var->type.kind == TYPE_PTR);
-          load(&sb, var, RBX);
-          ref_store(&sb, RBX, RAX, var->type.ptr.inner->size);
-        } break;
-        default:
-          UNREACHABLE("");
-        }
-      } break;
       case OP_JMP:
         sb_appendf(&sb, "    jmp .fn_%ld.label_%ld\n", fn_i, op->jmp.label);
         break;

@@ -14,9 +14,7 @@ typedef enum {
   ARG_FN,
   ARG_EXT,
   ARG_REG,
-  ARG_VAR,
-  ARG_REF_VAR,
-  ARG_DREF,
+  ARG_GLOBAL_VAR,
   ARG_LIT_INT,
   ARG_LIT_STR,
   __arg_kind_count,
@@ -26,8 +24,9 @@ typedef struct Fn Fn;
 typedef struct Var Var;
 
 typedef struct {
-  TypeExpr type;;
+  TypeExpr type;
   size_t id;
+  bool fn_arg;
 } Reg;
 
 typedef struct {
@@ -69,12 +68,8 @@ typedef struct {
 
 struct Var {
   TypeExpr type;
-  size_t id;
-  // mainly used for global variables
-  // the name of local variable is meaningless in assembly level
   String_View name;
   Arg init_value;
-  bool is_global;
 
   ptrdiff_t offset;
 };
@@ -82,7 +77,11 @@ struct Var {
 typedef enum {
   OP_INVOKE = 0,
   OP_RETURN,
-  OP_SET_VAR,
+  OP_ALLOCA,
+  OP_DEALLOC,
+  OP_STORE,
+  OP_LOAD,
+  OP_SET_REG,
   OP_BINOP,
   OP_JMP,
   OP_JMP_ELSE,
@@ -98,11 +97,6 @@ typedef struct {
 } OpInvoke;
 
 typedef struct {
-  Arg var;
-  Arg val;
-} OpSetVar;
-
-typedef struct {
   BinopKind kind;
   Arg lhs;
   Arg rhs;
@@ -114,6 +108,11 @@ typedef struct {
   Arg cond;
 } OpJmp;
 
+typedef struct {
+  Reg reg;
+  Arg arg;
+} RegOp;
+
 const char *binop_name(BinopKind kind);
 
 typedef struct {
@@ -122,10 +121,19 @@ typedef struct {
   union {
     OpInvoke invoke;
     Arg ret_val;
-    OpSetVar set_var;
     OpBinop binop;
     OpJmp jmp;
     size_t label;
+    struct {
+      Reg reg;
+      size_t memsize;
+    } alloca;
+    struct {
+      Reg src;
+      Reg dst;
+    } load;
+    RegOp store;
+    RegOp set_reg;
   };
 } Op;
 
@@ -156,7 +164,6 @@ struct Fn {
   Cursor loc;
 
   OpList fn_body;
-  VarList vars;
   RegList regs;
 };
 
@@ -202,6 +209,16 @@ static Scope *new_scope(Scope *upper)
   return s;
 }
 
+static bool subscope_of(Scope *sp, Scope *upper)
+{
+  while (sp != NULL) {
+    if (sp == upper) return true;
+    sp = sp->upper;
+  }
+
+  return false;
+}
+
 static Arg *scope_add(Scope *sp, String_View name, Cursor loc)
 {
   Arg *value = ht_find(&sp->values, name);
@@ -241,24 +258,23 @@ static SymSearchResult sym_search(Scope *sp, String_View name)
   return (SymSearchResult) {NULL, NULL};
 }
 
-static Var *alloc_var(VarList *vars, String_View name, TypeExpr type, bool is_global)
+static Var *alloc_var(VarList *vars, String_View name, TypeExpr type)
 {
   Var *var = arena_alloc(sizeof(Var));
   *var = (Var) {
     .name      = name,
-    .id        = vars->count,
     .type      = type_clone(type),
-    .is_global = is_global,
   };
   da_append(vars, var);
   return var;
 }
 
-static Reg alloc_reg(RegList *regs, TypeExpr type)
+static Reg alloc_reg(RegList *regs, TypeExpr type, bool fn_arg)
 {
   Reg reg = {
     .id = regs->count,
     .type = type,
+    .fn_arg = fn_arg
   };
   da_append(regs, reg);
   return reg;
@@ -271,7 +287,7 @@ static void dump_reg(String_Builder *sb, Reg reg)
 
 void dump_arg(String_Builder *sb, Arg *arg)
 {
-  static_assert(__arg_kind_count == 9, "introduced more arg kinds");
+  static_assert(__arg_kind_count == 7, "introduced more arg kinds");
   switch(arg->kind) {
   case ARG_NONE:
     sb_appendf(sb, "None");
@@ -279,17 +295,8 @@ void dump_arg(String_Builder *sb, Arg *arg)
   case ARG_FN:
     sb_appendf(sb, SV_Fmt, SV_Arg(sb_to_sv(da_first(&arg->fn->names))));
     break;
-  case ARG_REF_VAR:
-    sb_appendf(sb, "&var[%ld]", arg->var->id);
-    break;
-  case ARG_DREF:
-    sb_appendf(sb, "*var[%ld]", arg->var->id);
-    break;
   case ARG_EXT:
     sb_appendf(sb, SV_Fmt, SV_Arg(arg->ext));
-    break;
-  case ARG_VAR:
-    sb_appendf(sb, "var[%ld]", arg->var->id);
     break;
   case ARG_REG:
     dump_reg(sb, arg->reg);
@@ -300,14 +307,40 @@ void dump_arg(String_Builder *sb, Arg *arg)
   case ARG_LIT_STR:
     sb_appendf(sb, ".S_%ld", arg->str_label);
     break;
+  case ARG_GLOBAL_VAR:
+    sb_appendf(sb, SV_Fmt, SV_Arg(arg->var->name));
+    break;
   default: UNREACHABLE("");
   }
 }
 
 void dump_op(String_Builder *sb, Op *op)
 {
-  static_assert(__op_kind_count == 7, "introduced more op kinds");
+  static_assert(__op_kind_count == 11, "introduced more op kinds");
   switch (op->kind) {
+  case OP_SET_REG:
+    dump_reg(sb, op->set_reg.reg);
+    sb_appendf(sb, " = ");
+    dump_arg(sb, &op->set_reg.arg);
+    break;
+  case OP_LOAD:
+    dump_reg(sb, op->load.dst);
+    sb_appendf(sb, " = *");
+    dump_reg(sb, op->load.src);
+    break;
+  case OP_STORE:
+    sb_appendf(sb, "*");
+    dump_reg(sb, op->store.reg);
+    sb_appendf(sb, " = ");
+    dump_arg(sb, &op->store.arg);
+    break;
+  case OP_DEALLOC:
+    TODO("");
+    break;
+  case OP_ALLOCA:
+    dump_reg(sb, op->alloca.reg);
+    sb_appendf(sb, " = @alloca %ld", op->alloca.memsize);
+    break;
   case OP_INVOKE:
     if (!op->invoke.ret_ignore) {
       dump_reg(sb, op->invoke.ret);
@@ -327,11 +360,6 @@ void dump_op(String_Builder *sb, Op *op)
   case OP_RETURN:
     sb_appendf(sb, "ret ");
     dump_arg(sb, &op->ret_val);
-    break;
-  case OP_SET_VAR:
-    dump_arg(sb, &op->set_var.var);
-    sb_appendf(sb, " = ");
-    dump_arg(sb, &op->set_var.val);
     break;
   case OP_BINOP:
     dump_reg(sb, op->binop.dst);
@@ -369,15 +397,6 @@ static size_t compile_strlit(Program *prog, String_View str)
   return str_count;
 }
 
-static bool contains(void *arr, size_t n, void *val)
-{
-  void **p = arr;
-  for (size_t i = 0; i < n; ++i) {
-    if (val == p[i]) return true;
-  }
-  return false;
-}
-
 typedef struct {
   Lambda *fn;
   Scope *sp;
@@ -388,6 +407,7 @@ typedef Ht(Fn*, Fn_Ctx) Known_Fn;
 typedef struct {
   Program *prog;
   Fn *fn;
+  Scope *fn_scope;
 
   FnList ungenerated;
   Known_Fn known;
@@ -417,33 +437,97 @@ static Fn *push_fn(Lambda* lambda, Gen_Context *ctx, Scope *sp)
   return fn;
 }
 
-static bool id_to_arg(String_View name, Cursor loc, Arg *arg, Scope *sp, Gen_Context *ctx)
+static Arg *scope_get(String_View name, Cursor loc, Scope *sp, Gen_Context *ctx)
 {
   SymSearchResult r = sym_search(sp, name);
   if (r.scope == NULL) {
     pcompile_info(loc,
                   "error: cannot find `"SV_Fmt"` in this scope\n",
                   SV_Arg(name));
-    return NULL;
+    return false;
   }
 
-  if (r.value->kind == ARG_VAR && !r.value->var->is_global) {
-    if (!contains(ctx->fn->vars.items, ctx->fn->vars.count, r.value->var)) {
-      pcompile_info(loc,
-                    "error: `"SV_Fmt"` is not visible in this scope"
-                    "because this language does not support closure.\n",
-                    SV_Arg(name));
-      pcompile_info(r.value->loc,
-                    "info: `"SV_Fmt"` is defined in here\n",
-                    SV_Arg(name));
-      return NULL;
+  if (r.value->kind == ARG_REG && !subscope_of(sp, ctx->fn_scope)) {
+    pcompile_info(loc,
+                  "error: `"SV_Fmt"` is not visible in this scope "
+                  "because this language does not support closure.\n",
+                  SV_Arg(name));
+    pcompile_info(r.value->loc,
+                  "info: `"SV_Fmt"` is defined in here\n",
+                  SV_Arg(name));
+    return false;
+  }
+
+  return r.value;
+}
+
+static bool get_id_addr(String_View name, Cursor loc, Reg *reg, Scope *sp, Gen_Context *ctx)
+{
+  Arg *arg = scope_get(name, loc, sp, ctx);
+  if (arg == NULL) return false;
+
+  switch (arg->kind) {
+  case ARG_REG:
+    if (arg->reg.fn_arg) {
+      TODO("the argument of a function is not stored in memory, "
+           "but logically can be referenced as a pointer. "
+           "Here should introduce a local variale to replace the argument.");
+      return false;
     }
+    *reg = arg->reg;
+    assert(arg->reg.type.kind == TYPE_PTR);
+    return true;
+  case ARG_GLOBAL_VAR: case ARG_FN: {
+    *reg = alloc_reg(&ctx->fn->regs, type_ptr(arg->type, true), false);
+    Op set_reg = {
+      .kind = OP_SET_REG,
+      .set_reg = {
+        .reg = *reg,
+        .arg = *arg,
+      },
+    };
+    da_append(&ctx->fn->fn_body, set_reg);
+    return true;
   }
+  default:
+    pcompile_info(loc, "error: cannot get address of `"SV_Fmt"`\n");
+    return false;
+  }
+}
 
-  *arg     = *r.value;
-  arg->loc = loc;
+static bool get_id_value(String_View name, Cursor loc, Arg *arg, Scope *sp, Gen_Context *ctx)
+{
+  Arg *searched = scope_get(name, loc, sp, ctx);
+  if (searched == NULL) return false;
+  *arg = *searched;
 
-  return arg;
+  switch (arg->kind) {
+  case ARG_FN:
+    return true;
+  case ARG_REG:
+    if (arg->reg.fn_arg) return true;
+    [[fallthrough]];
+  case ARG_GLOBAL_VAR: {
+    Reg src = {0};
+    if (!get_id_addr(name, loc, &src, sp, ctx)) UNREACHABLE("it must be a bug");
+    assert(src.type.kind == TYPE_PTR);
+    Reg dst = alloc_reg(&ctx->fn->regs, *src.type.ptr.inner, false);
+    Op load = {
+      .kind = OP_LOAD,
+      .load = {
+        .dst = dst,
+        .src = src,
+      },
+    };
+    da_append(&ctx->fn->fn_body, load);
+    arg->kind = ARG_REG;
+    arg->type = dst.type;
+    arg->reg  = dst;
+    return true;
+  }
+  default:
+    return true;
+  }
 }
 
 static bool invoke_available(Cursor loc, AST_Invoke *invoke, Scope *sp);
@@ -496,7 +580,12 @@ static bool detect_expr_type(Expr *expr, Scope *sp, TypeExpr expected)
                       SV_Arg(expr->name));
         return NULL;
       }
-      expr->type = type_clone(r.value->type);
+      if (r.value->kind == ARG_REG && !r.value->reg.fn_arg) {
+        assert(r.value->type.kind == TYPE_PTR);
+        expr->type = *r.value->type.ptr.inner;
+      } else {
+        expr->type = r.value->type;
+      }
     } break;
     case EXPR_INVOKE:
       if (!invoke_available(expr->loc, &expr->invoke, sp)) return false;
@@ -710,31 +799,32 @@ static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
   static_assert(__expr_kind_count == 8, "introduced more expr kinds");
   switch (expr->kind) {
   case EXPR_DREF: {
-    Arg inner = {0};
-    if (!expr_to_arg(expr->deref, sp, ctx, &inner)) return false;
-    assert(inner.kind == ARG_VAR);
-    *result = inner;
-    result->kind = ARG_DREF;
-    result->type = expr->type;
+    if (!expr_to_ir(expr, sp, ctx)) return false;
+    Op *load = &da_last(&ctx->fn->fn_body);
+    assert(load->kind == OP_LOAD);
+    result->kind = ARG_REG;
+    result->reg = load->load.dst;
     return true;
-  } case EXPR_REF: {
-    Arg inner = {0};
-    if (!expr_to_arg(expr->ref.inner, sp, ctx, &inner)) return false;
-    if (inner.kind == ARG_VAR) {
-      *result = inner;
-      result->kind = ARG_REF_VAR;
-      result->type = expr->type;
-    } else if (inner.kind == ARG_DREF) {
-      *result = inner;
-      result->kind = ARG_VAR;
-      result->type = expr->type;
+  }
+  case EXPR_REF: {
+    Expr *refered = expr->ref.inner;
+    if (refered->kind == EXPR_NAME) {
+      Reg addr = {0};
+      if (!get_id_addr(refered->name, refered->loc, &addr, sp, ctx))
+        return false;
+      result->kind = ARG_REG;
+      result->reg = addr;
+    } else if (refered->kind == EXPR_DREF) {
+      if (!expr_to_arg(refered->deref, sp, ctx, result)) return false;
     } else {
-      UNREACHABLE("epxr->ref.inner cannot be referenced, "
-                  "this may be a bug in ast.\n");
+      pcompile_info(expr->loc, "error: this cannot be referenced.\n");
     }
     return true;
-  } case EXPR_NAME:
-    return id_to_arg(expr->name, expr->loc, result, sp, ctx);
+  }
+  case EXPR_NAME: {
+    if (!get_id_value(expr->name, expr->loc, result, sp, ctx)) return false;
+    return true;
+  }
   case EXPR_STR:
     result->kind      = ARG_LIT_STR;
     result->str_label = compile_strlit(ctx->prog, expr->str);
@@ -750,14 +840,15 @@ static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
     assert(op->kind == OP_INVOKE);
 
     op->invoke.ret_ignore = false;
-    op->invoke.ret = alloc_reg(&ctx->fn->regs, expr->type);
+    op->invoke.ret = alloc_reg(&ctx->fn->regs, expr->type, false);
     *result = (Arg) {
       .kind = ARG_REG,
       .reg  = op->invoke.ret,
       .type = op->invoke.ret.type,
     };
     return true;
-  } case EXPR_BINOP: {
+  }
+  case EXPR_BINOP: {
     if (!expr_to_ir(expr, sp, ctx)) return false;
 
     Op *op = &da_last(&ctx->fn->fn_body);
@@ -769,11 +860,13 @@ static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
       .reg  = op->binop.dst,
     };
     return true;
-  } case EXPR_LAMBDA: {
+  }
+  case EXPR_LAMBDA: {
     result->kind = ARG_FN;
     result->fn   = push_fn(&expr->lambda, ctx, sp);
     return true;
-  } default: UNREACHABLE("");
+  }
+  default: UNREACHABLE("");
   }
   return true;
 }
@@ -805,15 +898,26 @@ static bool expr_to_ir(Expr *expr, Scope *sp, Gen_Context *ctx)
     if (!expr_to_arg(expr->binop.rhs, sp, ctx, &op.binop.rhs))
       return false;
 
-    op.binop.dst = alloc_reg(&ctx->fn->regs, expr->type);
+    op.binop.dst = alloc_reg(&ctx->fn->regs, expr->type, false);
     da_append(&ctx->fn->fn_body, op);
   } break;
+  case EXPR_DREF: {
+    Arg src = {0};
+    if (!expr_to_arg(expr->deref, sp, ctx, &src))
+      return false;
+    assert(src.type.kind == TYPE_PTR);
+    assert(src.kind == ARG_REG);
+    Reg dst = alloc_reg(&ctx->fn->regs, *src.type.ptr.inner, false);
+    op.kind = OP_LOAD;
+    op.load.dst = dst;
+    op.load.src = src.reg;
+    da_append(&ctx->fn->fn_body, op);
+  } break;
+  case EXPR_REF:
   case EXPR_LAMBDA:
   case EXPR_STR:
   case EXPR_NAME:
   case EXPR_INT:
-  case EXPR_REF:
-  case EXPR_DREF:
     break; // this doesn't need to generate an ir op currently.
   default: UNREACHABLE("");
   }
@@ -906,7 +1010,7 @@ static bool expr_eval(Expr* expr, Scope *sp, Gen_Context *ctx, Arg *val)
     return expr_to_arg(expr, sp, ctx, val);
   case EXPR_NAME:
     if (!expr_to_arg(expr, sp, ctx, val)) return false;
-    if (val->kind == ARG_VAR) {
+    if (val->kind == ARG_GLOBAL_VAR || val->kind == ARG_REG) {
       pcompile_info(val->loc,
                     "error: `"SV_Fmt"` is a runtime variable, which value is unkown at compiletime.\n",
                     SV_Arg(expr->name));
@@ -1061,26 +1165,35 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
     da_append(&ctx->breaks, break_jmp);
   } break;
   case STAT_ASSIGN: {
-    op.kind = OP_SET_VAR;
     if (!detect_expr_type(stat->assign.dst, sp, type_unknown())) return false;
-    Expr *dst = stat->assign.dst;
-    bool ok = dst->kind == EXPR_NAME ||
-      (dst->kind == EXPR_DREF && dst->deref->type.ptr.mutable);
-    if (!ok) {
-      pcompile_info(dst->loc, "error: this is not assignable.\n");
-      return false;
-    }
-    if (!expr_to_arg(stat->assign.dst, sp, ctx, &op.set_var.var))
-      return false;
 
     TypeExpr expected = stat->assign.dst->type;
     assert(expected.kind != TYPE_UNKNOWN &&
            "the type of the destination in assignment must be known, "
            "this may be a bug in stat_to_ir ot detect_expr_type.");
-
     if (!detect_expr_type(stat->assign.val, sp, expected)) return false;
-    if (!expr_to_arg(stat->assign.val, sp, ctx, &op.set_var.val))
+    Arg src = {0};
+    if (!expr_to_arg(stat->assign.val, sp, ctx, &src))
       return false;
+
+    Reg dst = {0};
+    if (stat->assign.dst->kind == EXPR_NAME) {
+      if (!get_id_addr(stat->assign.dst->name, stat->loc, &dst, sp, ctx))
+        return false;
+    } else if (stat->assign.dst->kind == EXPR_DREF) {
+      Arg arg = {0};
+      if (!expr_to_arg(stat->assign.dst->deref, sp, ctx, &arg))
+        return false;
+      assert(arg.kind == ARG_REG);
+      dst = arg.reg;
+    } else {
+      pcompile_info(stat->assign.dst->loc, "error: this is not assignable.\n");
+      return false;
+    }
+    assert(dst.type.kind == TYPE_PTR);
+    op.kind = OP_STORE;
+    op.store.arg = src;
+    op.store.reg = dst;
     da_append(&ctx->fn->fn_body, op);
   } break;
   case STAT_DEF: {
@@ -1125,33 +1238,40 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
       }
     } break;
     case DEF_VAR: {
-      bool is_global = ctx->fn == NULL;
-      VarList *vars = is_global?
-        &ctx->prog->vars:
-        &ctx->fn->vars;
-      Var *var = alloc_var(vars, stat->def.name, stat->def.type, is_global);
-      if (stat->def.val != NULL) {
-        if (ctx->fn != NULL) { // local vars
-          if (!expr_to_arg(stat->def.val, sp, ctx, &var->init_value))
-            return false;
-        } else {               // global vars
+      if (ctx->fn == NULL) { // global variable
+        Var *var = alloc_var(&ctx->prog->vars, stat->def.name, stat->def.type);
+        if (stat->def.val != NULL) {
           if (!expr_eval(stat->def.val, sp, ctx, &var->init_value))
             return false;
         }
-      }
-
-      Arg *arg = scope_add(sp, stat->def.name, stat->loc);
-      if (arg == NULL) return false;
-      arg->kind = ARG_VAR;
-      arg->var  = var;
-      arg->type = type_clone(stat->def.type);
-
-      if (stat->def.val != NULL && ctx->fn != NULL) {
-        op.kind = OP_SET_VAR;
-        op.set_var.val = var->init_value;
-        if (!id_to_arg(stat->def.name, stat->loc, &op.set_var.var, sp, ctx))
-          return false;
-        da_append(&ctx->fn->fn_body, op);
+        Arg *arg = scope_add(sp, stat->def.name, stat->loc);
+        if (arg == NULL) return false;
+        arg->kind = ARG_GLOBAL_VAR;
+        arg->var  = var;
+        arg->type = stat->def.type;
+      } else { // local variable
+        TypeExpr type = type_ptr(stat->def.type, true);
+        Reg reg = alloc_reg(&ctx->fn->regs, type, false);
+        Op alloca = {
+          .kind = OP_ALLOCA,
+          .loc = stat->loc,
+          .alloca = {
+            .reg = reg,
+            .memsize = stat->def.type.size,
+          }
+        };
+        da_append(&ctx->fn->fn_body, alloca);
+        if (stat->def.val != NULL) {
+          op.kind = OP_STORE;
+          op.store.reg = reg;
+          if (!expr_to_arg(stat->def.val, sp, ctx, &op.store.arg)) return false;
+          da_append(&ctx->fn->fn_body, op);
+        }
+        Arg *arg = scope_add(sp, stat->def.name, stat->loc);
+        if (arg == NULL) return false;
+        arg->kind = ARG_REG;
+        arg->reg  = reg;
+        arg->type = reg.type;
       }
     } break;
     default: UNREACHABLE("");
@@ -1171,6 +1291,7 @@ static bool gen_ir_fn(Fn *fn, Gen_Context *ctx)
 
   Fn_Ctx *fn_ctx = ht_find(&ctx->known, fn);
   assert(fn_ctx != NULL);
+  ctx->fn_scope = fn_ctx->sp;
   da_append(&ctx->prog->fn_list, fn);
   Lambda *lambda = fn_ctx->fn;
 
@@ -1179,9 +1300,9 @@ static bool gen_ir_fn(Fn *fn, Gen_Context *ctx)
     Arg *value = scope_add(fn_ctx->sp, arg->name, arg->loc);
     if (value == NULL) return false;
 
-    value->kind = ARG_VAR;
-    value->var  = alloc_var(&ctx->fn->vars, SVLIT(""), arg->type, false);
-    value->type = type_clone(arg->type);
+    value->kind = ARG_REG;
+    value->reg  = alloc_reg(&ctx->fn->regs, arg->type, true);
+    value->type = arg->type;
   }
 
   da_foreach (Stat, stat, &lambda->body) {

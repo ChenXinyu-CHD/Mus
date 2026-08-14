@@ -11,7 +11,7 @@ let main = fn() -> i32 {
         var a =
             a + 1;
         var foo = 38324;
-        printf("a = %d, foo = %ld\n", a, foo);
+        printf("a = %d, foo = %d\n", a, foo);
     }
     printf("a = %d\n", a);
     return 0;
