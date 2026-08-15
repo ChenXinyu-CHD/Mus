@@ -48,8 +48,6 @@ struct TypeExpr {
 TypeExpr type_fn(TypeExpr ret_type, TypeList arg_types, bool va_args);
 TypeExpr type_ptr(TypeExpr inner, bool mutable);
 
-TypeExpr type_clone(TypeExpr t);
-
 void dump_type_expr(TypeExpr *type, FILE *stream);
 // return true if lhs is exactly equals to rhs.
 bool type_eq(const TypeExpr *lhs, const TypeExpr *rhs);
@@ -91,34 +89,6 @@ TypeExpr type_fn(TypeExpr ret_type, TypeList arg_types, bool va_args)
   *type.fn_type.ret_type = ret_type;
 
   return type;
-}
-
-TypeExpr type_clone(TypeExpr t)
-{
-  TypeExpr result = {0};
-  static_assert(__type_kind_count == 7, "introduced more type kinds");
-  switch (t.kind) {
-  case TYPE_UNKNOWN:
-  case TYPE_BOOL:
-  case TYPE_VOID:
-  case TYPE_INT:
-  case TYPE_UINT:
-    result = t;
-    break;
-  case TYPE_PTR:
-    result = type_ptr(type_clone(*t.ptr.inner), t.ptr.mutable);
-    break;
-  case TYPE_FN: {
-    TypeList arg_types = {0};
-    da_foreach (TypeExpr, arg, &t.fn_type.arg_types) {
-      da_append(&arg_types, type_clone(*arg));
-    }
-    result = type_fn(*t.fn_type.ret_type, arg_types, t.fn_type.va_args);
-  }break;
-  default: UNREACHABLE("type_clone");
-  }
-
-  return result;
 }
 
 bool type_eq(const TypeExpr *lhs, const TypeExpr *rhs)

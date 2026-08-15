@@ -263,7 +263,7 @@ static Var *alloc_var(VarList *vars, String_View name, TypeExpr type)
   Var *var = arena_alloc(sizeof(Var));
   *var = (Var) {
     .name      = name,
-    .type      = type_clone(type),
+    .type      = type,
   };
   da_append(vars, var);
   return var;
@@ -567,7 +567,7 @@ static bool detect_expr_type(Expr *expr, Scope *sp, TypeExpr expected)
                       "and cannot be dereferenced.\n");
         return false;
       }
-      expr->type = type_clone(*expr->deref->type.ptr.inner);
+      expr->type = *expr->deref->type.ptr.inner;
       break;
     case EXPR_BINOP:
       if (!detect_binop_type(expr, sp, expected)) return false;
@@ -589,7 +589,7 @@ static bool detect_expr_type(Expr *expr, Scope *sp, TypeExpr expected)
     } break;
     case EXPR_INVOKE:
       if (!invoke_available(expr->loc, &expr->invoke, sp)) return false;
-      expr->type = type_clone(*expr->invoke.fn->type.fn_type.ret_type);
+      expr->type = *expr->invoke.fn->type.fn_type.ret_type;
       break;
     case EXPR_INT:
       detect_intlit_type(expr, expected);
@@ -699,7 +699,7 @@ static bool detect_binop_type(Expr *expr, Scope *sp, TypeExpr expected)
       if (!detect_expr_type(lhs, sp, rhs->type)) ok = false;
     }
     supported = is_type_int(lhs->type.kind) && type_eq(&lhs->type, &rhs->type);
-    expr->type = type_clone(lhs->type);
+    expr->type = lhs->type;
   } break;
   case BINOP_ADD:
   case BINOP_SUB: {
@@ -722,7 +722,7 @@ static bool detect_binop_type(Expr *expr, Scope *sp, TypeExpr expected)
       (is_type_int(lhs->type.kind) && type_eq(&lhs->type, &rhs->type)) ||
       (is_type_int(lhs->type.kind) && rhs->type.kind == TYPE_PTR) ||
       (lhs->type.kind == TYPE_PTR && is_type_int(rhs->type.kind));
-    expr->type = type_clone(lhs->type.kind == TYPE_PTR? lhs->type : rhs->type);
+    expr->type = lhs->type.kind == TYPE_PTR? lhs->type : rhs->type;
   } break;
   case BINOP_EQ:
   case BINOP_NEQ:
@@ -992,7 +992,7 @@ static bool compiletime_eval_cmp(Arg lhs, Arg rhs, BinopKind op, Arg *val)
 
 static bool expr_eval(Expr* expr, Scope *sp, Gen_Context *ctx, Arg *val)
 {
-  val->type = type_clone(expr->type);
+  val->type = expr->type;
   static_assert(__expr_kind_count == 8, "introduced more expr kinds");
   switch (expr->kind) {
   case EXPR_DREF:
@@ -1205,7 +1205,7 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
         return false;
       }
       if (!detect_expr_type(stat->def.val, sp, type_unknown())) return false;
-      stat->def.type = type_clone(stat->def.val->type);
+      stat->def.type = stat->def.val->type;
     } else if (stat->def.val != NULL) {
       if (!detect_expr_type(stat->def.val, sp, stat->def.type)) return false;
     }
@@ -1218,7 +1218,7 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
         assert(stat->def.val == NULL);
         val = (Arg) {
           .kind = ARG_EXT,
-          .type = type_clone(stat->def.type),
+          .type = stat->def.type,
           .ext  = stat->def.name,
         };
       } else {

@@ -216,7 +216,7 @@ static struct {
 static bool compile_internal_type(Lexer *l, TypeExpr *type) {
   for (size_t i = 0; i < ARRAY_LEN(internal_types); ++i) {
     if (internal_types[i].token == l->current.kind) {
-      *type = type_clone(internal_types[i].type);
+      *type = internal_types[i].type;
       return true;
     }
   }
@@ -592,16 +592,16 @@ Expr *compile_expr(Lexer *l)
 Expr *lambda_of_type(TypeExpr *type, Cursor loc)
 {
   Expr *expr = arena_calloc(1, sizeof(*expr));
-  expr->type = type_clone(*type);
+  expr->type = *type;
   expr->kind = EXPR_LAMBDA;
   expr->loc  = loc;
 
-  expr->lambda.ret_type = type_clone(*type->fn_type.ret_type);
+  expr->lambda.ret_type = *type->fn_type.ret_type;
   expr->lambda.args.va  = type->fn_type.va_args;
   expr->lambda.loc      = loc;
 
   da_foreach(TypeExpr, arg_type, &type->fn_type.arg_types) {
-    Fn_Arg arg = { .type = type_clone(*arg_type) };
+    Fn_Arg arg = { .type = *arg_type };
     da_append(&expr->lambda.args, arg);
   }
   return expr;
