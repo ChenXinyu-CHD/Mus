@@ -37,6 +37,8 @@ void *arena_alloc(size_t size);
 void *arena_calloc(size_t n, size_t size);
 void *arena_realloc(void *ptr, size_t new_size);
 
+#define arena_copy(x) memcpy(arena_alloc(sizeof(x)), &(x), sizeof(x))
+
 typedef struct  {
   Arena_Block *end;
   size_t used;

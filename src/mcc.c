@@ -276,7 +276,7 @@ String_Builder gen_code_x86_64_gas(const Program *prog)
     assert(fn->type.kind == TYPE_FN);
     X64RegMap map = x64_reg_alloc(fn->regs);
     sb_appendf(&sb, "    subq $%ld, %%rsp\n", map.memsize);
-    for (size_t i = 0; i < fn->type.fn_type.arg_types.count; ++i) {
+    for (size_t i = 0; i < fn->type.fn.args.count; ++i) {
       X64_reg_to_vreg(&sb, param_regs[i], map.items[i]);
     }
 

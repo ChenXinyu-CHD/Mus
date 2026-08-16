@@ -238,6 +238,8 @@ static struct {
   {.str = "%", .print_name = "'%'", .kind = '%'},
   {.str = "<", .print_name = "'<'", .kind = '<'},
   {.str = ">", .print_name = "'>'", .kind = '>'},
+  {.str = "[", .print_name = "'['", .kind = '['},
+  {.str = "]", .print_name = "']'", .kind = ']'},
   // internal types
   {.str = "bool", .print_name = "bool", .kind = TOKEN_BOOL},
   {.str = "u8",   .print_name = "u8",   .kind = TOKEN_U8},

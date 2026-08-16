@@ -553,7 +553,7 @@ static void detect_intlit_type(Expr *expr, TypeExpr expected)
 static bool detect_expr_type(Expr *expr, Scope *sp, TypeExpr expected)
 {
   if (expr->type.kind == TYPE_UNKNOWN) {
-    static_assert(__expr_kind_count == 8, "introduced more expr kinds");
+    static_assert(__expr_kind_count == 9, "introduced more expr kinds");
     switch (expr->kind) {
     case EXPR_REF:
       if (!detect_expr_type(expr->ref.inner, sp, type_unknown())) return false;
@@ -589,11 +589,31 @@ static bool detect_expr_type(Expr *expr, Scope *sp, TypeExpr expected)
     } break;
     case EXPR_INVOKE:
       if (!invoke_available(expr->loc, &expr->invoke, sp)) return false;
-      expr->type = *expr->invoke.fn->type.fn_type.ret_type;
+      expr->type = *expr->invoke.fn->type.fn.ret;
       break;
     case EXPR_INT:
       detect_intlit_type(expr, expected);
       break;
+    case EXPR_ARR_INIT: {
+      TypeExpr item_expected = expected.kind == TYPE_ARRAY?
+        *expected.arr.inner : type_unknown();
+      assert(expr->arr_init.count != 0);
+      if (!detect_expr_type(&da_first(&expr->arr_init), sp, item_expected))
+        return false;
+      // this is useful if item_expected.kind == TYPE_UNKNOWN.
+      // Otherwise, it is useless because
+      // da_first(&expr->arr_init).type == item_expected.
+      item_expected = da_first(&expr->arr_init).type;
+      if (!expr->arr_init.repeat) {
+        for (size_t i = 1; i < expr->arr_init.count; ++i) {
+          if (!detect_expr_type(&expr->arr_init.items[i], sp, item_expected))
+            return false;
+        }
+      }
+      expr->type.kind = TYPE_ARRAY;
+      expr->type.arr.inner = &da_first(&expr->arr_init).type;
+      expr->type.arr.count = expr->arr_init.count;
+    } break;
     case EXPR_STR:
     case EXPR_LAMBDA:
       assert(false && "these type must be known, it may be a bug in ast.h");
@@ -764,16 +784,16 @@ static bool invoke_available(Cursor loc, AST_Invoke *invoke, Scope *sp)
     fputc('\n', stderr);
   }
 
-  FnType fn_type = invoke->fn->type.fn_type;
+  FnType fn_type = invoke->fn->type.fn;
   bool arg_matched = true;
-  if (fn_type.arg_types.count > invoke->args.count)
+  if (fn_type.args.count > invoke->args.count)
     arg_matched = false;
-  if (!fn_type.va_args && fn_type.arg_types.count < invoke->args.count)
+  if (!fn_type.va_args && fn_type.args.count < invoke->args.count)
     arg_matched = false;
   if (!arg_matched) {
     pcompile_info(loc,
                   "error: this function expects %ld arguments, but provided %ld.\n",
-                  fn_type.arg_types.count,
+                  fn_type.args.count,
                   invoke->args.count);
     return false;
   }
@@ -781,8 +801,8 @@ static bool invoke_available(Cursor loc, AST_Invoke *invoke, Scope *sp)
   bool ok = true;
   for (size_t i = 0; i < invoke->args.count; ++ i) {
     TypeExpr expect = type_unknown();
-    if (i < fn_type.arg_types.count)
-      expect = fn_type.arg_types.items[i];
+    if (i < fn_type.args.count)
+      expect = fn_type.args.items[i];
 
     if (!detect_expr_type(&invoke->args.items[i], sp, expect)) ok = false;
   }
@@ -796,7 +816,7 @@ static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
   result->loc  = expr->loc;
   result->type = expr->type;
 
-  static_assert(__expr_kind_count == 8, "introduced more expr kinds");
+  static_assert(__expr_kind_count == 9, "introduced more expr kinds");
   switch (expr->kind) {
   case EXPR_DREF: {
     if (!expr_to_ir(expr, sp, ctx)) return false;
@@ -866,6 +886,9 @@ static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
     result->fn   = push_fn(&expr->lambda, ctx, sp);
     return true;
   }
+  case EXPR_ARR_INIT:
+    TODO("");
+    break;
   default: UNREACHABLE("");
   }
   return true;
@@ -874,7 +897,7 @@ static bool expr_to_arg(Expr *expr, Scope *sp, Gen_Context *ctx, Arg *result)
 static bool expr_to_ir(Expr *expr, Scope *sp, Gen_Context *ctx)
 {
   Op op = { .loc = expr->loc };
-  static_assert(__expr_kind_count == 8, "introduced more expr kinds");
+  static_assert(__expr_kind_count == 9, "introduced more expr kinds");
   switch (expr->kind) {
   case EXPR_INVOKE: {
     if (!expr_to_arg(expr->invoke.fn, sp, ctx, &op.invoke.fn))
@@ -913,6 +936,9 @@ static bool expr_to_ir(Expr *expr, Scope *sp, Gen_Context *ctx)
     op.load.src = src.reg;
     da_append(&ctx->fn->fn_body, op);
   } break;
+  case EXPR_ARR_INIT:
+    TODO("");
+    break;
   case EXPR_REF:
   case EXPR_LAMBDA:
   case EXPR_STR:
@@ -993,7 +1019,7 @@ static bool compiletime_eval_cmp(Arg lhs, Arg rhs, BinopKind op, Arg *val)
 static bool expr_eval(Expr* expr, Scope *sp, Gen_Context *ctx, Arg *val)
 {
   val->type = expr->type;
-  static_assert(__expr_kind_count == 8, "introduced more expr kinds");
+  static_assert(__expr_kind_count == 9, "introduced more expr kinds");
   switch (expr->kind) {
   case EXPR_DREF:
   case EXPR_REF:
@@ -1008,6 +1034,10 @@ static bool expr_eval(Expr* expr, Scope *sp, Gen_Context *ctx, Arg *val)
   case EXPR_STR:
   case EXPR_LAMBDA:
     return expr_to_arg(expr, sp, ctx, val);
+  case EXPR_ARR_INIT:
+    TODO("It is ok logically, but currently I can't implement it. "
+         "Maybe I need to ");
+    return false;
   case EXPR_NAME:
     if (!expr_to_arg(expr, sp, ctx, val)) return false;
     if (val->kind == ARG_GLOBAL_VAR || val->kind == ARG_REG) {
@@ -1071,7 +1101,7 @@ static bool stat_to_ir(Stat *stat, Scope *sp, Gen_Context *ctx)
   case STAT_RET: {
     op.kind = OP_RETURN;
     if (stat->ret_val != NULL) {
-      if (!detect_expr_type(stat->ret_val, sp, *ctx->fn->type.fn_type.ret_type))
+      if (!detect_expr_type(stat->ret_val, sp, *ctx->fn->type.fn.ret))
         return false;
       if (!expr_to_arg(stat->ret_val, sp, ctx, &op.ret_val))
         return false;

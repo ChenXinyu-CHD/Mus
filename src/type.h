@@ -9,6 +9,7 @@ typedef enum {
   TYPE_BOOL,
   TYPE_FN,
   TYPE_PTR,
+  TYPE_ARRAY,
   __type_kind_count,
 } TypeKind;
 
@@ -21,8 +22,8 @@ typedef struct {
 } TypeList;
 
 typedef struct {
-  TypeExpr *ret_type;
-  TypeList arg_types;
+  TypeExpr *ret;
+  TypeList args;
   bool va_args;
 } FnType;
 
@@ -31,13 +32,19 @@ typedef struct {
   bool mutable;
 } PtrType;
 
+typedef struct {
+  TypeExpr *inner;
+  size_t count;
+} ArrType;
+
 struct TypeExpr {
   TypeKind kind;
   size_t size;
 
   union {
     PtrType ptr;
-    FnType fn_type;
+    FnType fn;
+    ArrType arr;
   };
 };
 
@@ -80,20 +87,20 @@ TypeExpr type_fn(TypeExpr ret_type, TypeList arg_types, bool va_args)
   TypeExpr type = {
     .kind = TYPE_FN,
     .size = 8,
-    .fn_type = {
-      .ret_type = arena_alloc(sizeof(TypeExpr)),
-      .arg_types = arg_types,
+    .fn = {
+      .ret = arena_alloc(sizeof(TypeExpr)),
+      .args = arg_types,
       .va_args = va_args,
     },
   };
-  *type.fn_type.ret_type = ret_type;
+  *type.fn.ret = ret_type;
 
   return type;
 }
 
 bool type_eq(const TypeExpr *lhs, const TypeExpr *rhs)
 {
-  static_assert(__type_kind_count == 7, "introduced more type kinds");
+  static_assert(__type_kind_count == 8, "introduced more type kinds");
   if (lhs->kind != rhs->kind || lhs->size != rhs->size) return false;
 
   switch (lhs->kind) {
@@ -106,17 +113,21 @@ bool type_eq(const TypeExpr *lhs, const TypeExpr *rhs)
   case TYPE_PTR:
     return lhs->ptr.mutable == rhs->ptr.mutable &&
       type_eq(lhs->ptr.inner, rhs->ptr.inner);
+  case TYPE_ARRAY:
+    return lhs->arr.count == rhs->arr.count &&
+      type_eq(lhs->arr.inner, rhs->arr.inner);
+    break;
   case TYPE_FN:
-    if (lhs->fn_type.va_args != rhs->fn_type.va_args) return false;
+    if (lhs->fn.va_args != rhs->fn.va_args) return false;
 
-    if (lhs->fn_type.arg_types.count != rhs->fn_type.arg_types.count) return false;
-    for (size_t i = 0; i < lhs->fn_type.arg_types.count; ++i) {
-      TypeExpr *la = &lhs->fn_type.arg_types.items[i];
-      TypeExpr *ra = &rhs->fn_type.arg_types.items[i];
+    if (lhs->fn.args.count != rhs->fn.args.count) return false;
+    for (size_t i = 0; i < lhs->fn.args.count; ++i) {
+      TypeExpr *la = &lhs->fn.args.items[i];
+      TypeExpr *ra = &rhs->fn.args.items[i];
       if (!type_eq(la, ra)) return false;
     }
 
-    if (!type_eq(lhs->fn_type.ret_type, rhs->fn_type.ret_type)) return false;
+    if (!type_eq(lhs->fn.ret, rhs->fn.ret)) return false;
 
     return true;
   default: UNREACHABLE("");
@@ -125,7 +136,7 @@ bool type_eq(const TypeExpr *lhs, const TypeExpr *rhs)
 
 void dump_type_expr(TypeExpr *type, FILE *stream)
 {
-  static_assert(__type_kind_count == 7, "introduced more type kinds");
+  static_assert(__type_kind_count == 8, "introduced more type kinds");
   switch(type->kind) {
   case TYPE_UNKNOWN:
     fprintf(stream, "unknown type");
@@ -144,21 +155,26 @@ void dump_type_expr(TypeExpr *type, FILE *stream)
     break;
   case TYPE_FN:
     fprintf(stream, "fn(");
-    for (size_t i = 0; i < type->fn_type.arg_types.count; ++i) {
-      dump_type_expr(&type->fn_type.arg_types.items[i], stream);
-      if (i + 1 < type->fn_type.arg_types.count) {
+    for (size_t i = 0; i < type->fn.args.count; ++i) {
+      dump_type_expr(&type->fn.args.items[i], stream);
+      if (i + 1 < type->fn.args.count) {
         fprintf(stream, ",");
-      } else if (type->fn_type.va_args) {
+      } else if (type->fn.va_args) {
         fprintf(stream, ",...");
       }
     }
     fprintf(stream, ")->");
-    dump_type_expr(type->fn_type.ret_type, stream);
+    dump_type_expr(type->fn.ret, stream);
     break;
   case TYPE_PTR:
     fprintf(stream, "&");
     if (type->ptr.mutable) fprintf(stream, "mut ");
     dump_type_expr(type->ptr.inner, stream);
+    break;
+  case TYPE_ARRAY:
+    fprintf(stream, "[");
+    dump_type_expr(type->arr.inner, stream);
+    fprintf(stream, ";%ld]", type->arr.count);
     break;
   default: UNREACHABLE("type");
   }

@@ -14,6 +14,7 @@ typedef enum {
   EXPR_BINOP,
   EXPR_REF,
   EXPR_DREF,
+  EXPR_ARR_INIT,
   __expr_kind_count
 } Expr_Kind;
 
@@ -98,10 +99,19 @@ struct Expr {
       Expr *inner;
     } ref;
     Expr *deref;
+    struct {
+      Expr *items;
+      size_t count;
+      size_t capacity;
+      // repeate is a compiletime value
+      // if it is not NULL, items will contain
+      // only one element.
+      Expr *repeat;
+    } arr_init;
   };
 };
 
-Expr *compile_expr(Lexer *l);
+bool compile_expr(Lexer *l, Expr *result);
 typedef enum {
   STAT_EMPTY = 0,
   STAT_INVOKE,
@@ -166,7 +176,7 @@ bool compile_file(Lexer *l, Stat_List *file);
 
 #ifdef MCC_AST_IMPLEMENTATION
 
-static_assert(__type_kind_count == 7, "introduced more type kinds");
+static_assert(__type_kind_count == 8, "introduced more type kinds");
 static struct {
   int token;
   TypeExpr type;
@@ -318,106 +328,43 @@ static bool compile_type_fn(Lexer *l, TypeExpr *type)
   return true;
 }
 
-static const struct {
-  int token_kind;
-  BinopKind binop_kind;
-} binop_list[] = {
-  {.token_kind =  '+',       .binop_kind = BINOP_ADD,},
-  {.token_kind =  '-',       .binop_kind = BINOP_SUB,},
-  {.token_kind =  '*',       .binop_kind = BINOP_MUL,},
-  {.token_kind =  '/',       .binop_kind = BINOP_DIV,},
-  {.token_kind =  '%',       .binop_kind = BINOP_MOD,},
-  {.token_kind =  '<',       .binop_kind = BINOP_LS,},
-  {.token_kind =  '>',       .binop_kind = BINOP_GT,},
-  {.token_kind =  TOKEN_EQ,  .binop_kind = BINOP_EQ,},
-  {.token_kind =  TOKEN_NEQ, .binop_kind = BINOP_NEQ,},
-  {.token_kind =  TOKEN_LE,  .binop_kind = BINOP_LE,},
-  {.token_kind =  TOKEN_GE,  .binop_kind = BINOP_GE,},
-};
-static_assert(__binop_kind_count == ARRAY_LEN(binop_list),
-              "introduced more binop kinds");
-
-const char *binop_name(BinopKind kind)
+static bool expr_atom(Token token, Expr *result)
 {
-  for (size_t i = 0; i < ARRAY_LEN(binop_list); ++i) {
-    if (binop_list[i].binop_kind == kind) {
-      return token_name(binop_list[i].token_kind);
-    }
-  }
-  UNREACHABLE("");
-}
+  result->loc  = token.start;
 
-static Expr *expr_atom(Token token)
-{
-  Expr *expr = arena_alloc(sizeof(*expr));
-  expr->loc  = token.start;
-
-  static_assert(__expr_kind_count == 8, "introduced more expr kinds");
+  static_assert(__expr_kind_count == 9, "introduced more expr kinds");
   switch (token.kind) {
   case TOKEN_STR:
-    expr->kind = EXPR_STR;
-    expr->str  = token.str;
-    expr->type = type_ptr(type_int(TYPE_INT, 1), false);
-    return expr;
+    result->kind = EXPR_STR;
+    result->str  = token.str;
+    result->type = type_ptr(type_int(TYPE_INT, 1), false);
+    return true;
   case TOKEN_INT:
-    expr->kind    = EXPR_INT;
-    expr->integer = sv_to_int(token.str);
-    expr->type    = type_unknown();
-    return expr;
+    result->kind    = EXPR_INT;
+    result->integer = sv_to_int(token.str);
+    result->type    = type_unknown();
+    return true;
   case TOKEN_TRUE:
-    expr->kind    = EXPR_INT;
-    expr->integer = 1;
-    expr->type    = type_bool();
-    return expr;
+    result->kind    = EXPR_INT;
+    result->integer = 1;
+    result->type    = type_bool();
+    return true;
   case TOKEN_FALSE:
-    expr->kind    = EXPR_INT;
-    expr->integer = 0;
-    expr->type    = type_bool();
-    return expr;
+    result->kind    = EXPR_INT;
+    result->integer = 0;
+    result->type    = type_bool();
+    return true;
   case TOKEN_ID:
-    expr->kind = EXPR_NAME;
-    expr->name = token.str;
-    expr->type.kind = TYPE_UNKNOWN;
-    return expr;
+    result->kind = EXPR_NAME;
+    result->name = token.str;
+    result->type.kind = TYPE_UNKNOWN;
+    return true;
   default:
     pcompile_info(token.start,
                   "error: expected an expression but got `"SV_Fmt"`\n",
                   token.str);
-    return NULL;
+    return false;
   }
-  return expr;
-}
-static Expr *expr_invoke(Expr *fn, Expr_List args)
-{
-  Expr *expr = arena_alloc(sizeof(*expr));
-  *expr = (Expr) {
-    .kind = EXPR_INVOKE,
-    .loc = fn->loc,
-    .invoke =  {
-      .fn = fn,
-      .args = args,
-    }
-  };
-  return expr;
-}
-static Expr *expr_binop(Token op, Expr *lhs, Expr *rhs)
-{
-  for (size_t i = 0; i < ARRAY_LEN(binop_list); ++i) {
-    if (binop_list[i].token_kind == op.kind) {
-      Expr *result = arena_alloc(sizeof(*result));
-      *result = (Expr) {
-        .kind = EXPR_BINOP,
-        .loc = op.start,
-        .binop = {
-          .kind = binop_list[i].binop_kind,
-          .lhs = lhs,
-          .rhs = rhs,
-        }
-      };
-      return result;
-    }
-  }
-  UNREACHABLE("");
 }
 
 static bool compile_invoke_args(Lexer *l, Expr_List *args)
@@ -426,9 +373,9 @@ static bool compile_invoke_args(Lexer *l, Expr_List *args)
   if (!prefetch_not_none(l)) return false;
 
   while (l->current.kind != ')') {
-    Expr *arg = compile_expr(l);
-    if (arg == NULL) return false;
-    da_append(args, *arg);
+    Expr arg = {0};
+    if (!compile_expr(l, &arg)) return false;
+    da_append(args, arg);
 
     if (!expect_tokens(l, ',', ')')) return false;
 
@@ -441,142 +388,181 @@ static bool compile_invoke_args(Lexer *l, Expr_List *args)
   return true;
 }
 
-static Expr *compile_lambda(Lexer *l)
+static bool compile_lambda(Lexer *l, Expr *result)
 {
   Lambda lambda = {.loc = l->current.start};
-  if (!compile_fn_sign(l, &lambda.ret_type, &lambda.args)) return NULL;
+  if (!compile_fn_sign(l, &lambda.ret_type, &lambda.args)) return false;
 
   if (!prefetch_expect_token(l, '{')) return false;
 
   if (!compile_block(l, &lambda.body, false)) return false;
 
-  Expr *expr = arena_alloc(sizeof(*expr));
-  *expr = (Expr) {
+  *result = (Expr) {
     .kind = EXPR_LAMBDA,
     .loc = lambda.loc,
     .lambda = lambda,
     .type = type_of_fn(&lambda.ret_type, &lambda.args)
   };
 
-  return expr;
+  return true;
 }
 
-static Expr *compile_simple_expr(Lexer *l)
+static bool compile_simple_expr(Lexer *l, Expr *result)
 {
-  Expr *expr = NULL;
   if (l->current.kind == TOKEN_FN) {
-    return compile_lambda(l);
+    return compile_lambda(l, result);
   }
   if (l->current.kind == '(') {
-    if (!prefetch_not_none(l))  return NULL;
-    expr = compile_expr(l);
-    if (!expect_token(l, ')'))  return NULL;
-    if (!prefetch_not_none(l)) return NULL;
+    if (!prefetch_not_none(l))    return false;
+    if (!compile_expr(l, result)) return false;
+    if (!expect_token(l, ')'))    return false;
+    if (!prefetch_not_none(l))    return false;
   } else if (l->current.kind == '&') {
     Cursor loc = l->current.start;
-    if (!prefetch_not_none(l))  return NULL;
+    if (!prefetch_not_none(l))  return false;
     bool mutable = false;
     if (l->current.kind == TOKEN_MUT) {
-      if (!prefetch_not_none(l)) return NULL;
+      if (!prefetch_not_none(l)) return false;
       mutable = true;
     }
-    Expr *inner = compile_simple_expr(l);
-    if (inner == NULL) return NULL;
-    if (inner->kind != EXPR_NAME && inner->kind != EXPR_DREF) {
-      pcompile_info(inner->loc, "error: this cannot be referenced.\n");
+    Expr inner = {0};
+    if (!compile_simple_expr(l, &inner)) return false;
+    if (inner.kind != EXPR_NAME && inner.kind != EXPR_DREF) {
+      pcompile_info(inner.loc, "error: this cannot be referenced.\n");
       return false;
     }
 
-    expr = arena_alloc(sizeof(*expr));
-    expr->loc = loc;
-    expr->kind = EXPR_REF;
-    expr->ref.mutable = mutable;
-    expr->ref.inner = inner;
+    result->loc = loc;
+    result->kind = EXPR_REF;
+    result->ref.mutable = mutable;
+    result->ref.inner = arena_copy(inner);
   } else if (l->current.kind == '*') {
     Cursor loc = l->current.start;
-    if (!prefetch_not_none(l))  return NULL;
-    Expr *inner = compile_simple_expr(l);
-    if (inner == NULL) return NULL;
+    if (!prefetch_not_none(l))  return false;
+    Expr inner = {0};
+    if (!compile_simple_expr(l, &inner)) return false;
 
-    expr = arena_alloc(sizeof(*expr));
-    expr->loc = loc;
-    expr->kind  = EXPR_DREF;
-    expr->deref = inner;
+    result->loc = loc;
+    result->kind  = EXPR_DREF;
+    result->deref = arena_copy(inner);
+  } else if (l->current.kind == '[') {
+    TODO("");
   } else {
-    expr = expr_atom(l->current);
-    if (!prefetch_not_none(l)) return NULL;
+    if (!expr_atom(l->current, result)) return false;
+    if (!prefetch_not_none(l))          return false;
   }
+  return true;
+}
 
-  if (expr == NULL) return NULL;
-
+static bool compile_invoke(Lexer *l, Expr *result) {
+  if (!compile_simple_expr(l, result)) return false;
   while (l->current.kind == '(') {
+    Expr fn = *result;
     Expr_List args = {0};
-    if (!compile_invoke_args(l, &args)) return NULL;
-    expr = expr_invoke(expr, args);
+    if (!compile_invoke_args(l, &args)) return false;
+    result->kind = EXPR_INVOKE;
+    result->invoke.fn = arena_copy(fn);
+    result->invoke.args = args;
   }
 
-  return expr;
+  return true;
 }
 
-static Expr *compile_mul(Lexer *l)
+typedef struct {
+  int token_kind;
+  BinopKind binop_kind;
+} Binop_Msg;
+
+static const Binop_Msg binop_level_mul[] = {
+  {.token_kind =  '*',       .binop_kind = BINOP_MUL,},
+  {.token_kind =  '/',       .binop_kind = BINOP_DIV,},
+  {.token_kind =  '%',       .binop_kind = BINOP_MOD,},
+};
+
+static const Binop_Msg binop_level_add[] = {
+  {.token_kind =  '+',       .binop_kind = BINOP_ADD,},
+  {.token_kind =  '-',       .binop_kind = BINOP_SUB,},
+};
+
+static const Binop_Msg binop_level_cmp[] = {
+  {.token_kind =  '<',       .binop_kind = BINOP_LS,},
+  {.token_kind =  '>',       .binop_kind = BINOP_GT,},
+  {.token_kind =  TOKEN_EQ,  .binop_kind = BINOP_EQ,},
+  {.token_kind =  TOKEN_NEQ, .binop_kind = BINOP_NEQ,},
+  {.token_kind =  TOKEN_LE,  .binop_kind = BINOP_LE,},
+  {.token_kind =  TOKEN_GE,  .binop_kind = BINOP_GE,},
+};
+
+// a little bit macro magic for static_assert
+
+#define BINOP_LEVEL_MAPPER(X)                   \
+  X(binop_level_cmp)                            \
+    X(binop_level_add)                          \
+    X(binop_level_mul)                          \
+
+#define GEN_BINOP_LEVEL(X)                      \
+  { .items = (X), .count = ARRAY_LEN(X) },
+
+static const struct {
+  const Binop_Msg *items;
+  size_t count;
+} binop_level[] = {
+  BINOP_LEVEL_MAPPER(GEN_BINOP_LEVEL)
+};
+#undef GEN_BINOP_LEVEL
+
+#define BINOP_COUNT 0 BINOP_LEVEL_MAPPER(BINOP_COUNT_IMPL)
+#define BINOP_COUNT_IMPL(X) + ARRAY_LEN(X)
+
+static_assert(__binop_kind_count == BINOP_COUNT,
+              "introduced more binop kinds");
+#undef BINOP_COUNT
+#undef BINOP_COUNT_IMPL
+
+const char *binop_name(BinopKind kind)
 {
-  Expr *expr = compile_simple_expr(l);
-  if (expr == NULL) return NULL;
-  while (l->current.kind == '*' || l->current.kind == '/' || l->current.kind == '%') {
-    Token op = l->current;
-    if (!prefetch_not_none(l)) return NULL;
-
-    Expr *rhs = compile_simple_expr(l);
-    if (rhs == NULL) return NULL;
-
-    expr = expr_binop(op, expr, rhs);
+  for (size_t i = 0; i < ARRAY_LEN(binop_level); ++i) {
+    da_foreach(const Binop_Msg, msg, &binop_level[i]) {
+      if (msg->binop_kind == kind) {
+        return token_name(msg->token_kind);
+      }
+    }
   }
-
-  return expr;
+  UNREACHABLE("");
 }
 
-static Expr *compile_add(Lexer *l)
-{
-  Expr *expr = compile_mul(l);
-  if (expr == NULL) return NULL;
-
-  while (l->current.kind == '+' || l->current.kind == '-') {
-    Token op = l->current;
-    if (!prefetch_not_none(l)) return NULL;
-
-    Expr *rhs = compile_mul(l);
-    if (rhs == NULL) return NULL;
-
-    expr = expr_binop(op, expr, rhs);
+static bool compile_binop(Lexer *l, Expr *result, size_t level) {
+  assert(level <= ARRAY_LEN(binop_level));
+  if (level == ARRAY_LEN(binop_level)) {
+    return compile_invoke(l, result);
   }
+  if (!compile_binop(l, result, level + 1)) return false;
+  while (true) {
+    const Binop_Msg *match = NULL;
+    da_foreach(const Binop_Msg, msg, &binop_level[level]) {
+      if (l->current.kind == msg->token_kind) {
+        match = msg;
+        break;
+      }
+    }
+    if (match == NULL) break;
 
-  return expr;
+    if (!prefetch_not_none(l)) return false;
+
+    Expr lhs = *result;
+    Expr rhs = {0};
+    if (!compile_binop(l, &rhs, level + 1)) return false;
+
+    result->kind = EXPR_BINOP;
+    result->loc  = lhs.loc;
+    result->binop.kind = match->binop_kind;
+    result->binop.lhs  = arena_copy(lhs);
+    result->binop.rhs  = arena_copy(rhs);
+  }
+  return true;
 }
 
-static Expr *compile_cmp(Lexer *l)
-{
-  Expr *expr = compile_add(l);
-  if (expr == NULL) return NULL;
-
-  while (l->current.kind == TOKEN_EQ ||
-         l->current.kind == TOKEN_LE ||
-         l->current.kind == TOKEN_GE ||
-         l->current.kind == '<' ||
-         l->current.kind == '>' ||
-         l->current.kind == TOKEN_NEQ) {
-    Token op = l->current;
-    if (!prefetch_not_none(l)) return NULL;
-
-    Expr *rhs = compile_add(l);
-    if (rhs == NULL) return NULL;
-
-    expr = expr_binop(op, expr, rhs);
-  }
-
-  return expr;
-}
-
-Expr *compile_expr(Lexer *l)
+bool compile_expr(Lexer *l, Expr *result)
 {
   // EXPR   :: CMP
   // CMP    :: ADD | ADD == CMP | ADD != CMP | ADD < CMP | ADD > CMP | ADD <= CMP | ADD >= CMP
@@ -586,7 +572,7 @@ Expr *compile_expr(Lexer *l)
   // ATOM   :: STR | INT | ID
   // INVOKE :: EXPR ( ARGS )
   // ARGS   :: EXPR | EXPR , ARGS
-  return compile_cmp(l);
+  return compile_binop(l, result, 0);
 }
 
 Expr *lambda_of_type(TypeExpr *type, Cursor loc)
@@ -596,11 +582,11 @@ Expr *lambda_of_type(TypeExpr *type, Cursor loc)
   expr->kind = EXPR_LAMBDA;
   expr->loc  = loc;
 
-  expr->lambda.ret_type = *type->fn_type.ret_type;
-  expr->lambda.args.va  = type->fn_type.va_args;
+  expr->lambda.ret_type = *type->fn.ret;
+  expr->lambda.args.va  = type->fn.va_args;
   expr->lambda.loc      = loc;
 
-  da_foreach(TypeExpr, arg_type, &type->fn_type.arg_types) {
+  da_foreach(TypeExpr, arg_type, &type->fn.args) {
     Fn_Arg arg = { .type = *arg_type };
     da_append(&expr->lambda.args, arg);
   }
@@ -644,10 +630,9 @@ static Stat *compile_def(Lexer *l)
   if (l->current.kind == '=') {
     if (!prefetch_not_none(l)) return NULL;
 
-    stat->def.val = compile_expr(l);
-    if (stat->def.val == NULL) {
-      return NULL;
-    }
+    Expr val = {0};
+    if (!compile_expr(l, &val)) return false;
+    stat->def.val = arena_copy(val);
   } else if (l->current.kind == TOKEN_EXT) {
     lexer_next(l);
     stat->def.is_extern = true;
@@ -666,8 +651,9 @@ static Stat *compile_if_else(Lexer *l, bool breakable)
   stat->kind = STAT_IF;
   stat->loc  = loc;
 
-  stat->if_else.cond = compile_expr(l);
-  if (stat->if_else.cond == NULL) return NULL;
+  Expr cond = {0};
+  if (!compile_expr(l, &cond)) return NULL;
+  stat->if_else.cond = arena_copy(cond);
 
   stat->if_else.on_true = compile_stat(l, breakable);
   if (stat->if_else.on_true == NULL) return NULL;
@@ -684,24 +670,25 @@ static Stat *compile_if_else(Lexer *l, bool breakable)
 static Stat *compile_simple_stat(Lexer *l)
 {
   Cursor loc = l->current.start;
-  Expr *expr = compile_expr(l);
-  if (expr == NULL) return NULL;
+  Expr expr = {0};
+  if (!compile_expr(l, &expr)) return NULL;
 
   if (l->current.kind == '=') {
     Stat *stat = arena_alloc(sizeof(*stat));
     stat->kind = STAT_ASSIGN;
     stat->loc  = loc;
-    stat->assign.dst = expr;
+    stat->assign.dst = arena_copy(expr);
 
     if (!prefetch_not_none(l)) return NULL;
-    stat->assign.val = compile_expr(l);
-    if (stat->assign.val == NULL) return NULL;
+    Expr val = {0};
+    if (!compile_expr(l, &val)) return NULL;
+    stat->assign.val = arena_copy(val);
     return stat;
-  } else if (expr->kind == EXPR_INVOKE) {
+  } else if (expr.kind == EXPR_INVOKE) {
     Stat *stat = arena_alloc(sizeof(*stat));
     stat->kind = STAT_INVOKE;
     stat->loc  = loc;
-    stat->invoke = expr->invoke;
+    stat->invoke = expr.invoke;
     return stat;
   } else {
     pcompile_info(l->current.start,
@@ -735,19 +722,17 @@ static Stat *compile_loop_init(Lexer *l)
   return stat;
 }
 
-static Expr *compile_loop_cond(Lexer *l)
+static bool compile_loop_cond(Lexer *l, Expr *expr)
 {
-  Expr *expr = NULL;
   if (l->current.kind == ';') {
-    expr = expr_atom((Token) {.kind = TOKEN_TRUE, .start = l->current.start});
+    Token fake_token = {.kind = TOKEN_TRUE, .start = l->current.start};
+    if (!expr_atom(fake_token, expr)) return false;
   } else {
-    expr = compile_expr(l);
+    if (!compile_expr(l, expr))       return false;
   }
-  if (expr != NULL) {
-    if (!expect_token(l, ';')) return NULL;
-    if (!prefetch_not_none(l)) return NULL;
-  }
-  return expr;
+  if (!expect_token(l, ';'))          return false;
+  if (!prefetch_not_none(l))          return false;
+  return true;
 }
 
 static Stat *compile_loop_update(Lexer *l)
@@ -773,8 +758,9 @@ static Stat *compile_loops(Lexer *l)
     stat->for_loop.init = compile_loop_init(l);
     if (stat->for_loop.init == NULL) return NULL;
 
-    stat->for_loop.cond = compile_loop_cond(l);
-    if (stat->for_loop.cond == NULL) return NULL;
+    Expr cond = {0};
+    if (!compile_loop_cond(l, &cond)) return NULL;
+    stat->for_loop.cond = arena_copy(cond);
 
     stat->for_loop.update = compile_loop_update(l);
     if (stat->for_loop.update == NULL) return NULL;
@@ -782,8 +768,9 @@ static Stat *compile_loops(Lexer *l)
     stat->for_loop.body = compile_stat(l, true);
     if (stat->for_loop.body == NULL) return NULL;
   } else if (token.kind == TOKEN_WHILE) {
-    stat->for_loop.cond = compile_expr(l);
-    if (stat->for_loop.cond == NULL) return NULL;
+    Expr cond = {0};
+    if (!compile_expr(l, &cond)) return NULL;
+    stat->for_loop.cond = arena_copy(cond);
 
     stat->for_loop.body = compile_stat(l, true);
     if (stat->for_loop.body == NULL) return NULL;
@@ -833,8 +820,9 @@ Stat *compile_stat(Lexer *l, bool breakable)
     if (l->current.kind == ';') {
       stat->ret_val = NULL;
     } else {
-      stat->ret_val = compile_expr(l);
-      if (stat->ret_val == NULL) return NULL;
+      Expr ret = {0};
+      if (!compile_expr(l, &ret)) return NULL;
+      stat->ret_val = arena_copy(ret);
     }
   } else if (token.kind == TOKEN_BREAK) {
     if (!breakable) {
